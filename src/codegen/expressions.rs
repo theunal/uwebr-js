@@ -44,36 +44,72 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
             if let RsExpr::Ident(name) = &**callee {
                 match name.as_str() {
                     "console_log" | "console.log" => {
-                        codegen.write("println!(");
-                        for (i, arg) in args.iter().enumerate() {
-                            if i > 0 {
-                                codegen.write(", ");
+                        if args.is_empty() {
+                            codegen.write("println!()");
+                        } else if args.len() == 1 {
+                            codegen.write("println!(\"{}\", ");
+                            generate_expression(codegen, &args[0]);
+                            codegen.write(")");
+                        } else {
+                            codegen.write("println!(\"");
+                            for _ in 0..args.len() {
+                                codegen.write("{} ");
                             }
-                            generate_expression(codegen, arg);
+                            codegen.write("\", ");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 {
+                                    codegen.write(", ");
+                                }
+                                generate_expression(codegen, arg);
+                            }
+                            codegen.write(")");
                         }
-                        codegen.write(")");
                         return;
                     }
                     "console_error" | "console.error" => {
-                        codegen.write("eprintln!(");
-                        for (i, arg) in args.iter().enumerate() {
-                            if i > 0 {
-                                codegen.write(", ");
+                        if args.is_empty() {
+                            codegen.write("eprintln!()");
+                        } else if args.len() == 1 {
+                            codegen.write("eprintln!(\"{}\", ");
+                            generate_expression(codegen, &args[0]);
+                            codegen.write(")");
+                        } else {
+                            codegen.write("eprintln!(\"");
+                            for _ in 0..args.len() {
+                                codegen.write("{} ");
                             }
-                            generate_expression(codegen, arg);
+                            codegen.write("\", ");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 {
+                                    codegen.write(", ");
+                                }
+                                generate_expression(codegen, arg);
+                            }
+                            codegen.write(")");
                         }
-                        codegen.write(")");
                         return;
                     }
                     "console_warn" | "console.warn" => {
-                        codegen.write("eprintln!(\"[WARN] {}\",");
-                        for (i, arg) in args.iter().enumerate() {
-                            if i > 0 {
-                                codegen.write(", ");
+                        if args.is_empty() {
+                            codegen.write("eprintln!(\"[WARN]\")");
+                        } else if args.len() == 1 {
+                            codegen.write("eprintln!(\"[WARN] {}\", ");
+                            generate_expression(codegen, &args[0]);
+                            codegen.write(")");
+                        } else {
+                            codegen.write("eprintln!(\"[WARN] ");
+                            for _ in 0..args.len() {
+                                codegen.write("{} ");
                             }
-                            generate_expression(codegen, arg);
+                            codegen.write("\", ");
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 {
+                                    codegen.write(", ");
+                                }
+                                generate_expression(codegen, arg);
+                            }
+                            codegen.write(")");
                         }
-                        codegen.write(")");
                         return;
                     }
                     _ => {}
@@ -306,7 +342,32 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
             }
             codegen.write(")");
         }
-        RsExpr::OptionalChain(inner) => generate_expression(codegen, inner),
+        RsExpr::OptionalChain(inner) => {
+            match &**inner {
+                RsExpr::Member(obj, prop) => {
+                    generate_expression(codegen, obj);
+                    codegen.write(&format!(".as_ref().map(|v| &v.{})", js_name_to_rust(prop)));
+                }
+                RsExpr::Index(obj, key) => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".as_ref().map(|v| &v[");
+                    generate_expression(codegen, key);
+                    codegen.write("])");
+                }
+                RsExpr::Call(callee, args) => {
+                    generate_expression(codegen, callee);
+                    codegen.write(".as_ref().map(|f| f(");
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            codegen.write(", ");
+                        }
+                        generate_expression(codegen, arg);
+                    }
+                    codegen.write("))");
+                }
+                _ => generate_expression(codegen, inner),
+            }
+        }
         RsExpr::NullishCoalesce(left, right) => {
             generate_expression(codegen, left);
             codegen.write(".unwrap_or(");

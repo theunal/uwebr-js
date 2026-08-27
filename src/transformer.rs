@@ -76,11 +76,20 @@ impl Transformer {
         match expr {
             SwcExpr::Lit(lit) => RsExpr::Lit(self.transform_lit(lit)),
             SwcExpr::Ident(id) => RsExpr::Ident(atom_to_string(&id.sym)),
-            SwcExpr::Bin(bin) => RsExpr::Binary(
-                self.transform_bin_op(&bin.op),
-                Box::new(self.transform_expr(&bin.left)),
-                Box::new(self.transform_expr(&bin.right)),
-            ),
+            SwcExpr::Bin(bin) => {
+                if let swc_ecma_ast::BinaryOp::NullishCoalescing = bin.op {
+                    RsExpr::NullishCoalesce(
+                        Box::new(self.transform_expr(&bin.left)),
+                        Box::new(self.transform_expr(&bin.right)),
+                    )
+                } else {
+                    RsExpr::Binary(
+                        self.transform_bin_op(&bin.op),
+                        Box::new(self.transform_expr(&bin.left)),
+                        Box::new(self.transform_expr(&bin.right)),
+                    )
+                }
+            }
             SwcExpr::Unary(unary) => RsExpr::Unary(
                 self.transform_unary_op(&unary.op),
                 Box::new(self.transform_expr(&unary.arg)),
@@ -245,14 +254,67 @@ impl Transformer {
                 for p in &obj.props {
                     match p {
                         PropOrSpread::Prop(prop) => {
-                            if let Prop::KeyValue(kv) = &**prop {
-                                let key = match &kv.key {
-                                    PropName::Ident(id) => atom_to_string(&id.sym),
-                                    PropName::Str(s) => wtf8_to_string(&s.value),
-                                    PropName::Num(n) => format!("{}", n.value),
-                                    _ => "unknown".to_string(),
-                                };
-                                props.push((key, self.transform_expr(&kv.value)));
+                            match &**prop {
+                                Prop::KeyValue(kv) => {
+                                    let key = match &kv.key {
+                                        PropName::Ident(id) => atom_to_string(&id.sym),
+                                        PropName::Str(s) => wtf8_to_string(&s.value),
+                                        PropName::Num(n) => format!("{}", n.value),
+                                        _ => "unknown".to_string(),
+                                    };
+                                    props.push((key, self.transform_expr(&kv.value)));
+                                }
+                                Prop::Shorthand(ident) => {
+                                    let name = atom_to_string(&ident.sym);
+                                    props.push((name.clone(), RsExpr::Ident(name)));
+                                }
+                                Prop::Method(method) => {
+                                    if let Some(key_name) = Self::transform_prop_name_to_name(&method.key) {
+                                        let params: Vec<ParamDef> = method.function.params.iter().enumerate().map(|(i, p)| {
+                                            ParamDef {
+                                                name: p.pat.as_ident()
+                                                    .map(|id| atom_to_string(&id.id.sym))
+                                                    .unwrap_or_else(|| format!("arg{}", i)),
+                                                ty: Type::Any,
+                                                default: None,
+                                            }
+                                        }).collect();
+                                        let body = method.function.body.as_ref()
+                                            .map(|b| self.transform_stmts(&b.stmts))
+                                            .unwrap_or_default();
+                                        props.push((key_name, RsExpr::ArrowFunction(params, Type::Void, body)));
+                                    }
+                                }
+                                Prop::Getter(getter) => {
+                                    if let Some(key_name) = Self::transform_prop_name_to_name(&getter.key) {
+                                        let body = getter.function.body.as_ref()
+                                            .map(|b| self.transform_stmts(&b.stmts))
+                                            .unwrap_or_default();
+                                        props.push((key_name, RsExpr::ArrowFunction(vec![], Type::Void, body)));
+                                    }
+                                }
+                                Prop::Setter(setter) => {
+                                    if let Some(key_name) = Self::transform_prop_name_to_name(&setter.key) {
+                                        let param = setter.function.params.first().and_then(|p| {
+                                            p.pat.as_ident().map(|id| {
+                                                ParamDef {
+                                                    name: atom_to_string(&id.id.sym),
+                                                    ty: Type::Any,
+                                                    default: None,
+                                                }
+                                            })
+                                        }).unwrap_or_else(|| ParamDef {
+                                            name: "value".to_string(),
+                                            ty: Type::Any,
+                                            default: None,
+                                        });
+                                        let body = setter.function.body.as_ref()
+                                            .map(|b| self.transform_stmts(&b.stmts))
+                                            .unwrap_or_default();
+                                        props.push((key_name, RsExpr::ArrowFunction(vec![param], Type::Void, body)));
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                         PropOrSpread::Spread(spread) => {
@@ -340,7 +402,7 @@ impl Transformer {
                 .unwrap_or(RsExpr::Lit(RsLit::Null)),
             SwcExpr::Paren(paren) => self.transform_expr(&paren.expr),
             SwcExpr::OptChain(opt) => {
-                match &*opt.base {
+                let inner = match &*opt.base {
                     swc_ecma_ast::OptChainBase::Member(member) => {
                         let obj = self.transform_expr(&member.obj);
                         match &member.prop {
@@ -360,7 +422,8 @@ impl Transformer {
                         let args: Vec<RsExpr> = call.args.iter().map(|a| self.transform_expr(&a.expr)).collect();
                         RsExpr::Call(Box::new(callee), args)
                     }
-                }
+                };
+                RsExpr::OptionalChain(Box::new(inner))
             }
             SwcExpr::Update(update) => {
                 let arg = self.transform_expr(&update.arg);
@@ -832,6 +895,54 @@ impl Transformer {
                 })]
             }
             swc_ecma_ast::Stmt::Empty(_) => vec![RsStmt::Empty],
+            swc_ecma_ast::Stmt::ForIn(for_in) => {
+                let name = match &for_in.left {
+                    swc_ecma_ast::ForHead::VarDecl(decl) => {
+                        decl.decls.first().and_then(|d| {
+                            if let swc_ecma_ast::Pat::Ident(id) = &d.name {
+                                Some(atom_to_string(&id.id.sym))
+                            } else {
+                                None
+                            }
+                        }).unwrap_or_else(|| "_".to_string())
+                    }
+                    swc_ecma_ast::ForHead::Pat(pat) => {
+                        if let swc_ecma_ast::Pat::Ident(id) = &**pat {
+                            atom_to_string(&id.sym)
+                        } else {
+                            "_".to_string()
+                        }
+                    }
+                    _ => "_".to_string(),
+                };
+                let right = self.transform_expr(&for_in.right);
+                let body = self.transform_stmts(&block_stmts(&for_in.body));
+                vec![RsStmt::ForIn(name, right, body)]
+            }
+            swc_ecma_ast::Stmt::ForOf(for_of) => {
+                let name = match &for_of.left {
+                    swc_ecma_ast::ForHead::VarDecl(decl) => {
+                        decl.decls.first().and_then(|d| {
+                            if let swc_ecma_ast::Pat::Ident(id) = &d.name {
+                                Some(atom_to_string(&id.id.sym))
+                            } else {
+                                None
+                            }
+                        }).unwrap_or_else(|| "_".to_string())
+                    }
+                    swc_ecma_ast::ForHead::Pat(pat) => {
+                        if let swc_ecma_ast::Pat::Ident(id) = &**pat {
+                            atom_to_string(&id.sym)
+                        } else {
+                            "_".to_string()
+                        }
+                    }
+                    _ => "_".to_string(),
+                };
+                let right = self.transform_expr(&for_of.right);
+                let body = self.transform_stmts(&block_stmts(&for_of.body));
+                vec![RsStmt::ForIn(name, right, body)]
+            }
             _ => vec![RsStmt::Empty],
         }
     }
