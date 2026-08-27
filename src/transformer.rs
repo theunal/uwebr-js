@@ -72,6 +72,27 @@ impl Transformer {
         }
     }
 
+    fn infer_type_from_expr(&self, expr: &SwcExpr) -> Type {
+        use swc_ecma_ast::{Expr as SwcExprVariant, Lit as SwcLit};
+        match expr {
+            SwcExprVariant::Lit(lit) => match lit {
+                SwcLit::Bool(_) => Type::Bool,
+                SwcLit::Num(_) => Type::F64,
+                SwcLit::Str(_) => Type::String,
+                SwcLit::Null(_) => Type::Any,
+                _ => Type::Any,
+            },
+            SwcExprVariant::Array(arr) => {
+                if let Some(Some(first)) = arr.elems.first() {
+                    Type::Vec(Box::new(self.infer_type_from_expr(&first.expr)))
+                } else {
+                    Type::Vec(Box::new(Type::Any))
+                }
+            }
+            _ => Type::Any,
+        }
+    }
+
     fn transform_expr(&self, expr: &SwcExpr) -> RsExpr {
         match expr {
             SwcExpr::Lit(lit) => RsExpr::Lit(self.transform_lit(lit)),
@@ -685,9 +706,14 @@ impl Transformer {
                     match member {
                         ClassMember::ClassProp(prop) => {
                             if let Some(key_name) = Self::transform_prop_name_to_name(&prop.key) {
+                                let ty = if let Some(ref value) = prop.value {
+                                    self.infer_type_from_expr(value)
+                                } else {
+                                    Type::Any
+                                };
                                 fields.push(FieldDef {
                                     name: key_name,
-                                    ty: Type::Any,
+                                    ty,
                                     is_pub: true,
                                 });
                             }
