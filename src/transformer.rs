@@ -234,7 +234,6 @@ impl Transformer {
                 RsExpr::ArrowFunction(params, Type::Void, body)
             }
             SwcExpr::Fn(fn_expr) => {
-                let name = fn_expr.ident.as_ref().map(|id| atom_to_string(&id.sym));
                 let params: Vec<ParamDef> = fn_expr
                     .function
                     .params
@@ -256,7 +255,7 @@ impl Transformer {
                     .as_ref()
                     .map(|b| self.transform_stmts(&b.stmts))
                     .unwrap_or_default();
-                RsExpr::FunctionExpr(name, params, Type::Void, body)
+                RsExpr::ArrowFunction(params, Type::Void, body)
             }
             SwcExpr::Array(arr) => {
                 let elems: Vec<RsExpr> = arr
