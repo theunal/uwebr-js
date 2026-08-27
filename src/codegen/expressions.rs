@@ -332,7 +332,71 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
             codegen.write(&format!(".{}", js_name_to_rust(field)));
         }
         RsExpr::MethodCall(obj, method, args) => {
-            let rust_method = match method.as_str() {
+            if method == "collect" && !args.is_empty() {
+                let mut has_spread = false;
+                for arg in args {
+                    if let RsExpr::MethodCall(inner, inner_method, _) = arg {
+                        if inner_method == "iter" {
+                            has_spread = true;
+                            break;
+                        }
+                    }
+                }
+                if has_spread {
+                    let mut spread_args = Vec::new();
+                    let mut regular_entries = Vec::new();
+                    for arg in args {
+                        if let RsExpr::MethodCall(inner, inner_method, _) = arg {
+                            if inner_method == "iter" {
+                                spread_args.push(&**inner);
+                            } else if let RsExpr::Array(arr) = arg {
+                                regular_entries.push(arr);
+                            }
+                        } else if let RsExpr::Array(arr) = arg {
+                            regular_entries.push(arr);
+                        }
+                    }
+                    codegen.write("HashMap::from_iter(");
+                    for (i, spread) in spread_args.iter().enumerate() {
+                        if i > 0 {
+                            codegen.write(".chain(");
+                            generate_expression(codegen, spread);
+                            codegen.write(".into_iter())");
+                        } else {
+                            generate_expression(codegen, spread);
+                            codegen.write(".into_iter()");
+                        }
+                    }
+                    if !regular_entries.is_empty() {
+                        if !spread_args.is_empty() {
+                            codegen.write(".chain(");
+                        }
+                        codegen.write("[");
+                        for (i, entry) in regular_entries.iter().enumerate() {
+                            if i > 0 {
+                                codegen.write(", ");
+                            }
+                            codegen.write("(");
+                            if let Some(key_expr) = entry.get(0) {
+                                generate_expression(codegen, key_expr);
+                                codegen.write(".to_string()");
+                                codegen.write(", ");
+                            }
+                            if let Some(val_expr) = entry.get(1) {
+                                generate_expression(codegen, val_expr);
+                            }
+                            codegen.write(")");
+                        }
+                        codegen.write("].into_iter()");
+                        if !spread_args.is_empty() {
+                            codegen.write(")");
+                        }
+                    }
+                    codegen.write(")");
+                    return;
+                }
+            }
+            match method.as_str() {
                 "toLowerCase" => {
                     generate_expression(codegen, obj);
                     codegen.write(".to_lowercase()");
@@ -422,10 +486,10 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
                     codegen.write(".len()");
                     return;
                 }
-                _ => method,
-            };
+                _ => {}
+            }
             generate_expression(codegen, obj);
-            codegen.write(&format!(".{}(", js_name_to_rust(rust_method)));
+            codegen.write(&format!(".{}(", js_name_to_rust(method)));
             for (i, arg) in args.iter().enumerate() {
                 if i > 0 {
                     codegen.write(", ");
