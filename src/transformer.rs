@@ -188,6 +188,12 @@ impl Transformer {
                             args,
                         );
                     }
+                    if method == "parse" {
+                        return RsExpr::Call(
+                            Box::new(RsExpr::Path(vec!["serde_json".to_string(), "from_str".to_string()])),
+                            args,
+                        );
+                    }
                 }
                 if let RsExpr::Member(ref obj, ref method) = callee {
                     let iter_methods = [
@@ -504,6 +510,12 @@ impl Transformer {
                     if method == "stringify" {
                         return RsExpr::Call(
                             Box::new(RsExpr::Path(vec!["serde_json".to_string(), "to_string".to_string()])),
+                            args,
+                        );
+                    }
+                    if method == "parse" {
+                        return RsExpr::Call(
+                            Box::new(RsExpr::Path(vec!["serde_json".to_string(), "from_str".to_string()])),
                             args,
                         );
                     }

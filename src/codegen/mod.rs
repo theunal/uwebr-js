@@ -199,6 +199,7 @@ impl CodeGen {
                 for stmt in try_body {
                     self.generate_stmt(stmt);
                 }
+                self.writeln("Ok(())");
                 self.dedent();
                 self.writeln("})");
                 self.dedent();
@@ -218,9 +219,9 @@ impl CodeGen {
             }
             RsStmt::Throw(expr) => {
                 self.write_indent();
-                self.write("return Err(Box::new(");
+                self.write("Err(Box::new(");
                 self.generate_expr(expr);
-                self.writeln("));");
+                self.writeln(".to_string()))");
             }
             RsStmt::Break => self.writeln("break;"),
             RsStmt::Continue => self.writeln("continue;"),
