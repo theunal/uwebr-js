@@ -121,3 +121,55 @@ fn test_for_loop() {
     let result = transpile(js).unwrap();
     assert!(result.code.contains("while") || result.code.contains("for"));
 }
+
+#[test]
+fn test_string_methods() {
+    let js = r#"
+        const s = "hello";
+        const upper = s.toUpperCase();
+        const lower = s.toLowerCase();
+        const trimmed = s.trim();
+        const has = s.includes("ell");
+    "#;
+    let result = transpile(js).unwrap();
+    assert!(result.code.contains("to_uppercase"));
+    assert!(result.code.contains("to_lowercase"));
+    assert!(result.code.contains("trim()"));
+    assert!(result.code.contains("contains("));
+}
+
+#[test]
+fn test_object_spread() {
+    let js = r#"
+        const a = { x: 1 };
+        const b = { y: 2 };
+        const c = { ...a, ...b, z: 3 };
+    "#;
+    let result = transpile(js).unwrap();
+    assert!(result.code.contains("HashMap::from_iter"));
+}
+
+#[test]
+fn test_function_expression_to_closure() {
+    let js = r#"
+        const add = function(a, b) { return a + b; };
+    "#;
+    let result = transpile(js).unwrap();
+    assert!(result.code.contains("|"));
+    assert!(!result.code.contains("fn(a:"));
+}
+
+#[test]
+fn test_for_of_loop() {
+    let js = r#"
+        function sum(arr) {
+            let total = 0;
+            for (const x of arr) {
+                total = total + x;
+            }
+            return total;
+        }
+    "#;
+    let result = transpile(js).unwrap();
+    assert!(result.code.contains("for") || result.code.contains("iter"));
+}
