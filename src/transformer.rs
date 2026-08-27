@@ -160,6 +160,30 @@ impl Transformer {
                     }
                 }
                 let callee = self.transform_callee(&call.callee);
+                if let RsExpr::Member(ref obj, ref method) = callee {
+                    let iter_methods = [
+                        "filter", "map", "reduce", "forEach", "find", "some", "every",
+                        "flatMap", "flat", "findIndex", "keys", "values", "entries",
+                        "lastIndexOf",
+                    ];
+                    if iter_methods.contains(&method.as_str()) {
+                        let iter_obj = RsExpr::MethodCall(
+                            obj.clone(),
+                            "iter".to_string(),
+                            vec![],
+                        );
+                        return RsExpr::MethodCall(
+                            Box::new(iter_obj),
+                            method.clone(),
+                            args,
+                        );
+                    }
+                    return RsExpr::MethodCall(
+                        obj.clone(),
+                        method.clone(),
+                        args,
+                    );
+                }
                 RsExpr::Call(Box::new(callee), args)
             }
             SwcExpr::New(new_expr) => {

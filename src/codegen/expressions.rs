@@ -332,8 +332,100 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
             codegen.write(&format!(".{}", js_name_to_rust(field)));
         }
         RsExpr::MethodCall(obj, method, args) => {
+            let rust_method = match method.as_str() {
+                "toLowerCase" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".to_lowercase()");
+                    return;
+                }
+                "toUpperCase" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".to_uppercase()");
+                    return;
+                }
+                "trim" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".trim()");
+                    return;
+                }
+                "includes" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".contains(");
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { codegen.write(", "); }
+                        generate_expression(codegen, arg);
+                    }
+                    codegen.write(")");
+                    return;
+                }
+                "repeat" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".repeat(");
+                    if let Some(first) = args.first() {
+                        generate_expression(codegen, first);
+                    }
+                    codegen.write(")");
+                    return;
+                }
+                "replace" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".replace(");
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { codegen.write(", "); }
+                        generate_expression(codegen, arg);
+                    }
+                    codegen.write(")");
+                    return;
+                }
+                "split" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".split(");
+                    if let Some(first) = args.first() {
+                        generate_expression(codegen, first);
+                    }
+                    codegen.write(").collect::<Vec<_>>()");
+                    return;
+                }
+                "charAt" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".chars().nth(");
+                    if let Some(first) = args.first() {
+                        generate_expression(codegen, first);
+                    }
+                    codegen.write(")");
+                    return;
+                }
+                "substring" | "slice" => {
+                    generate_expression(codegen, obj);
+                    codegen.write("[");
+                    if let Some(start) = args.get(0) {
+                        generate_expression(codegen, start);
+                    }
+                    codegen.write("..");
+                    if let Some(end) = args.get(1) {
+                        generate_expression(codegen, end);
+                    }
+                    codegen.write("]");
+                    return;
+                }
+                "indexOf" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".position(|c| c == ");
+                    if let Some(first) = args.first() {
+                        generate_expression(codegen, first);
+                    }
+                    codegen.write(")");
+                    return;
+                }
+                "length" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(".len()");
+                    return;
+                }
+                _ => method,
+            };
             generate_expression(codegen, obj);
-            codegen.write(&format!(".{}(", js_name_to_rust(method)));
+            codegen.write(&format!(".{}(", js_name_to_rust(rust_method)));
             for (i, arg) in args.iter().enumerate() {
                 if i > 0 {
                     codegen.write(", ");
