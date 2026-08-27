@@ -211,6 +211,7 @@ pub enum RsExpr {
     Reference(Box<RsExpr>),
     Deref(Box<RsExpr>),
     TypeAscription(Box<RsExpr>, Type),
+    Path(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

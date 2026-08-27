@@ -160,6 +160,14 @@ impl Transformer {
                     }
                 }
                 let callee = self.transform_callee(&call.callee);
+                if let RsExpr::Member(ref _obj, ref method) = callee {
+                    if method == "stringify" {
+                        return RsExpr::Call(
+                            Box::new(RsExpr::Path(vec!["serde_json".to_string(), "to_string".to_string()])),
+                            args,
+                        );
+                    }
+                }
                 if let RsExpr::Member(ref obj, ref method) = callee {
                     let iter_methods = [
                         "filter", "map", "reduce", "forEach", "find", "some", "every",
@@ -176,6 +184,34 @@ impl Transformer {
                             Box::new(iter_obj),
                             method.clone(),
                             args,
+                        );
+                    }
+                    if method == "then" {
+                        if let Some(callback) = args.first() {
+                            let await_expr = RsExpr::Await(obj.clone());
+                            return RsExpr::Block(vec![
+                                RsStmt::Let("_result".to_string(), Type::Any, await_expr),
+                                RsStmt::Expr(RsExpr::Call(
+                                    Box::new(callback.clone()),
+                                    vec![RsExpr::Ident("_result".to_string())],
+                                )),
+                            ]);
+                        }
+                    }
+                    if method == "catch" {
+                        if let Some(_callback) = args.first() {
+                            return RsExpr::MethodCall(
+                                Box::new(RsExpr::Await(obj.clone())),
+                                "unwrap_or_default".to_string(),
+                                vec![],
+                            );
+                        }
+                    }
+                    if method == "json" {
+                        return RsExpr::MethodCall(
+                            obj.clone(),
+                            "json".to_string(),
+                            vec![],
                         );
                     }
                     return RsExpr::MethodCall(
@@ -443,7 +479,15 @@ impl Transformer {
                     swc_ecma_ast::OptChainBase::Call(call) => {
                         let callee = self.transform_expr(&call.callee);
                         let args: Vec<RsExpr> = call.args.iter().map(|a| self.transform_expr(&a.expr)).collect();
-                        RsExpr::Call(Box::new(callee), args)
+                if let RsExpr::Member(ref _obj, ref method) = callee {
+                    if method == "stringify" {
+                        return RsExpr::Call(
+                            Box::new(RsExpr::Path(vec!["serde_json".to_string(), "to_string".to_string()])),
+                            args,
+                        );
+                    }
+                }
+                RsExpr::Call(Box::new(callee), args)
                     }
                 };
                 RsExpr::OptionalChain(Box::new(inner))

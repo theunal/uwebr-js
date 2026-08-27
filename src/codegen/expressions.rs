@@ -7,6 +7,9 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
         RsExpr::Ident(name) => {
             codegen.write(&js_name_to_rust(name));
         }
+        RsExpr::Path(parts) => {
+            codegen.write(&parts.join("::"));
+        }
         RsExpr::Binary(op, left, right) => {
             codegen.write("(");
             generate_expression(codegen, left);
@@ -486,6 +489,16 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
                     codegen.write(".len()");
                     return;
                 }
+                "unwrap_or_default" | "unwrap_or_else" | "unwrap_or" => {
+                    generate_expression(codegen, obj);
+                    codegen.write(&format!(".{}(", method));
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { codegen.write(", "); }
+                        generate_expression(codegen, arg);
+                    }
+                    codegen.write(")");
+                    return;
+                }
                 _ => {}
             }
             generate_expression(codegen, obj);
@@ -687,6 +700,9 @@ fn js_name_to_rust(name: &str) -> String {
         "this" => "self".to_string(),
         "super" => "self".to_string(),
         _ => {
+            if name.starts_with('_') {
+                return name.to_string();
+            }
             let mut result = String::new();
             let mut capitalize_next = false;
             for c in name.chars() {
