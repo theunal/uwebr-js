@@ -23,3 +23,10 @@
 - **Test:** 13/13 ✅
 - **Build:** 0 hata, 1 uyarı
 - **Toplam commit:** 10+
+
+## 🔮 Sonraki Adım
+
+uwebr-js tamamlandı. Sıradaki adım: **uwebr** workspace kurulumu.
+
+Detaylı plan için: `../PLAN.md`
+Mimari rehber için: `../ARCHITECTURE.md`
