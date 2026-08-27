@@ -226,12 +226,35 @@ impl Transformer {
                         }
                     }
                     if method == "catch" {
-                        if let Some(_callback) = args.first() {
-                            return RsExpr::MethodCall(
-                                Box::new(RsExpr::Await(obj.clone())),
-                                "unwrap_or_default".to_string(),
-                                vec![],
-                            );
+                        if let Some(callback) = args.first() {
+                            let await_expr = RsExpr::Await(obj.clone());
+                            return RsExpr::Block(vec![
+                                RsStmt::Let("_result".to_string(), Type::Any, RsExpr::Ident("Default::default()".to_string())),
+                                RsStmt::Match(await_expr, vec![
+                                    MatchArm {
+                                        pattern: Pattern::Ident("Ok(_val)".to_string()),
+                                        guard: None,
+                                        body: RsExpr::Assign(
+                                            AssignOp::Assign,
+                                            Box::new(RsExpr::Ident("_result".to_string())),
+                                            Box::new(RsExpr::Ident("_val".to_string())),
+                                        ),
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern::Ident("Err(_e)".to_string()),
+                                        guard: None,
+                                        body: RsExpr::Assign(
+                                            AssignOp::Assign,
+                                            Box::new(RsExpr::Ident("_result".to_string())),
+                                            Box::new(RsExpr::Call(
+                                                Box::new(callback.clone()),
+                                                vec![RsExpr::Ident("_e".to_string())],
+                                            )),
+                                        ),
+                                    },
+                                ]),
+                                RsStmt::Expr(RsExpr::Ident("_result".to_string())),
+                            ]);
                         }
                     }
                     if method == "json" {
