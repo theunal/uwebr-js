@@ -36,23 +36,23 @@ fn test_props_partial_build() {
 }
 
 #[component]
-fn MyComponent(name: String) -> String {
+fn my_component(name: String) -> String {
     format!("Hello, {}!", name)
 }
 
 #[test]
 fn test_component_macro() {
-    let result = MyComponent("World".to_string());
+    let result = my_component("World".to_string());
     assert_eq!(result, "Hello, World!");
 }
 
 #[component]
-fn MultiParamComponent(a: String, b: i32) -> String {
+fn multi_param_component(a: String, b: i32) -> String {
     format!("{}-{}", a, b)
 }
 
 #[test]
 fn test_component_macro_multiple_params() {
-    let result = MultiParamComponent("test".to_string(), 42);
+    let result = multi_param_component("test".to_string(), 42);
     assert_eq!(result, "test-42");
 }
