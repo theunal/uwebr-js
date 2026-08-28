@@ -38,6 +38,12 @@ fn parse_text_as_nodes(text: &str) -> HtmlNode {
         return result;
     }
 
+    // Check for raw HTML: {@html expr}
+    if trimmed.starts_with("{@html ") && trimmed.ends_with('}') {
+        let expr = trimmed[7..trimmed.len() - 1].trim().to_string();
+        return HtmlNode::RawHtml(expr);
+    }
+
     // Check for simple expression: {expr}
     if trimmed.starts_with('{') && trimmed.ends_with('}') && !trimmed.contains("{#") {
         let expr = &trimmed[1..trimmed.len() - 1].trim().to_string();

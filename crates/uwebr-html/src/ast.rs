@@ -6,6 +6,7 @@ pub enum HtmlNode {
     Element(HtmlElement),
     Text(String),
     Expression(String),
+    RawHtml(String),
     Component(HtmlComponent),
     EachLoop(HtmlEach),
     IfBlock(HtmlIf),

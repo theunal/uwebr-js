@@ -11,7 +11,6 @@ pub fn parse_html(html: &str) -> Result<HtmlNode> {
         .from_utf8()
         .one(html.as_bytes());
 
-    // Navigate to <html><body> to get actual content
     let body = find_body(&dom.document);
     match body {
         Some(body_handle) => {
@@ -83,7 +82,10 @@ fn convert_node(handle: &Handle) -> HtmlNode {
                 .borrow()
                 .iter()
                 .map(|attr| {
-                    let name = attr.name.local.to_string();
+                    // Reconstruct full attribute name including namespace prefix
+                    let prefix = attr.name.prefix.clone().map_or(String::new(), |p| format!("{}:", p));
+                    let local = attr.name.local.to_string();
+                    let name = format!("{}{}", prefix, local);
                     let value = attr.value.to_string();
                     HtmlAttribute {
                         name,
@@ -253,6 +255,23 @@ mod tests {
             HtmlNode::Element(el) => {
                 assert_eq!(el.tag, "div");
                 assert!(el.children.is_empty());
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_parse_event_attribute() {
+        let html = r#"<button on:click="handler">Click</button>"#;
+        let node = parse_html(html).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "button");
+                // html5ever may split on: into namespace prefix
+                let has_event = el.attributes.iter().any(|a| {
+                    a.name.contains("click") || a.name.contains("on:")
+                });
+                assert!(has_event, "Expected on:click attribute, got: {:?}", el.attributes);
             }
             _ => panic!("Expected element"),
         }
