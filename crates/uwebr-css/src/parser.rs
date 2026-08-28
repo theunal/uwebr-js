@@ -1,346 +1,518 @@
 use crate::ast::*;
-use anyhow::Result;
+use anyhow::{bail, Result};
 
-/// Parse CSS string into CssRule list
-pub fn parse_css(css: &str) -> Result<Vec<CssRule>> {
-    let mut parser = CssParser::new(css);
-    parser.parse_rules()
+pub fn parse_css(input: &str) -> Result<Vec<CssRule>> {
+    let mut rules = Vec::new();
+    let mut chars = input.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if ch == '/' {
+            skip_comment(&mut chars);
+            continue;
+        }
+        if ch == '@' {
+            // @media rule
+            let at_rule = parse_at_rule(&mut chars)?;
+            if let Some(rule) = at_rule {
+                rules.push(rule);
+            }
+            continue;
+        }
+        if ch == '}' || ch == '\0' {
+            break;
+        }
+        let rule = parse_rule(&mut chars)?;
+        rules.push(rule);
+    }
+
+    Ok(rules)
 }
 
-struct CssParser {
-    input: Vec<char>,
-    pos: usize,
-}
-
-impl CssParser {
-    fn new(input: &str) -> Self {
-        Self {
-            input: input.chars().collect(),
-            pos: 0,
-        }
-    }
-
-    fn parse_rules(&mut self) -> Result<Vec<CssRule>> {
-        let mut rules = Vec::new();
-        self.skip_whitespace();
-        while self.pos < self.input.len() {
-            // Skip @media for now, just extract inner rules
-            if self.peek() == Some('@') {
-                self.skip_at_rule();
-            } else {
-                rules.push(self.parse_rule()?);
-            }
-            self.skip_whitespace();
-        }
-        Ok(rules)
-    }
-
-    fn parse_rule(&mut self) -> Result<CssRule> {
-        let selector = self.parse_selector()?;
-        self.skip_whitespace();
-        self.expect('{')?;
-        let properties = self.parse_properties()?;
-        self.skip_whitespace();
-        self.expect('}')?;
-
-        Ok(CssRule {
-            selector,
-            properties,
-            media_query: None,
-        })
-    }
-
-    fn parse_selector(&mut self) -> Result<CssSelector> {
-        self.skip_whitespace();
-        let mut selectors = Vec::new();
-
-        while self.pos < self.input.len() && self.peek() != Some('{') {
-            selectors.push(self.parse_single_selector()?);
-            self.skip_whitespace();
-
-            if self.peek() == Some(',') {
-                self.advance();
-                self.skip_whitespace();
-            } else if self.peek() == Some(' ') {
-                // Descendant combinator
-                if selectors.len() > 1 {
-                    let last = selectors.pop().unwrap();
-                    let first = selectors.pop().unwrap();
-                    selectors.push(CssSelector::Descendant(vec![first, last]));
-                }
-            }
-        }
-
-        if selectors.len() == 1 {
-            Ok(selectors.into_iter().next().unwrap())
-        } else {
-            Ok(CssSelector::List(selectors))
-        }
-    }
-
-    fn parse_single_selector(&mut self) -> Result<CssSelector> {
-        match self.peek() {
-            Some('.') => {
-                self.advance();
-                let name = self.read_ident()?;
-                Ok(CssSelector::Class(name))
-            }
-            Some('#') => {
-                self.advance();
-                let name = self.read_ident()?;
-                Ok(CssSelector::Id(name))
-            }
-            Some('*') => {
-                self.advance();
-                Ok(CssSelector::Universal)
-            }
-            Some(_) if self.peek().unwrap().is_alphabetic() => {
-                let name = self.read_ident()?;
-                Ok(CssSelector::Tag(name))
-            }
-            _ => Ok(CssSelector::Universal),
-        }
-    }
-
-    fn parse_properties(&mut self) -> Result<Vec<CssProperty>> {
-        let mut props = Vec::new();
-        self.skip_whitespace();
-        while self.peek() != Some('}') {
-            props.push(self.parse_property()?);
-            self.skip_whitespace();
-        }
-        Ok(props)
-    }
-
-    fn parse_property(&mut self) -> Result<CssProperty> {
-        let name = self.read_ident()?;
-        self.skip_whitespace();
-        self.expect(':')?;
-        self.skip_whitespace();
-        let value = self.read_value()?;
-        self.skip_whitespace();
-        let important = if self.peek() == Some('!') {
-            self.advance();
-            let bang = self.read_ident()?;
-            bang == "important"
-        } else {
-            false
-        };
-        self.skip_whitespace();
-        if self.peek() == Some(';') {
-            self.advance();
-        }
-        Ok(CssProperty {
-            name,
-            value,
-            important,
-        })
-    }
-
-    fn read_value(&mut self) -> Result<CssValue> {
-        let mut tokens = Vec::new();
-        let mut current = String::new();
-
-        while let Some(c) = self.peek() {
-            match c {
-                ';' | '}' => break,
-                ' ' | '\t' | '\n' | '\r' => {
-                    if !current.is_empty() {
-                        tokens.push(current.clone());
-                        current.clear();
-                    }
-                    self.advance();
-                }
-                '(' => {
-                    current.push(c);
-                    self.advance();
-                    // Read until closing paren
-                    let mut depth = 1;
-                    while depth > 0 && self.peek().is_some() {
-                        let c = self.peek().unwrap();
-                        if c == '(' {
-                            depth += 1;
-                        } else if c == ')' {
-                            depth -= 1;
-                        }
-                        current.push(c);
-                        self.advance();
-                    }
-                    tokens.push(current.clone());
-                    current.clear();
-                }
-                _ => {
-                    current.push(c);
-                    self.advance();
-                }
-            }
-        }
-        if !current.is_empty() {
-            tokens.push(current);
-        }
-
-        if tokens.is_empty() {
-            return Ok(CssValue::Inherited);
-        }
-
-        // Parse color
-        if let Some(first) = tokens.first() {
-            if first.starts_with('#') || first.starts_with("rgb") || first.starts_with("hsl") {
-                let color = parse_color(first)?;
-                return Ok(CssValue::Color(color));
-            }
-        }
-
-        // Parse length
-        if tokens.len() == 1 {
-            if let Ok(val) = parse_length_value(&tokens[0]) {
-                return Ok(val);
-            }
-        }
-
-        // Keyword
-        Ok(CssValue::Keyword(tokens.join(" ")))
-    }
-
-    fn read_ident(&mut self) -> Result<String> {
-        let mut name = String::new();
-        while let Some(c) = self.peek() {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                name.push(c);
-                self.advance();
-            } else {
-                break;
-            }
-        }
-        Ok(name)
-    }
-
-    fn skip_whitespace(&mut self) {
-        while let Some(c) = self.peek() {
-            if c.is_whitespace() {
-                self.advance();
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn skip_at_rule(&mut self) {
-        while let Some(c) = self.peek() {
-            if c == '{' {
-                // Skip block
-                let mut depth = 1;
-                self.advance();
-                while depth > 0 && self.peek().is_some() {
-                    let c = self.peek().unwrap();
-                    if c == '{' {
-                        depth += 1;
-                    } else if c == '}' {
-                        depth -= 1;
-                    }
-                    self.advance();
-                }
-                return;
-            } else if c == ';' {
-                self.advance();
+fn skip_comment(chars: &mut std::iter::Peekable<std::str::Chars>) {
+    chars.next(); // consume '/'
+    if chars.peek() == Some(&'*') {
+        chars.next(); // consume '*'
+        while let Some(&ch) = chars.peek() {
+            chars.next();
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
                 return;
             }
-            self.advance();
-        }
-    }
-
-    fn advance(&mut self) {
-        self.pos += 1;
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.input.get(self.pos).copied()
-    }
-
-    fn expect(&mut self, expected: char) -> Result<()> {
-        match self.peek() {
-            Some(c) if c == expected => {
-                self.advance();
-                Ok(())
-            }
-            Some(c) => Err(anyhow::anyhow!(
-                "Expected '{}', found '{}' at position {}",
-                expected,
-                c,
-                self.pos
-            )),
-            None => Err(anyhow::anyhow!(
-                "Expected '{}', found end of input",
-                expected
-            )),
         }
     }
 }
 
-fn parse_color(s: &str) -> Result<Color> {
-    if s.starts_with('#') {
-        Ok(Color::from_hex(s))
-    } else if s.starts_with("rgb(") {
-        let inner = s.trim_start_matches("rgb(").trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
-        if parts.len() >= 3 {
-            let r = parts[0].parse().unwrap_or(0);
-            let g = parts[1].parse().unwrap_or(0);
-            let b = parts[2].parse().unwrap_or(0);
-            Ok(Color::rgb(r, g, b))
+fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars>) {
+    while let Some(&ch) = chars.peek() {
+        if ch.is_whitespace() || ch == '\n' || ch == '\r' || ch == '\t' {
+            chars.next();
+        } else if ch == '/' {
+            skip_comment(chars);
         } else {
-            Ok(Color::rgb(0, 0, 0))
+            break;
         }
+    }
+}
+
+fn read_ident(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let mut s = String::new();
+    while let Some(&ch) = chars.peek() {
+        if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+            s.push(ch);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+fn read_until(chars: &mut std::iter::Peekable<std::str::Chars>, end: char) -> String {
+    let mut s = String::new();
+    let mut depth = 0i32;
+    while let Some(&ch) = chars.peek() {
+        if ch == end && depth == 0 {
+            return s;
+        }
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            depth -= 1;
+        }
+        s.push(ch);
+        chars.next();
+    }
+    s
+}
+
+fn skip_block(chars: &mut std::iter::Peekable<std::str::Chars>) {
+    let mut depth = 0i32;
+    while let Some(&ch) = chars.peek() {
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            if depth == 0 {
+                chars.next();
+                return;
+            }
+            depth -= 1;
+        }
+        chars.next();
+    }
+}
+
+fn parse_at_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Option<CssRule>> {
+    chars.next(); // consume '@'
+    let name = read_ident(chars);
+    skip_whitespace(chars);
+
+    match name.as_str() {
+        "media" => {
+            let query = read_until(chars, '{').trim().to_string();
+            chars.next(); // consume '{'
+            skip_whitespace(chars);
+            let content = read_until(chars, '}');
+            chars.next(); // consume '}'
+
+            let inner_rules = parse_css(&content)?;
+            if let Some(mut rule) = inner_rules.into_iter().next() {
+                rule.media_query = Some(query);
+                Ok(Some(rule))
+            } else {
+                Ok(None)
+            }
+        }
+        "import" => {
+            // Skip @import
+            read_until(chars, ';');
+            chars.next();
+            Ok(None)
+        }
+        _ => {
+            skip_block(chars);
+            Ok(None)
+        }
+    }
+}
+
+fn parse_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<CssRule> {
+    let mut all_selectors = Vec::new();
+
+    loop {
+        let selector = parse_selector(chars)?;
+        all_selectors.push(selector);
+        skip_whitespace(chars);
+
+        if chars.peek() == Some(&',') {
+            chars.next(); // consume ','
+            continue;
+        }
+        break;
+    }
+
+    let selector = if all_selectors.len() == 1 {
+        all_selectors.pop().unwrap()
     } else {
-        Ok(Color::rgb(0, 0, 0))
+        CssSelector::List(all_selectors)
+    };
+
+    skip_whitespace(chars);
+    if chars.peek() != Some(&'{') {
+        bail!("Expected '{{' after selector");
+    }
+    chars.next(); // consume '{'
+    skip_whitespace(chars);
+
+    let properties = parse_declarations(chars)?;
+
+    if chars.peek() == Some(&'}') {
+        chars.next();
+    }
+
+    Ok(CssRule {
+        selector,
+        properties,
+        media_query: None,
+    })
+}
+
+fn parse_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<CssSelector> {
+    let mut result: Option<CssSelector> = None;
+
+    loop {
+        skip_whitespace(chars);
+        if let Some(&ch) = chars.peek() {
+            if ch == '{' || ch == ',' || ch == '\0' {
+                break;
+            }
+        }
+
+        // Check for combinators between selectors
+        if result.is_some() {
+            skip_whitespace(chars);
+            if chars.peek() == Some(&'>') {
+                chars.next(); // consume '>'
+                skip_whitespace(chars);
+                let child = parse_simple_selector(chars)?;
+                let prev = result.take().unwrap();
+                result = Some(CssSelector::Child(vec![prev, child]));
+                continue;
+            }
+        }
+
+        let sel = parse_simple_selector(chars)?;
+        match result {
+            None => result = Some(sel),
+            Some(existing) => {
+                // Implicit descendant combinator (space between selectors)
+                result = Some(CssSelector::Descendant(vec![existing, sel]));
+            }
+        }
+    }
+
+    match result {
+        Some(sel) => Ok(sel),
+        None => bail!("Empty selector"),
     }
 }
 
-fn parse_length_value(s: &str) -> Result<CssValue> {
-    if s == "auto" || s == "none" {
+fn parse_simple_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<CssSelector> {
+    skip_whitespace(chars);
+    let sel = match chars.peek() {
+        Some(&'.') => {
+            chars.next();
+            let name = read_ident(chars);
+            CssSelector::Class(name)
+        }
+        Some(&'#') => {
+            chars.next();
+            let name = read_ident(chars);
+            CssSelector::Id(name)
+        }
+        Some(&'*') => {
+            chars.next();
+            CssSelector::Universal
+        }
+        Some(&ch) if ch.is_alphabetic() || ch == '_' || ch == '-' => {
+            let name = read_ident(chars);
+            CssSelector::Tag(name)
+        }
+        _ => bail!("Unexpected character in selector: {:?}", chars.peek()),
+    };
+
+    // Handle pseudo-classes after any selector: .btn:hover, #id:focus, div:first-child
+    skip_whitespace(chars);
+    if chars.peek() == Some(&':') {
+        chars.next(); // consume ':'
+        let _pseudo = read_ident(chars); // e.g. "hover", "focus", "first-child"
+    }
+    // Handle attribute selectors after any selector: input[type="text"]
+    skip_whitespace(chars);
+    if chars.peek() == Some(&'[') {
+        let _attrs = read_until(chars, ']');
+        if chars.peek() == Some(&']') {
+            chars.next(); // consume ']'
+        }
+    }
+
+    Ok(sel)
+}
+
+fn parse_declarations(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+) -> Result<Vec<CssProperty>> {
+    let mut props = Vec::new();
+
+    loop {
+        skip_whitespace(chars);
+        if let Some(&'}') = chars.peek() {
+            break;
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+
+        let prop = parse_declaration(chars)?;
+        props.push(prop);
+
+        skip_whitespace(chars);
+        if chars.peek() == Some(&';') {
+            chars.next();
+        }
+    }
+
+    Ok(props)
+}
+
+fn parse_declaration(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<CssProperty> {
+    let name = read_ident(chars);
+    skip_whitespace(chars);
+
+    if chars.peek() != Some(&':') {
+        bail!("Expected ':' after property name '{}'", name);
+    }
+    chars.next(); // consume ':'
+    skip_whitespace(chars);
+
+    let mut value_str = String::new();
+    let mut depth = 0i32;
+    while let Some(&ch) = chars.peek() {
+        if (ch == ';' || ch == '}') && depth == 0 {
+            break;
+        }
+        if ch == '(' {
+            depth += 1;
+        } else if ch == ')' {
+            depth -= 1;
+        }
+        value_str.push(ch);
+        chars.next();
+    }
+    let value_str = value_str.trim().to_string();
+
+    let important = value_str.ends_with("!important");
+    let value_str = if important {
+        value_str.trim_end_matches("!important").trim().to_string()
+    } else {
+        value_str
+    };
+
+    let value = parse_value(&name, &value_str)?;
+
+    Ok(CssProperty {
+        name,
+        value,
+        important,
+    })
+}
+
+fn parse_value(prop_name: &str, raw: &str) -> Result<CssValue> {
+    let raw = raw.trim();
+
+    // Handle shorthand properties like "10px 20px"
+    if raw.contains(' ') && (prop_name == "padding" || prop_name == "margin") {
+        let parts: Vec<CssValue> = raw
+            .split_whitespace()
+            .filter_map(|s| parse_single_value(s).ok())
+            .collect();
+        if parts.len() > 1 {
+            return Ok(CssValue::Shorthand(parts));
+        }
+    }
+
+    parse_single_value(raw)
+}
+
+fn parse_single_value(raw: &str) -> Result<CssValue> {
+    let raw = raw.trim();
+
+    // Auto
+    if raw == "auto" {
         return Ok(CssValue::Auto);
     }
-    if s == "inherit" || s == "initial" || s == "unset" {
+    // Inherit / initial / unset
+    if raw == "inherit" || raw == "initial" || raw == "unset" {
         return Ok(CssValue::Inherited);
     }
 
-    if let Some(px) = s.strip_suffix("px") {
-        if let Ok(val) = px.parse() {
-            return Ok(CssValue::Length(val, LengthUnit::Px));
-        }
-    }
-    if let Some(em) = s.strip_suffix("em") {
-        if let Ok(val) = em.parse() {
-            return Ok(CssValue::Length(val, LengthUnit::Em));
-        }
-    }
-    if let Some(rem) = s.strip_suffix("rem") {
-        if let Ok(val) = rem.parse() {
-            return Ok(CssValue::Length(val, LengthUnit::Rem));
-        }
-    }
-    if let Some(percent) = s.strip_suffix('%') {
-        if let Ok(val) = percent.parse() {
-            return Ok(CssValue::Length(val, LengthUnit::Percent));
-        }
-    }
-    if let Some(vw) = s.strip_suffix("vw") {
-        if let Ok(val) = vw.parse() {
-            return Ok(CssValue::Length(val, LengthUnit::Vw));
-        }
-    }
-    if let Some(vh) = s.strip_suffix("vh") {
-        if let Ok(val) = vh.parse() {
-            return Ok(CssValue::Length(val, LengthUnit::Vh));
-        }
+    // None
+    if raw == "none" {
+        return Ok(CssValue::Keyword("none".to_string()));
     }
 
-    // Plain number → px
-    if let Ok(val) = s.parse() {
-        return Ok(CssValue::Length(val, LengthUnit::Px));
+    // Color hex
+    if raw.starts_with('#') {
+        return Ok(CssValue::Color(Color::from_hex(raw)));
     }
 
-    Ok(CssValue::Keyword(s.to_string()))
+    // Named colors
+    if let Some(c) = named_color(raw) {
+        return Ok(CssValue::Color(c));
+    }
+
+    // rgb(...)
+    if raw.starts_with("rgb") {
+        return parse_rgb(raw);
+    }
+
+    // hsl(...)
+    if raw.starts_with("hsl") {
+        return parse_hsl(raw);
+    }
+
+    // Length with unit
+    if let Some(value) = parse_length(raw) {
+        return Ok(value);
+    }
+
+    // Keyword
+    if raw
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Ok(CssValue::Keyword(raw.to_string()));
+    }
+
+    // Fallback: store as keyword (for unknown values like box-shadow, transitions, etc.)
+    Ok(CssValue::Keyword(raw.to_string()))
+}
+
+fn parse_length(raw: &str) -> Option<CssValue> {
+    let raw = raw.trim();
+
+    if raw.ends_with("px") {
+        let num: f32 = raw.trim_end_matches("px").parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Px));
+    }
+    if raw.ends_with("em") {
+        let num: f32 = raw.trim_end_matches("em").parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Em));
+    }
+    if raw.ends_with("rem") {
+        let num: f32 = raw.trim_end_matches("rem").parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Rem));
+    }
+    if raw.ends_with('%') {
+        let num: f32 = raw.trim_end_matches('%').parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Percent));
+    }
+    if raw.ends_with("vw") {
+        let num: f32 = raw.trim_end_matches("vw").parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Vw));
+    }
+    if raw.ends_with("vh") {
+        let num: f32 = raw.trim_end_matches("vh").parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Vh));
+    }
+
+    // Plain number → treat as px
+    if let Ok(num) = raw.parse::<f32>() {
+        return Some(CssValue::Length(num, LengthUnit::Px));
+    }
+
+    None
+}
+
+fn parse_rgb(raw: &str) -> Result<CssValue> {
+    let inner = raw
+        .trim_start_matches("rgb")
+        .trim_start_matches('(')
+        .trim_end_matches(')');
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+    match parts.len() {
+        3 => {
+            let r: u8 = parts[0].parse()?;
+            let g: u8 = parts[1].parse()?;
+            let b: u8 = parts[2].parse()?;
+            Ok(CssValue::Color(Color::rgb(r, g, b)))
+        }
+        4 => {
+            let r: u8 = parts[0].parse()?;
+            let g: u8 = parts[1].parse()?;
+            let b: u8 = parts[2].parse()?;
+            let a: f32 = parts[3].parse()?;
+            Ok(CssValue::Color(Color::rgba(r, g, b, a)))
+        }
+        _ => bail!("Invalid rgb()"),
+    }
+}
+
+fn parse_hsl(raw: &str) -> Result<CssValue> {
+    let inner = raw
+        .trim_start_matches("hsl")
+        .trim_start_matches('(')
+        .trim_end_matches(')');
+    let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+    if parts.len() >= 3 {
+        let h: f32 = parts[0].trim_end_matches("deg").trim().parse()?;
+        let s: f32 = parts[1].trim_end_matches('%').trim().parse()?;
+        let l: f32 = parts[2].trim_end_matches('%').trim().parse()?;
+        let (r, g, b) = hsl_to_rgb(h, s / 100.0, l / 100.0);
+        Ok(CssValue::Color(Color::rgb(r, g, b)))
+    } else {
+        bail!("Invalid hsl()")
+    }
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match h as u32 {
+        0..=59 => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (
+        ((r + m) * 255.0) as u8,
+        ((g + m) * 255.0) as u8,
+        ((b + m) * 255.0) as u8,
+    )
+}
+
+fn named_color(name: &str) -> Option<Color> {
+    match name {
+        "black" => Some(Color::rgb(0, 0, 0)),
+        "white" => Some(Color::rgb(255, 255, 255)),
+        "red" => Some(Color::rgb(255, 0, 0)),
+        "green" => Some(Color::rgb(0, 128, 0)),
+        "blue" => Some(Color::rgb(0, 0, 255)),
+        "yellow" => Some(Color::rgb(255, 255, 0)),
+        "cyan" => Some(Color::rgb(0, 255, 255)),
+        "magenta" => Some(Color::rgb(255, 0, 255)),
+        "gray" | "grey" => Some(Color::rgb(128, 128, 128)),
+        "orange" => Some(Color::rgb(255, 165, 0)),
+        "purple" => Some(Color::rgb(128, 0, 128)),
+        "transparent" => Some(Color::rgba(0, 0, 0, 0.0)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +525,10 @@ mod tests {
         let rules = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].properties[0].name, "padding");
+        assert_eq!(
+            rules[0].properties[0].value,
+            CssValue::Length(16.0, LengthUnit::Px)
+        );
     }
 
     #[test]
@@ -363,8 +539,100 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_color() {
-        let css = ".red { color: #ff0000; }";
+    fn test_parse_class_selector() {
+        let css = ".my-class { color: red; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Class(name) => assert_eq!(name, "my-class"),
+            _ => panic!("Expected class selector"),
+        }
+    }
+
+    #[test]
+    fn test_parse_id_selector() {
+        let css = "#main { width: 100%; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Id(name) => assert_eq!(name, "main"),
+            _ => panic!("Expected id selector"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tag_selector() {
+        let css = "div { margin: 0; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Tag(name) => assert_eq!(name, "div"),
+            _ => panic!("Expected tag selector"),
+        }
+    }
+
+    #[test]
+    fn test_parse_universal_selector() {
+        let css = "* { box-sizing: border-box; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Universal => {}
+            _ => panic!("Expected universal selector"),
+        }
+    }
+
+    #[test]
+    fn test_parse_padding_values() {
+        let css = ".box { padding: 10px 20px; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Shorthand(parts) => assert_eq!(parts.len(), 2),
+            _ => panic!("Expected shorthand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_margin_auto() {
+        let css = ".box { margin: auto; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Auto => {}
+            _ => panic!("Expected auto value"),
+        }
+    }
+
+    #[test]
+    fn test_parse_position() {
+        let css = ".box { position: absolute; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Keyword(k) => assert_eq!(k, "absolute"),
+            _ => panic!("Expected keyword value"),
+        }
+    }
+
+    #[test]
+    fn test_parse_width_height() {
+        let css = ".box { width: 100px; height: 50vh; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules[0].properties.len(), 2);
+        assert_eq!(
+            rules[0].properties[0].value,
+            CssValue::Length(100.0, LengthUnit::Px)
+        );
+        assert_eq!(
+            rules[0].properties[1].value,
+            CssValue::Length(50.0, LengthUnit::Vh)
+        );
+    }
+
+    #[test]
+    fn test_parse_gap() {
+        let css = ".grid { gap: 16px; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules[0].properties[0].name, "gap");
+    }
+
+    #[test]
+    fn test_parse_color_hex() {
+        let css = ".box { color: #ff0000; }";
         let rules = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
@@ -374,5 +642,169 @@ mod tests {
             }
             _ => panic!("Expected color"),
         }
+    }
+
+    #[test]
+    fn test_parse_color_named() {
+        let css = ".box { color: red; background-color: blue; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules[0].properties.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_important() {
+        let css = ".box { color: red !important; }";
+        let rules = parse_css(css).unwrap();
+        assert!(rules[0].properties[0].important);
+    }
+
+    #[test]
+    fn test_parse_multiple_rules() {
+        let css = ".a { color: red; } .b { color: blue; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_comment() {
+        let css = "/* comment */ .a { color: red; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_child_selector() {
+        let css = "div > span { color: red; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Child(parts) => assert_eq!(parts.len(), 2),
+            _ => panic!("Expected child selector"),
+        }
+    }
+
+    #[test]
+    fn test_parse_list_selector() {
+        let css = ".a, .b { color: red; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::List(parts) => assert_eq!(parts.len(), 2),
+            _ => panic!("Expected list selector"),
+        }
+    }
+
+    #[test]
+    fn test_parse_media_query() {
+        let css = "@media (max-width: 768px) { .a { color: red; } }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].media_query.is_some());
+    }
+
+    // --- Real-world CSS patterns ---
+
+    #[test]
+    fn test_tailwind_like_utilities() {
+        let css = ".flex { display: flex; } .p-4 { padding: 16px; } .m-auto { margin: auto; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 3);
+    }
+
+    #[test]
+    fn test_nested_selectors() {
+        let css = ".card .title { font-size: 24px; } .nav > a { color: blue; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn test_complex_properties() {
+        let css = r#"
+            .box {
+                background-color: #ff0000;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                transition: all 0.3s ease;
+            }
+        "#;
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        // Only known properties are converted to Taffy
+    }
+
+    #[test]
+    fn test_font_properties() {
+        let css = r#"
+            .text {
+                font-size: 16px;
+                font-weight: bold;
+                line-height: 1.5;
+                letter-spacing: 0.5px;
+                text-align: center;
+                text-decoration: underline;
+                color: #333;
+            }
+        "#;
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].properties.len(), 7);
+    }
+
+    #[test]
+    fn test_pseudo_class_fallback() {
+        // :hover, :focus, :active etc. — stored as keyword, Taffy ignores
+        let css = ".btn:hover { background: blue; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn test_attribute_selector_fallback() {
+        // [type="text"] — stored as keyword, Taffy ignores
+        let css = r#"input[type="text"] { border: 1px solid; }"#;
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn test_keyframes_not_supported() {
+        let css = r#"
+            @keyframes slide {
+                from { transform: translateX(0); }
+                to { transform: translateX(100px); }
+            }
+        "#;
+        let result = parse_css(css);
+        // @keyframes inner rules fail because they use from/to, not selectors
+        assert!(result.is_err() || result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_calc_fallback_to_keyword() {
+        let css = ".box { width: calc(100% - 20px); }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        // calc() stored as keyword — Taffy ignores it
+    }
+
+    #[test]
+    fn test_gradient_fallback_to_keyword() {
+        let css = ".bg { background: linear-gradient(red, blue); }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        // gradient stored as keyword — Taffy ignores it
+    }
+
+    #[test]
+    fn test_shorthand_all_sides() {
+        let css = ".a { padding: 10px; } .b { padding: 10px 20px; } .c { padding: 10px 20px 30px; } .d { padding: 10px 20px 30px 40px; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 4);
+    }
+
+    #[test]
+    fn test_percent_values() {
+        let css = ".w { width: 50%; } .h { height: 100vh; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 2);
     }
 }

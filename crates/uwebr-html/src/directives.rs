@@ -1,4 +1,4 @@
-use crate::ast::*;
+use crate::ast::{HtmlNode, HtmlEach, HtmlIf};
 
 /// Post-process HTML AST to expand template directives in text nodes
 /// Handles: {expression}, {#each}, {#if}, {@html}
@@ -21,11 +21,121 @@ pub fn expand_directives(node: &mut HtmlNode) {
 }
 
 fn expand_children(children: &mut Vec<HtmlNode>) {
+    // First pass: reassemble split block directives
+    reassemble_block_directives(children);
+    
+    // Second pass: expand directives in each child
     let mut i = 0;
     while i < children.len() {
         expand_directives(&mut children[i]);
         i += 1;
     }
+}
+
+/// Reassemble block directives that were split by html5ever into multiple text nodes
+/// e.g., [Text("{#each items as item}"), Element(li), Text("{/each}")] → [EachLoop]
+fn reassemble_block_directives(children: &mut Vec<HtmlNode>) {
+    let mut i = 0;
+    while i < children.len() {
+        if let HtmlNode::Text(text) = &children[i] {
+            let trimmed = text.trim();
+            
+            // Check for {#each ...} opening tag
+            if trimmed.starts_with("{#each ") {
+                // Look for matching {/each} in subsequent siblings
+                let mut end_idx = None;
+                for j in (i + 1)..children.len() {
+                    if let HtmlNode::Text(t) = &children[j] {
+                        if t.trim() == "{/each}" {
+                            end_idx = Some(j);
+                            break;
+                        }
+                    }
+                }
+                
+                if let Some(end) = end_idx {
+                    // Collect all children between {#each} and {/each}
+                    let mut body_children: Vec<HtmlNode> = Vec::new();
+                    for k in (i + 1)..end {
+                        body_children.push(children[k].clone());
+                    }
+                    
+                    // Parse the opening tag
+                    if let Some(each_node) = parse_each_with_body(trimmed, body_children) {
+                        // Replace the range with the assembled directive
+                        children.drain(i..=end);
+                        children.insert(i, each_node);
+                        continue;
+                    }
+                }
+            }
+            
+            // Check for {#if ...} opening tag
+            if trimmed.starts_with("{#if ") {
+                // Look for matching {/if} in subsequent siblings
+                let mut end_idx = None;
+                for j in (i + 1)..children.len() {
+                    if let HtmlNode::Text(t) = &children[j] {
+                        if t.trim() == "{/if}" {
+                            end_idx = Some(j);
+                            break;
+                        }
+                    }
+                }
+                
+                if let Some(end) = end_idx {
+                    // Collect all children between {#if} and {/if}
+                    let mut body_children: Vec<HtmlNode> = Vec::new();
+                    for k in (i + 1)..end {
+                        body_children.push(children[k].clone());
+                    }
+                    
+                    // Parse the opening tag and assemble
+                    if let Some(if_node) = parse_if_with_body(trimmed, body_children) {
+                        // Replace the range with the assembled directive
+                        children.drain(i..=end);
+                        children.insert(i, if_node);
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Parse {#each ...} with pre-collected body children
+fn parse_each_with_body(text: &str, body_children: Vec<HtmlNode>) -> Option<HtmlNode> {
+    let rest = text.strip_prefix("{#each ")?;
+    let (iterable, rest) = split_at_word(rest, "as")?;
+    let (item_name, _) = split_at_brace(rest)?;
+    
+    Some(HtmlNode::EachLoop(HtmlEach {
+        iterable: iterable.trim().to_string(),
+        item_name: item_name.trim().to_string(),
+        index_name: None,
+        body: if body_children.is_empty() {
+            vec![HtmlNode::Text(String::new())]
+        } else {
+            body_children
+        },
+    }))
+}
+
+/// Parse {#if ...} with pre-collected body children
+fn parse_if_with_body(text: &str, body_children: Vec<HtmlNode>) -> Option<HtmlNode> {
+    let rest = text.strip_prefix("{#if ")?;
+    let (condition, _) = split_at_brace(rest)?;
+    
+    Some(HtmlNode::IfBlock(HtmlIf {
+        condition: condition.trim().to_string(),
+        then_body: if body_children.is_empty() {
+            vec![HtmlNode::Text(String::new())]
+        } else {
+            body_children
+        },
+        else_body: None,
+    }))
 }
 
 /// Parse a text string that may contain template directives

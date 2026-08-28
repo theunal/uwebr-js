@@ -8,7 +8,6 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
-lightningcss = "1.0.0-alpha.72"
 taffy.workspace = true
 serde.workspace = true
 

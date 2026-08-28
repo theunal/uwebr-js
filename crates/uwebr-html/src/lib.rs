@@ -1,12 +1,14 @@
 pub mod ast;
-pub mod parser;
 pub mod codegen;
 pub mod directives;
+pub mod parser;
 
-pub use ast::{HtmlNode, HtmlElement, HtmlAttribute, HtmlAttributeValue, HtmlComponent, HtmlEach, HtmlIf};
-pub use parser::{parse_html, parse_fragment};
+pub use ast::{
+    HtmlAttribute, HtmlAttributeValue, HtmlComponent, HtmlEach, HtmlElement, HtmlIf, HtmlNode,
+};
 pub use codegen::generate_rsx;
 pub use directives::expand_directives;
+pub use parser::{parse_fragment, parse_html};
 
 /// Parse HTML and expand template directives
 pub fn parse_html_with_directives(html: &str) -> Result<HtmlNode, anyhow::Error> {

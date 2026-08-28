@@ -1,4 +1,3 @@
-use crate::event::AppEvent;
 use crate::window::Window;
 use anyhow::Result;
 

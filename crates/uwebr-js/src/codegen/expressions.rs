@@ -338,7 +338,7 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
             if method == "collect" && !args.is_empty() {
                 let mut has_spread = false;
                 for arg in args {
-                    if let RsExpr::MethodCall(inner, inner_method, _) = arg {
+                    if let RsExpr::MethodCall(_, inner_method, _) = arg {
                         if inner_method == "iter" {
                             has_spread = true;
                             break;
@@ -419,7 +419,9 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
                     generate_expression(codegen, obj);
                     codegen.write(".contains(");
                     for (i, arg) in args.iter().enumerate() {
-                        if i > 0 { codegen.write(", "); }
+                        if i > 0 {
+                            codegen.write(", ");
+                        }
                         generate_expression(codegen, arg);
                     }
                     codegen.write(")");
@@ -438,7 +440,9 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
                     generate_expression(codegen, obj);
                     codegen.write(".replace(");
                     for (i, arg) in args.iter().enumerate() {
-                        if i > 0 { codegen.write(", "); }
+                        if i > 0 {
+                            codegen.write(", ");
+                        }
                         generate_expression(codegen, arg);
                     }
                     codegen.write(")");
@@ -493,7 +497,9 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
                     generate_expression(codegen, obj);
                     codegen.write(&format!(".{}(", method));
                     for (i, arg) in args.iter().enumerate() {
-                        if i > 0 { codegen.write(", "); }
+                        if i > 0 {
+                            codegen.write(", ");
+                        }
                         generate_expression(codegen, arg);
                     }
                     codegen.write(")");
@@ -511,32 +517,30 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
             }
             codegen.write(")");
         }
-        RsExpr::OptionalChain(inner) => {
-            match &**inner {
-                RsExpr::Member(obj, prop) => {
-                    generate_expression(codegen, obj);
-                    codegen.write(&format!(".as_ref().map(|v| &v.{})", js_name_to_rust(prop)));
-                }
-                RsExpr::Index(obj, key) => {
-                    generate_expression(codegen, obj);
-                    codegen.write(".as_ref().map(|v| &v[");
-                    generate_expression(codegen, key);
-                    codegen.write("])");
-                }
-                RsExpr::Call(callee, args) => {
-                    generate_expression(codegen, callee);
-                    codegen.write(".as_ref().map(|f| f(");
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            codegen.write(", ");
-                        }
-                        generate_expression(codegen, arg);
-                    }
-                    codegen.write("))");
-                }
-                _ => generate_expression(codegen, inner),
+        RsExpr::OptionalChain(inner) => match &**inner {
+            RsExpr::Member(obj, prop) => {
+                generate_expression(codegen, obj);
+                codegen.write(&format!(".as_ref().map(|v| &v.{})", js_name_to_rust(prop)));
             }
-        }
+            RsExpr::Index(obj, key) => {
+                generate_expression(codegen, obj);
+                codegen.write(".as_ref().map(|v| &v[");
+                generate_expression(codegen, key);
+                codegen.write("])");
+            }
+            RsExpr::Call(callee, args) => {
+                generate_expression(codegen, callee);
+                codegen.write(".as_ref().map(|f| f(");
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        codegen.write(", ");
+                    }
+                    generate_expression(codegen, arg);
+                }
+                codegen.write("))");
+            }
+            _ => generate_expression(codegen, inner),
+        },
         RsExpr::NullishCoalesce(left, right) => {
             generate_expression(codegen, left);
             codegen.write(".unwrap_or(");

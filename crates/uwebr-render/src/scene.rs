@@ -1,5 +1,3 @@
-use anyhow::Result;
-
 /// Scene graph for rendering
 pub struct Scene {
     nodes: Vec<SceneNode>,

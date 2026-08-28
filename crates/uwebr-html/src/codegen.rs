@@ -30,12 +30,7 @@ pub fn generate_rsx(node: &HtmlNode, indent: usize) -> String {
             if inner.is_empty() {
                 format!("{}rsx! {{}}", prefix)
             } else {
-                format!(
-                    "{}rsx! {{\n{}\n{}}}",
-                    prefix,
-                    inner.join("\n"),
-                    prefix
-                )
+                format!("{}rsx! {{\n{}\n{}}}", prefix, inner.join("\n"), prefix)
             }
         }
         HtmlNode::Comment(_) => String::new(),
@@ -112,9 +107,7 @@ fn generate_attribute(attr: &HtmlAttribute) -> String {
         HtmlAttributeValue::Expression(expr) => {
             format!("{}: {}", attr.name, expr)
         }
-        HtmlAttributeValue::Boolean(true) => {
-            attr.name.clone()
-        }
+        HtmlAttributeValue::Boolean(true) => attr.name.clone(),
         HtmlAttributeValue::Boolean(false) => {
             format!("{}: false", attr.name)
         }
@@ -163,7 +156,10 @@ fn generate_component(comp: &HtmlComponent, indent: usize) -> String {
 
 fn generate_each(each: &HtmlEach, indent: usize) -> String {
     let prefix = "    ".repeat(indent);
-    let mut output = format!("{}for {} in {}.iter() {{\n", prefix, each.item_name, each.iterable);
+    let mut output = format!(
+        "{}for {} in {}.iter() {{\n",
+        prefix, each.item_name, each.iterable
+    );
 
     for child in &each.body {
         let child_rsx = generate_rsx(child, indent + 1);
@@ -260,7 +256,10 @@ mod tests {
         let rsx = generate_rsx(&mut node, 0);
         eprintln!("Generated RSX:\n{}", rsx);
         assert!(rsx.contains("on:click"), "RSX should contain on:click");
-        assert!(rsx.contains("handle_click"), "RSX should contain handle_click");
+        assert!(
+            rsx.contains("handle_click"),
+            "RSX should contain handle_click"
+        );
     }
 
     #[test]

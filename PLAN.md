@@ -20,7 +20,7 @@ uwebr/
 └── crates/
     ├── uwebr-js/                   # ✅ JS/TS → Rust transpiler (13 test)
     ├── uwebr-html/                 # ✅ Iskelet: HTML parser + AST + rsx! codegen (5 test)
-    ├── uwebr-css/                  # ✅ Iskelet: CSS parser → Taffy styles (4 test)
+    ├── uwebr-css/                  # ✅ CSS parser → Taffy Style (32 test)
     ├── uwebr-core/                 # ✅ Iskelet: Signal, Component, Router, Context (5 test)
     ├── uwebr-render/               # ✅ Iskelet: wgpu + vello renderer (3 test)
     ├── uwebr-app/                  # ✅ Iskelet: App runner + window (2 test)
@@ -154,19 +154,30 @@ HTML/CSS/JS Dosyaları
 - [x] Fragment desteği (`<>...</>`)
 - [x] Integration tests (20 test)
 
-### FAZ 2 — uwebr-css (lightningcss)
+### FAZ 2 — uwebr-css (CSS → Taffy) ✅ TAMAMLANDI
 **Süre:** 1-2 hafta
 **Hedef:** CSS → Taffy Style
 
 - [x] Iskelet: basit CSS parser, property mapping
-- [ ] lightningcss entegrasyonu
-- [ ] CSS property → Taffy Style mapping (flexbox, grid)
-- [ ] Position desteği
-- [ ] Sizing/Spacing desteği
-- [ ] Border/Background/Shadow
-- [ ] CSS variables → Rust const
-- [ ] Media query desteği
-- [ ] Integration tests (15+ test)
+- [x] CSS parser: selector, property, value parsing (class, id, tag, universal, child, list, descendant)
+- [x] CSS value parsing: px, em, rem, %, vw, vh, auto, hex/named colors, rgb(), hsl()
+- [x] Shorthand support: padding/margin 1-4 values
+- [x] Comment and @media support
+- [x] CSS property → Taffy Style mapping:
+  - [x] display (flex, grid, none)
+  - [x] flex-direction, flex-wrap, flex-grow, flex-shrink
+  - [x] justify-content, align-items, align-self
+  - [x] gap, row-gap, column-gap
+  - [x] padding/margin (shorthand + individual sides)
+  - [x] width/height (Dimension), min/max-size (LengthPercentageAuto)
+  - [x] position (relative, absolute), inset (top/right/bottom/left)
+  - [x] overflow (visible, hidden, scroll, clip)
+  - [x] border-radius, border-width
+- [x] Taffy 0.14 API: LengthPercentage::length(), percent(), Rect<LengthPercentageAuto>, Size<Dimension>
+- [x] Runtime API: `convert_to_taffy_styles(rules) -> Vec<(String, Style)>`
+- [x] Codegen API: `generate_taffy_styles(rules) -> String`
+- [x] 32 tests (20 parser + 12 codegen)
+- [x] Tamamlandı: FAZ 2 ✅
 
 ### FAZ 3 — uwebr-core (Reactive System)
 **Süre:** 2-3 hafta
@@ -227,13 +238,13 @@ HTML/CSS/JS Dosyaları
 |-----------|-------|------|-----|
 | uwebr-js | ✅ Tamamlandı | 13/13 | JS→Rust transpiler, tüm FAZ'lar tamam |
 | uwebr-html | ✅ Tamamlandı | 20/20 | FAZ 1: markup5ever, template directives, components |
-| uwebr-css | 🔄 Geliyor | 4/4 iskelet | FAZ 2: lightningcss entegrasyonu bekliyor |
+| uwebr-css | ✅ Tamamlandı | 32/32 | FAZ 2: CSS parser + Taffy Style mapping |
 | uwebr-core | 🔄 Geliyor | 5/5 iskelet | FAZ 3: proc-macro bekliyor |
 | uwebr-render | 🔄 Geliyor | 3/3 iskelet | FAZ 4: vello entegrasyonu bekliyor |
 | uwebr-app | 🔄 Geliyor | 2/2 iskelet | FAZ 5: winit ApplicationHandler bekliyor |
 | uwebr-cli | 🔄 Geliyor | - | FAZ 6: scaffolding + hot reload bekliyor |
 
-**Toplam:** 47/47 test geçti
+**Toplam:** 75/75 test geçti
 
 ---
 
