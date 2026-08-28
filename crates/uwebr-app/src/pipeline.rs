@@ -2,12 +2,14 @@ use uwebr_core::component::{Element, NodeType, PropValue};
 use uwebr_render::layout::{LayoutEngine, PositionedNode};
 use uwebr_render::scene::{Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle};
 use uwebr_render::scene_builder::SceneBuilder;
+use uwebr_render::stylebook::StyleBook;
 use vello::peniko;
 
 /// Full render pipeline: Element → Layout → Scene → vello Scene
 pub struct RenderPipeline {
     layout_engine: LayoutEngine,
     render_scene: RenderScene,
+    stylebook: StyleBook,
 }
 
 impl RenderPipeline {
@@ -15,7 +17,22 @@ impl RenderPipeline {
         Self {
             layout_engine: LayoutEngine::new(),
             render_scene: RenderScene::new(),
+            stylebook: StyleBook::empty(),
         }
+    }
+
+    /// Load CSS rules into the pipeline
+    pub fn with_css(mut self, css: &str) -> Self {
+        if let Ok(sb) = StyleBook::parse(css) {
+            self.stylebook = sb;
+        }
+        self
+    }
+
+    /// Set the stylebook directly
+    pub fn with_stylebook(mut self, stylebook: StyleBook) -> Self {
+        self.stylebook = stylebook;
+        self
     }
 
     /// Full pipeline: Element → positioned nodes → RenderScene → vello Scene
@@ -23,7 +40,7 @@ impl RenderPipeline {
         self.layout_engine.reset();
         self.render_scene.clear();
 
-        let root = match self.layout_engine.build_tree(element) {
+        let root = match self.layout_engine.build_tree(element, &self.stylebook) {
             Ok(r) => r,
             Err(_) => return vello::Scene::new(),
         };
@@ -340,5 +357,88 @@ mod tests {
     fn test_parse_simple_color_unknown() {
         let c = parse_simple_color("mauve");
         assert_eq!(c, peniko::color::palette::css::WHITE);
+    }
+
+    // ── CSS integration tests ─────────────────────────────────
+
+    #[test]
+    fn test_pipeline_with_css_tag() {
+        let mut pipeline = RenderPipeline::new().with_css("div { width: 300px; height: 150px; }");
+        let el = make_div(vec![]);
+        let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    #[test]
+    fn test_pipeline_with_css_class() {
+        let mut pipeline = RenderPipeline::new().with_css(".box { width: 200px; height: 100px; }");
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("box".into()))],
+            vec![],
+        );
+        let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    #[test]
+    fn test_pipeline_with_css_id() {
+        let mut pipeline = RenderPipeline::new().with_css("#main { width: 400px; height: 300px; }");
+        let el = make_div_with_props(
+            vec![("id".into(), PropValue::String("main".into()))],
+            vec![],
+        );
+        let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    #[test]
+    fn test_pipeline_css_override_tag_default() {
+        let mut pipeline = RenderPipeline::new().with_css("div { display: flex; flex-direction: row; }");
+        let inner = make_div(vec![make_text("Child")]);
+        let el = make_div(vec![inner]);
+        let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    #[test]
+    fn test_pipeline_css_empty_string() {
+        let mut pipeline = RenderPipeline::new().with_css("");
+        let el = make_div(vec![]);
+        let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    #[test]
+    fn test_pipeline_css_invalid() {
+        let mut pipeline = RenderPipeline::new().with_css("invalid { {{ {");
+        let el = make_div(vec![]);
+        let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    #[test]
+    fn test_pipeline_with_stylebook() {
+        let sb = StyleBook::parse(".flex { display: flex; }").unwrap();
+        let mut pipeline = RenderPipeline::new().with_stylebook(sb);
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("flex".into()))],
+            vec![make_text("Styled")],
+        );
+        let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    #[test]
+    fn test_pipeline_css_multiple_rules() {
+        let css = ".header { width: 100%; height: 60px; } .content { padding: 16px; } .footer { height: 40px; }";
+        let mut pipeline = RenderPipeline::new().with_css(css);
+        let el = make_div(vec![
+            make_div_with_props(
+                vec![("class".into(), PropValue::String("header".into()))],
+                vec![make_text("Header")],
+            ),
+            make_div_with_props(
+                vec![("class".into(), PropValue::String("content".into()))],
+                vec![make_text("Content")],
+            ),
+            make_div_with_props(
+                vec![("class".into(), PropValue::String("footer".into()))],
+                vec![make_text("Footer")],
+            ),
+        ]);
+        let _scene = pipeline.render(&el, 800, 600);
     }
 }

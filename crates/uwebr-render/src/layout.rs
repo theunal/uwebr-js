@@ -2,6 +2,7 @@ use taffy::prelude::*;
 use uwebr_core::component::{Element, NodeType};
 
 use crate::scene::LayoutInfo;
+use crate::stylebook::StyleBook;
 
 /// Layout engine using taffy 0.14
 pub struct LayoutEngine {
@@ -25,12 +26,12 @@ impl LayoutEngine {
     }
 
     /// Convert Element tree to TaffyTree, returns root NodeId
-    pub fn build_tree(&mut self, root: &Element) -> anyhow::Result<taffy::NodeId> {
-        self.build_node(root)
+    pub fn build_tree(&mut self, root: &Element, stylebook: &StyleBook) -> anyhow::Result<taffy::NodeId> {
+        self.build_node(root, stylebook)
     }
 
-    fn build_node(&mut self, element: &Element) -> anyhow::Result<taffy::NodeId> {
-        let style = self.element_to_style(element);
+    fn build_node(&mut self, element: &Element, stylebook: &StyleBook) -> anyhow::Result<taffy::NodeId> {
+        let style = self.element_to_style(element, stylebook);
 
         match &element.node_type {
             NodeType::Text(_content) => {
@@ -41,7 +42,7 @@ impl LayoutEngine {
                 let child_ids: Vec<taffy::NodeId> = element
                     .children
                     .iter()
-                    .map(|child| self.build_node(child))
+                    .map(|child| self.build_node(child, stylebook))
                     .collect::<anyhow::Result<_>>()?;
 
                 let node = self.taffy.new_with_children(style, &child_ids)?;
@@ -55,38 +56,42 @@ impl LayoutEngine {
     }
 
     /// Convert an Element's attributes to a taffy Style
-    fn element_to_style(&self, element: &Element) -> Style {
-        let mut style = Style::default();
+    fn element_to_style(&self, element: &Element, stylebook: &StyleBook) -> Style {
+        // Start with CSS-matched styles (tag < class < id priority)
+        let (mut style, matched) = stylebook.match_element(element);
 
-        match &element.node_type {
-            NodeType::Element(tag) => match tag.as_str() {
-                "div" | "section" | "main" | "article" | "aside" | "header" | "footer" | "nav" => {
+        // If no CSS rule matched, fall back to default tag display
+        if !matched {
+            match &element.node_type {
+                NodeType::Element(tag) => match tag.as_str() {
+                    "div" | "section" | "main" | "article" | "aside" | "header" | "footer" | "nav" => {
+                        style.display = Display::Flex;
+                        style.flex_direction = FlexDirection::Column;
+                    }
+                    "span" | "a" | "strong" | "em" | "b" | "i" | "code" => {
+                        style.display = Display::Flex;
+                    }
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                        style.display = Display::Flex;
+                        style.flex_direction = FlexDirection::Column;
+                    }
+                    "p" => {
+                        style.display = Display::Flex;
+                        style.flex_direction = FlexDirection::Column;
+                    }
+                    _ => {
+                        style.display = Display::Flex;
+                    }
+                },
+                NodeType::Text(_) => {
+                    style.display = Display::Flex;
+                }
+                NodeType::Component(_) => {
                     style.display = Display::Flex;
                     style.flex_direction = FlexDirection::Column;
                 }
-                "span" | "a" | "strong" | "em" | "b" | "i" | "code" => {
-                    style.display = Display::Flex;
-                }
-                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                    style.display = Display::Flex;
-                    style.flex_direction = FlexDirection::Column;
-                }
-                "p" => {
-                    style.display = Display::Flex;
-                    style.flex_direction = FlexDirection::Column;
-                }
-                _ => {
-                    style.display = Display::Flex;
-                }
-            },
-            NodeType::Text(_) => {
-                style.display = Display::Flex;
+                NodeType::Raw(_) => {}
             }
-            NodeType::Component(_) => {
-                style.display = Display::Flex;
-                style.flex_direction = FlexDirection::Column;
-            }
-            NodeType::Raw(_) => {}
         }
 
         // Apply inline style properties
@@ -278,7 +283,7 @@ mod tests {
     fn test_build_simple_tree() {
         let mut engine = LayoutEngine::new();
         let el = make_div_element(vec![make_text_element("Hello")]);
-        let root = engine.build_tree(&el).unwrap();
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
         assert!(engine.taffy.layout(root).is_ok());
     }
 
@@ -287,7 +292,7 @@ mod tests {
         let mut engine = LayoutEngine::new();
         let child = make_div_element(vec![make_text_element("Child")]);
         let root = make_div_element(vec![child]);
-        let root_id = engine.build_tree(&root).unwrap();
+        let root_id = engine.build_tree(&root, &StyleBook::empty()).unwrap();
 
         let children = engine.taffy.children(root_id).unwrap();
         assert_eq!(children.len(), 1);
@@ -297,7 +302,7 @@ mod tests {
     fn test_compute_layout() {
         let mut engine = LayoutEngine::new();
         let el = make_div_element(vec![]);
-        let root = engine.build_tree(&el).unwrap();
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
         engine.compute(root, 800.0, 600.0).unwrap();
 
         let info = engine.get_layout_info(root).unwrap();
@@ -311,7 +316,7 @@ mod tests {
         let mut engine = LayoutEngine::new();
         let child = make_text_element("Hi");
         let parent = make_div_element(vec![child.clone()]);
-        let root = engine.build_tree(&parent).unwrap();
+        let root = engine.build_tree(&parent, &StyleBook::empty()).unwrap();
         engine.compute(root, 800.0, 600.0).unwrap();
 
         let nodes = engine.collect_positioned_nodes(root, &parent);
@@ -336,7 +341,7 @@ mod tests {
             ],
             children: vec![],
         };
-        let root = engine.build_tree(&el).unwrap();
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
         engine.compute(root, 800.0, 600.0).unwrap();
 
         let info = engine.get_layout_info(root).unwrap();
@@ -349,7 +354,7 @@ mod tests {
         let mut engine = LayoutEngine::new();
         let child = make_div_element(vec![]);
         let parent = make_div_element(vec![child]);
-        let root = engine.build_tree(&parent).unwrap();
+        let root = engine.build_tree(&parent, &StyleBook::empty()).unwrap();
         engine.compute(root, 800.0, 600.0).unwrap();
 
         let layout = engine.taffy.layout(root).unwrap();
@@ -361,11 +366,11 @@ mod tests {
     fn test_reset() {
         let mut engine = LayoutEngine::new();
         let el = make_div_element(vec![]);
-        let root = engine.build_tree(&el).unwrap();
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
         engine.compute(root, 800.0, 600.0).unwrap();
 
         engine.reset();
-        let root2 = engine.build_tree(&el).unwrap();
+        let root2 = engine.build_tree(&el, &StyleBook::empty()).unwrap();
         engine.compute(root2, 800.0, 600.0).unwrap();
     }
 }
