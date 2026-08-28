@@ -8,7 +8,7 @@ pub type EffectId = u64;
 // ── Global Reactive Runtime ────────────────────────────────────────────
 
 thread_local! {
-    static CURRENT_EFFECT: Cell<Option<EffectId>> = Cell::new(None);
+    static CURRENT_EFFECT: Cell<Option<EffectId>> = const { Cell::new(None) };
     static SIGNAL_COUNTER: Cell<u64> = const { Cell::new(0) };
     /// Effect closures: separate from tracking state to avoid re-entrant borrow
     static EFFECTS: RefCell<HashMap<EffectId, EffectState>> = RefCell::new(HashMap::new());
@@ -19,6 +19,28 @@ thread_local! {
     /// Dirty effects pending flush
     static DIRTY: RefCell<HashSet<EffectId>> = RefCell::new(HashSet::new());
     static NEXT_EFFECT_ID: Cell<u64> = const { Cell::new(1) };
+    /// Set whenever any signal is written. The event loop reads this to decide
+    /// whether a repaint is needed — without it, state changes never reach the
+    /// screen because only timers requested redraws.
+    static RENDER_DIRTY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Flag the UI as needing a repaint.
+///
+/// Called automatically on every signal write; also available for code that
+/// mutates state outside the signal system.
+pub fn mark_render_dirty() {
+    RENDER_DIRTY.with(|d| d.set(true));
+}
+
+/// Whether a repaint is pending (does not clear the flag).
+pub fn is_render_dirty() -> bool {
+    RENDER_DIRTY.with(|d| d.get())
+}
+
+/// Read and clear the repaint flag.
+pub fn take_render_dirty() -> bool {
+    RENDER_DIRTY.with(|d| d.replace(false))
 }
 
 struct EffectState {
@@ -141,6 +163,18 @@ impl<T: Clone + 'static> Signal<T> {
     pub fn id(&self) -> SignalId {
         self.id
     }
+
+    /// Create a writer for this signal.
+    ///
+    /// Needed by the keyed script-state store (see [`crate::state`]), which
+    /// caches only the reader and must hand out a matching setter on later
+    /// lookups.
+    pub fn setter(&self) -> SignalSetter<T> {
+        SignalSetter {
+            id: self.id,
+            value: self.value.clone(),
+        }
+    }
 }
 
 impl<T: Clone + 'static> Clone for Signal<T> {
@@ -163,6 +197,7 @@ impl<T: Clone + 'static> SignalSetter<T> {
     pub fn set(&self, value: T) {
         *self.value.borrow_mut() = value;
         mark_dirty(self.id);
+        mark_render_dirty();
         flush_effects();
     }
 
@@ -172,6 +207,7 @@ impl<T: Clone + 'static> SignalSetter<T> {
     {
         f(&mut self.value.borrow_mut());
         mark_dirty(self.id);
+        mark_render_dirty();
         flush_effects();
     }
 
@@ -315,7 +351,7 @@ pub fn use_signal<T: Clone + 'static>(initial: T) -> (Signal<T>, SignalSetter<T>
     let key = TypeId::of::<Signal<T>>();
 
     // Reuse existing signal if component already created one
-    if let Some(existing) = get_hook_state::<Signal<T>>(key.clone()) {
+    if let Some(existing) = get_hook_state::<Signal<T>>(key) {
         let setter = SignalSetter {
             id: existing.id,
             value: existing.value.clone(),
@@ -332,7 +368,7 @@ pub fn use_signal<T: Clone + 'static>(initial: T) -> (Signal<T>, SignalSetter<T>
 pub fn use_memo<T: Clone + 'static + PartialEq, F: FnMut() -> T + 'static>(compute: F) -> Memo<T> {
     let key = TypeId::of::<Memo<T>>();
 
-    if let Some(existing) = get_hook_state::<Memo<T>>(key.clone()) {
+    if let Some(existing) = get_hook_state::<Memo<T>>(key) {
         return existing;
     }
 
@@ -500,5 +536,55 @@ mod tests {
             set_count.set(5);
             assert_eq!(memo.get(), 10);
         });
+    }
+
+    // ── Render dirty flag (M6) ──────────────────────────────────
+
+    #[test]
+    fn test_signal_set_marks_render_dirty() {
+        // Without this the event loop never repaints on state change: only
+        // pending timers triggered request_redraw.
+        take_render_dirty();
+        let (_count, set_count) = create_signal(0);
+        assert!(!is_render_dirty());
+        set_count.set(1);
+        assert!(is_render_dirty());
+    }
+
+    #[test]
+    fn test_signal_update_marks_render_dirty() {
+        take_render_dirty();
+        let (_count, set_count) = create_signal(0);
+        set_count.update(|c| *c += 1);
+        assert!(is_render_dirty());
+    }
+
+    #[test]
+    fn test_take_render_dirty_clears_flag() {
+        take_render_dirty();
+        let (_c, set_c) = create_signal(0);
+        set_c.set(9);
+        assert!(take_render_dirty());
+        assert!(
+            !take_render_dirty(),
+            "flag must clear so we do not repaint forever"
+        );
+    }
+
+    #[test]
+    fn test_reading_signal_does_not_mark_dirty() {
+        let (count, set_count) = create_signal(7);
+        set_count.set(8);
+        take_render_dirty();
+        let _ = count.get();
+        assert!(!is_render_dirty(), "reads must not schedule repaints");
+    }
+
+    #[test]
+    fn test_mark_render_dirty_manual() {
+        take_render_dirty();
+        mark_render_dirty();
+        assert!(is_render_dirty());
+        take_render_dirty();
     }
 }

@@ -165,6 +165,50 @@ impl Default for EventDispatcher {
     }
 }
 
+// ── Named action registry ──────────────────────────────────────────────
+
+use std::cell::RefCell;
+
+thread_local! {
+    /// Handlers registered by name, e.g. `on:click={increment}` → "increment".
+    ///
+    /// Component functions re-register their handlers on every render, so the
+    /// map is keyed by the handler's source name rather than by node identity —
+    /// node ids are not stable across re-renders.
+    static ACTIONS: RefCell<HashMap<String, Rc<dyn Fn()>>> = RefCell::new(HashMap::new());
+}
+
+/// Register (or replace) a named action handler.
+pub fn register_action(name: &str, handler: impl Fn() + 'static) {
+    ACTIONS.with(|a| {
+        a.borrow_mut().insert(name.to_string(), Rc::new(handler));
+    });
+}
+
+/// Invoke a named action. Returns false when no handler is registered.
+pub fn dispatch_action(name: &str) -> bool {
+    // Clone the Rc out before calling so a handler may re-register itself
+    // without a re-entrant borrow panic.
+    let handler = ACTIONS.with(|a| a.borrow().get(name).cloned());
+    match handler {
+        Some(h) => {
+            h();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether a handler is registered under this name.
+pub fn has_action(name: &str) -> bool {
+    ACTIONS.with(|a| a.borrow().contains_key(name))
+}
+
+/// Remove all registered actions.
+pub fn clear_actions() {
+    ACTIONS.with(|a| a.borrow_mut().clear());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +328,67 @@ mod tests {
         assert!(!mods.ctrl);
         assert!(mods.alt);
         assert!(!mods.meta);
+    }
+
+    // ── Named actions (M6) ──────────────────────────────────────
+
+    #[test]
+    fn test_register_and_dispatch_action() {
+        clear_actions();
+        let hits = Rc::new(Cell::new(0));
+        let hits_clone = hits.clone();
+        register_action("increment", move || {
+            hits_clone.set(hits_clone.get() + 1);
+        });
+
+        assert!(dispatch_action("increment"));
+        assert_eq!(hits.get(), 1);
+    }
+
+    #[test]
+    fn test_dispatch_unknown_action_returns_false() {
+        clear_actions();
+        assert!(!dispatch_action("nope"));
+    }
+
+    #[test]
+    fn test_reregistering_replaces_handler() {
+        // Components re-register on every render; the newest closure must win
+        // rather than accumulating duplicates.
+        clear_actions();
+        let count = Rc::new(Cell::new(0));
+
+        let c1 = count.clone();
+        register_action("a", move || c1.set(c1.get() + 1));
+        let c2 = count.clone();
+        register_action("a", move || c2.set(c2.get() + 10));
+
+        dispatch_action("a");
+        assert_eq!(count.get(), 10);
+    }
+
+    #[test]
+    fn test_has_action() {
+        clear_actions();
+        assert!(!has_action("x"));
+        register_action("x", || {});
+        assert!(has_action("x"));
+    }
+
+    #[test]
+    fn test_handler_can_reregister_itself() {
+        // Guards against a re-entrant RefCell borrow panic.
+        clear_actions();
+        register_action("self_reg", || {
+            register_action("self_reg", || {});
+        });
+        assert!(dispatch_action("self_reg"));
+    }
+
+    #[test]
+    fn test_clear_actions() {
+        register_action("y", || {});
+        clear_actions();
+        assert!(!has_action("y"));
     }
 }

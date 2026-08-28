@@ -6,6 +6,7 @@ pub mod lifecycle;
 pub mod prelude;
 pub mod router;
 pub mod signal;
+pub mod state;
 pub mod timer;
 
 pub use prelude::*;
