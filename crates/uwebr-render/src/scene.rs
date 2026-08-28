@@ -91,6 +91,8 @@ pub enum RenderNodeKind {
         content: String,
         font_size: f32,
         color: peniko::Color,
+        /// CSS `font-family` list, passed through to parley.
+        font_family: Option<String>,
     },
     Image {
         data: Vec<u8>,
@@ -143,12 +145,24 @@ impl RenderNode {
         font_size: f32,
         color: peniko::Color,
     ) -> Self {
+        Self::text_with_family(id, layout, content, font_size, color, None)
+    }
+
+    pub fn text_with_family(
+        id: u64,
+        layout: LayoutInfo,
+        content: &str,
+        font_size: f32,
+        color: peniko::Color,
+        font_family: Option<String>,
+    ) -> Self {
         Self {
             id,
             kind: RenderNodeKind::Text {
                 content: content.to_string(),
                 font_size,
                 color,
+                font_family,
             },
             layout,
             style: RenderStyle::default(),
@@ -279,9 +293,29 @@ mod tests {
                 content,
                 font_size,
                 color: _,
+                font_family,
             } => {
                 assert_eq!(content, "Hello");
                 assert_eq!(*font_size, 16.0);
+                assert!(font_family.is_none());
+            }
+            _ => panic!("Expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_render_node_text_with_family() {
+        let node = RenderNode::text_with_family(
+            3,
+            LayoutInfo::new(0.0, 0.0, 100.0, 20.0),
+            "Hi",
+            14.0,
+            palette::css::WHITE,
+            Some("monospace".to_string()),
+        );
+        match &node.kind {
+            RenderNodeKind::Text { font_family, .. } => {
+                assert_eq!(font_family.as_deref(), Some("monospace"));
             }
             _ => panic!("Expected Text"),
         }

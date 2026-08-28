@@ -8,8 +8,9 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
-winit.workspace = true
-wgpu.workspace = true
+# No wgpu/winit here: this crate builds scenes only. GPU device/surface work
+# lives in uwebr-app. Depending on wgpu 30 here also pulled in a second wgpu
+# alongside the 29 that vello 0.10 requires.
 vello.workspace = true
 taffy.workspace = true
 parley.workspace = true

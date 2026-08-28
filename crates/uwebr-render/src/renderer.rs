@@ -4,12 +4,16 @@ use vello::peniko::color::palette;
 use crate::scene::RenderScene;
 use crate::scene_builder::SceneBuilder;
 
-/// GPU Renderer using wgpu + vello
+/// Scene assembler: owns a [`RenderScene`] and turns it into a `vello::Scene`.
+///
+/// Note: this type holds no GPU state. wgpu device/surface handling lives in
+/// `uwebr-app::GpuContext`.
 pub struct Renderer {
     width: u32,
     height: u32,
     scene: RenderScene,
     needs_redraw: bool,
+    builder: SceneBuilder,
 }
 
 impl Renderer {
@@ -20,6 +24,7 @@ impl Renderer {
             height,
             scene: RenderScene::new(),
             needs_redraw: true,
+            builder: SceneBuilder::new(),
         }
     }
 
@@ -52,8 +57,9 @@ impl Renderer {
     }
 
     /// Build a vello scene from the current render scene
-    pub fn build_vello_scene(&self) -> vello::Scene {
-        SceneBuilder::build_scene(&self.scene, self.width, self.height)
+    pub fn build_vello_scene(&mut self) -> vello::Scene {
+        let (w, h) = (self.width, self.height);
+        self.builder.build(&self.scene, w, h)
     }
 
     /// Render a frame (builds vello scene — GPU submission handled by caller)
