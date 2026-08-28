@@ -70,7 +70,11 @@ impl TimerRegistry {
     }
 
     /// Schedule a timeout
-    pub fn set_timeout(&self, callback: impl Fn() + Send + Sync + 'static, delay: Duration) -> TimerHandle {
+    pub fn set_timeout(
+        &self,
+        callback: impl Fn() + Send + Sync + 'static,
+        delay: Duration,
+    ) -> TimerHandle {
         let handle = self.next_handle();
         let entry = TimerEntry {
             handle,
@@ -85,7 +89,11 @@ impl TimerRegistry {
     }
 
     /// Schedule an interval
-    pub fn set_interval(&self, callback: impl Fn() + Send + Sync + 'static, interval: Duration) -> TimerHandle {
+    pub fn set_interval(
+        &self,
+        callback: impl Fn() + Send + Sync + 'static,
+        interval: Duration,
+    ) -> TimerHandle {
         let handle = self.next_handle();
         let entry = TimerEntry {
             handle,
@@ -108,7 +116,10 @@ impl TimerRegistry {
     }
 
     /// Register an animation frame callback
-    pub fn request_animation_frame(&self, callback: impl Fn() + Send + Sync + 'static) -> TimerHandle {
+    pub fn request_animation_frame(
+        &self,
+        callback: impl Fn() + Send + Sync + 'static,
+    ) -> TimerHandle {
         let handle = self.next_handle();
         let mut inner = self.inner.lock().unwrap();
         inner.animation_frames.push((handle, Arc::new(callback)));
@@ -176,7 +187,11 @@ impl TimerRegistry {
     /// Fire all animation frame callbacks
     pub fn fire_animation_frames(&self) {
         let inner = self.inner.lock().unwrap();
-        let frames: Vec<_> = inner.animation_frames.iter().map(|(_, cb)| cb.clone()).collect();
+        let frames: Vec<_> = inner
+            .animation_frames
+            .iter()
+            .map(|(_, cb)| cb.clone())
+            .collect();
         drop(inner);
 
         for cb in frames {
@@ -219,7 +234,10 @@ pub fn set_timeout(callback: impl Fn() + Send + Sync + 'static, delay: Duration)
 }
 
 /// Schedule an interval (global)
-pub fn set_interval(callback: impl Fn() + Send + Sync + 'static, interval: Duration) -> TimerHandle {
+pub fn set_interval(
+    callback: impl Fn() + Send + Sync + 'static,
+    interval: Duration,
+) -> TimerHandle {
     global_registry().set_interval(callback, interval)
 }
 
@@ -295,9 +313,12 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = counter.clone();
 
-        let _h = r.set_timeout(move || {
-            counter_clone.fetch_add(1, Ordering::SeqCst);
-        }, Duration::from_millis(0)); // Fire immediately
+        let _h = r.set_timeout(
+            move || {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            },
+            Duration::from_millis(0),
+        ); // Fire immediately
 
         r.tick();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -311,9 +332,12 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = counter.clone();
 
-        let _h = r.set_interval(move || {
-            counter_clone.fetch_add(1, Ordering::SeqCst);
-        }, Duration::from_millis(0));
+        let _h = r.set_interval(
+            move || {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+            },
+            Duration::from_millis(0),
+        );
 
         r.tick();
         assert_eq!(counter.load(Ordering::SeqCst), 1);

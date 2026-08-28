@@ -139,7 +139,12 @@ impl CodeGen {
                 self.dedent();
                 self.writeln("}");
             }
-            RsStmt::ForLoop { init, test, update, body } => {
+            RsStmt::ForLoop {
+                init,
+                test,
+                update,
+                body,
+            } => {
                 self.write_indent();
                 self.writeln("{");
                 self.indent();

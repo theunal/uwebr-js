@@ -35,10 +35,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let result = if cli.module {
-        let module_name = cli
-            .module_name
-            .as_deref()
-            .unwrap_or("module");
+        let module_name = cli.module_name.as_deref().unwrap_or("module");
         uwebr_js::transpile_to_module(&js_code, module_name)?
     } else {
         uwebr_js::transpile_with_options(&js_code, &options)?
@@ -46,7 +43,11 @@ fn main() -> anyhow::Result<()> {
 
     if let Some(output_path) = &cli.output {
         std::fs::write(output_path, &result.code)?;
-        eprintln!("Transpiled {} -> {}", cli.input.display(), output_path.display());
+        eprintln!(
+            "Transpiled {} -> {}",
+            cli.input.display(),
+            output_path.display()
+        );
     } else {
         print!("{}", result.code);
     }

@@ -41,8 +41,10 @@ impl Transformer {
     fn pat_to_names(pat: &swc_ecma_ast::Pat) -> Vec<String> {
         match pat {
             swc_ecma_ast::Pat::Ident(id) => vec![atom_to_string(&id.id.sym)],
-            swc_ecma_ast::Pat::Array(arr) => {
-                arr.elems.iter().filter_map(|e| {
+            swc_ecma_ast::Pat::Array(arr) => arr
+                .elems
+                .iter()
+                .filter_map(|e| {
                     e.as_ref().map(|p| Self::pat_to_names(p)).map(|mut v| {
                         if v.len() == 1 {
                             v.remove(0)
@@ -50,24 +52,22 @@ impl Transformer {
                             v.join(", ")
                         }
                     })
-                }).collect()
-            }
-            swc_ecma_ast::Pat::Object(obj) => {
-                obj.props.iter().filter_map(|prop| {
-                    match prop {
-                        swc_ecma_ast::ObjectPatProp::Assign(assign) => {
-                            Some(atom_to_string(&assign.key.id.sym))
-                        }
-                        swc_ecma_ast::ObjectPatProp::KeyValue(kv) => {
-                            match &*kv.value {
-                                swc_ecma_ast::Pat::Ident(id) => Some(atom_to_string(&id.id.sym)),
-                                _ => None,
-                            }
-                        }
-                        _ => None,
+                })
+                .collect(),
+            swc_ecma_ast::Pat::Object(obj) => obj
+                .props
+                .iter()
+                .filter_map(|prop| match prop {
+                    swc_ecma_ast::ObjectPatProp::Assign(assign) => {
+                        Some(atom_to_string(&assign.key.id.sym))
                     }
-                }).collect()
-            }
+                    swc_ecma_ast::ObjectPatProp::KeyValue(kv) => match &*kv.value {
+                        swc_ecma_ast::Pat::Ident(id) => Some(atom_to_string(&id.id.sym)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect(),
             _ => vec![],
         }
     }
@@ -184,34 +184,43 @@ impl Transformer {
                 if let RsExpr::Member(ref _obj, ref method) = callee {
                     if method == "stringify" {
                         return RsExpr::Call(
-                            Box::new(RsExpr::Path(vec!["serde_json".to_string(), "to_string".to_string()])),
+                            Box::new(RsExpr::Path(vec![
+                                "serde_json".to_string(),
+                                "to_string".to_string(),
+                            ])),
                             args,
                         );
                     }
                     if method == "parse" {
                         return RsExpr::Call(
-                            Box::new(RsExpr::Path(vec!["serde_json".to_string(), "from_str".to_string()])),
+                            Box::new(RsExpr::Path(vec![
+                                "serde_json".to_string(),
+                                "from_str".to_string(),
+                            ])),
                             args,
                         );
                     }
                 }
                 if let RsExpr::Member(ref obj, ref method) = callee {
                     let iter_methods = [
-                        "filter", "map", "reduce", "forEach", "find", "some", "every",
-                        "flatMap", "flat", "findIndex", "keys", "values", "entries",
+                        "filter",
+                        "map",
+                        "reduce",
+                        "forEach",
+                        "find",
+                        "some",
+                        "every",
+                        "flatMap",
+                        "flat",
+                        "findIndex",
+                        "keys",
+                        "values",
+                        "entries",
                         "lastIndexOf",
                     ];
                     if iter_methods.contains(&method.as_str()) {
-                        let iter_obj = RsExpr::MethodCall(
-                            obj.clone(),
-                            "iter".to_string(),
-                            vec![],
-                        );
-                        return RsExpr::MethodCall(
-                            Box::new(iter_obj),
-                            method.clone(),
-                            args,
-                        );
+                        let iter_obj = RsExpr::MethodCall(obj.clone(), "iter".to_string(), vec![]);
+                        return RsExpr::MethodCall(Box::new(iter_obj), method.clone(), args);
                     }
                     if method == "then" {
                         if let Some(callback) = args.first() {
@@ -229,46 +238,45 @@ impl Transformer {
                         if let Some(callback) = args.first() {
                             let await_expr = RsExpr::Await(obj.clone());
                             return RsExpr::Block(vec![
-                                RsStmt::Let("_result".to_string(), Type::Any, RsExpr::Ident("Default::default()".to_string())),
-                                RsStmt::Match(await_expr, vec![
-                                    MatchArm {
-                                        pattern: Pattern::Ident("Ok(_val)".to_string()),
-                                        guard: None,
-                                        body: RsExpr::Assign(
-                                            AssignOp::Assign,
-                                            Box::new(RsExpr::Ident("_result".to_string())),
-                                            Box::new(RsExpr::Ident("_val".to_string())),
-                                        ),
-                                    },
-                                    MatchArm {
-                                        pattern: Pattern::Ident("Err(_e)".to_string()),
-                                        guard: None,
-                                        body: RsExpr::Assign(
-                                            AssignOp::Assign,
-                                            Box::new(RsExpr::Ident("_result".to_string())),
-                                            Box::new(RsExpr::Call(
-                                                Box::new(callback.clone()),
-                                                vec![RsExpr::Ident("_e".to_string())],
-                                            )),
-                                        ),
-                                    },
-                                ]),
+                                RsStmt::Let(
+                                    "_result".to_string(),
+                                    Type::Any,
+                                    RsExpr::Ident("Default::default()".to_string()),
+                                ),
+                                RsStmt::Match(
+                                    await_expr,
+                                    vec![
+                                        MatchArm {
+                                            pattern: Pattern::Ident("Ok(_val)".to_string()),
+                                            guard: None,
+                                            body: RsExpr::Assign(
+                                                AssignOp::Assign,
+                                                Box::new(RsExpr::Ident("_result".to_string())),
+                                                Box::new(RsExpr::Ident("_val".to_string())),
+                                            ),
+                                        },
+                                        MatchArm {
+                                            pattern: Pattern::Ident("Err(_e)".to_string()),
+                                            guard: None,
+                                            body: RsExpr::Assign(
+                                                AssignOp::Assign,
+                                                Box::new(RsExpr::Ident("_result".to_string())),
+                                                Box::new(RsExpr::Call(
+                                                    Box::new(callback.clone()),
+                                                    vec![RsExpr::Ident("_e".to_string())],
+                                                )),
+                                            ),
+                                        },
+                                    ],
+                                ),
                                 RsStmt::Expr(RsExpr::Ident("_result".to_string())),
                             ]);
                         }
                     }
                     if method == "json" {
-                        return RsExpr::MethodCall(
-                            obj.clone(),
-                            "json".to_string(),
-                            vec![],
-                        );
+                        return RsExpr::MethodCall(obj.clone(), "json".to_string(), vec![]);
                     }
-                    return RsExpr::MethodCall(
-                        obj.clone(),
-                        method.clone(),
-                        args,
-                    );
+                    return RsExpr::MethodCall(obj.clone(), method.clone(), args);
                 }
                 RsExpr::Call(Box::new(callee), args)
             }
@@ -347,13 +355,15 @@ impl Transformer {
                 let elems: Vec<RsExpr> = arr
                     .elems
                     .iter()
-                    .filter_map(|e| e.as_ref().map(|e| {
-                        if e.spread.is_some() {
-                            RsExpr::Spread(vec![self.transform_expr(&e.expr)])
-                        } else {
-                            self.transform_expr(&e.expr)
-                        }
-                    }))
+                    .filter_map(|e| {
+                        e.as_ref().map(|e| {
+                            if e.spread.is_some() {
+                                RsExpr::Spread(vec![self.transform_expr(&e.expr)])
+                            } else {
+                                self.transform_expr(&e.expr)
+                            }
+                        })
+                    })
                     .collect();
                 RsExpr::Array(elems)
             }
@@ -362,70 +372,101 @@ impl Transformer {
                 let mut spreads: Vec<RsExpr> = Vec::new();
                 for p in &obj.props {
                     match p {
-                        PropOrSpread::Prop(prop) => {
-                            match &**prop {
-                                Prop::KeyValue(kv) => {
-                                    let key = match &kv.key {
-                                        PropName::Ident(id) => atom_to_string(&id.sym),
-                                        PropName::Str(s) => wtf8_to_string(&s.value),
-                                        PropName::Num(n) => format!("{}", n.value),
-                                        _ => "unknown".to_string(),
-                                    };
-                                    props.push((key, self.transform_expr(&kv.value)));
+                        PropOrSpread::Prop(prop) => match &**prop {
+                            Prop::KeyValue(kv) => {
+                                let key = match &kv.key {
+                                    PropName::Ident(id) => atom_to_string(&id.sym),
+                                    PropName::Str(s) => wtf8_to_string(&s.value),
+                                    PropName::Num(n) => format!("{}", n.value),
+                                    _ => "unknown".to_string(),
+                                };
+                                props.push((key, self.transform_expr(&kv.value)));
+                            }
+                            Prop::Shorthand(ident) => {
+                                let name = atom_to_string(&ident.sym);
+                                props.push((name.clone(), RsExpr::Ident(name)));
+                            }
+                            Prop::Method(method) => {
+                                if let Some(key_name) =
+                                    Self::transform_prop_name_to_name(&method.key)
+                                {
+                                    let params: Vec<ParamDef> = method
+                                        .function
+                                        .params
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, p)| ParamDef {
+                                            name: p
+                                                .pat
+                                                .as_ident()
+                                                .map(|id| atom_to_string(&id.id.sym))
+                                                .unwrap_or_else(|| format!("arg{}", i)),
+                                            ty: Type::Any,
+                                            default: None,
+                                        })
+                                        .collect();
+                                    let body = method
+                                        .function
+                                        .body
+                                        .as_ref()
+                                        .map(|b| self.transform_stmts(&b.stmts))
+                                        .unwrap_or_default();
+                                    props.push((
+                                        key_name,
+                                        RsExpr::ArrowFunction(params, Type::Void, body),
+                                    ));
                                 }
-                                Prop::Shorthand(ident) => {
-                                    let name = atom_to_string(&ident.sym);
-                                    props.push((name.clone(), RsExpr::Ident(name)));
+                            }
+                            Prop::Getter(getter) => {
+                                if let Some(key_name) =
+                                    Self::transform_prop_name_to_name(&getter.key)
+                                {
+                                    let body = getter
+                                        .function
+                                        .body
+                                        .as_ref()
+                                        .map(|b| self.transform_stmts(&b.stmts))
+                                        .unwrap_or_default();
+                                    props.push((
+                                        key_name,
+                                        RsExpr::ArrowFunction(vec![], Type::Void, body),
+                                    ));
                                 }
-                                Prop::Method(method) => {
-                                    if let Some(key_name) = Self::transform_prop_name_to_name(&method.key) {
-                                        let params: Vec<ParamDef> = method.function.params.iter().enumerate().map(|(i, p)| {
-                                            ParamDef {
-                                                name: p.pat.as_ident()
-                                                    .map(|id| atom_to_string(&id.id.sym))
-                                                    .unwrap_or_else(|| format!("arg{}", i)),
+                            }
+                            Prop::Setter(setter) => {
+                                if let Some(key_name) =
+                                    Self::transform_prop_name_to_name(&setter.key)
+                                {
+                                    let param = setter
+                                        .function
+                                        .params
+                                        .first()
+                                        .and_then(|p| {
+                                            p.pat.as_ident().map(|id| ParamDef {
+                                                name: atom_to_string(&id.id.sym),
                                                 ty: Type::Any,
                                                 default: None,
-                                            }
-                                        }).collect();
-                                        let body = method.function.body.as_ref()
-                                            .map(|b| self.transform_stmts(&b.stmts))
-                                            .unwrap_or_default();
-                                        props.push((key_name, RsExpr::ArrowFunction(params, Type::Void, body)));
-                                    }
-                                }
-                                Prop::Getter(getter) => {
-                                    if let Some(key_name) = Self::transform_prop_name_to_name(&getter.key) {
-                                        let body = getter.function.body.as_ref()
-                                            .map(|b| self.transform_stmts(&b.stmts))
-                                            .unwrap_or_default();
-                                        props.push((key_name, RsExpr::ArrowFunction(vec![], Type::Void, body)));
-                                    }
-                                }
-                                Prop::Setter(setter) => {
-                                    if let Some(key_name) = Self::transform_prop_name_to_name(&setter.key) {
-                                        let param = setter.function.params.first().and_then(|p| {
-                                            p.pat.as_ident().map(|id| {
-                                                ParamDef {
-                                                    name: atom_to_string(&id.id.sym),
-                                                    ty: Type::Any,
-                                                    default: None,
-                                                }
                                             })
-                                        }).unwrap_or_else(|| ParamDef {
+                                        })
+                                        .unwrap_or_else(|| ParamDef {
                                             name: "value".to_string(),
                                             ty: Type::Any,
                                             default: None,
                                         });
-                                        let body = setter.function.body.as_ref()
-                                            .map(|b| self.transform_stmts(&b.stmts))
-                                            .unwrap_or_default();
-                                        props.push((key_name, RsExpr::ArrowFunction(vec![param], Type::Void, body)));
-                                    }
+                                    let body = setter
+                                        .function
+                                        .body
+                                        .as_ref()
+                                        .map(|b| self.transform_stmts(&b.stmts))
+                                        .unwrap_or_default();
+                                    props.push((
+                                        key_name,
+                                        RsExpr::ArrowFunction(vec![param], Type::Void, body),
+                                    ));
                                 }
-                                _ => {}
                             }
-                        }
+                            _ => {}
+                        },
                         PropOrSpread::Spread(spread) => {
                             spreads.push(self.transform_expr(&spread.expr));
                         }
@@ -443,10 +484,7 @@ impl Transformer {
                         ));
                     }
                     for (k, v) in props {
-                        all_entries.push(RsExpr::Array(vec![
-                            RsExpr::Lit(RsLit::Str(k)),
-                            v,
-                        ]));
+                        all_entries.push(RsExpr::Array(vec![RsExpr::Lit(RsLit::Str(k)), v]));
                     }
                     RsExpr::MethodCall(
                         Box::new(RsExpr::Lit(RsLit::Null)),
@@ -473,14 +511,11 @@ impl Transformer {
                             args.push(self.transform_expr(&tpl.exprs[i]));
                         }
                     }
-                    RsExpr::Call(
-                        Box::new(RsExpr::Ident("format".to_string())),
-                        {
-                            let mut call_args = vec![RsExpr::Lit(RsLit::Str(format_str))];
-                            call_args.extend(args);
-                            call_args
-                        },
-                    )
+                    RsExpr::Call(Box::new(RsExpr::Ident("format".to_string())), {
+                        let mut call_args = vec![RsExpr::Lit(RsLit::Str(format_str))];
+                        call_args.extend(args);
+                        call_args
+                    })
                 }
             }
             SwcExpr::TaggedTpl(tagged) => {
@@ -528,22 +563,32 @@ impl Transformer {
                     }
                     swc_ecma_ast::OptChainBase::Call(call) => {
                         let callee = self.transform_expr(&call.callee);
-                        let args: Vec<RsExpr> = call.args.iter().map(|a| self.transform_expr(&a.expr)).collect();
-                if let RsExpr::Member(ref _obj, ref method) = callee {
-                    if method == "stringify" {
-                        return RsExpr::Call(
-                            Box::new(RsExpr::Path(vec!["serde_json".to_string(), "to_string".to_string()])),
-                            args,
-                        );
-                    }
-                    if method == "parse" {
-                        return RsExpr::Call(
-                            Box::new(RsExpr::Path(vec!["serde_json".to_string(), "from_str".to_string()])),
-                            args,
-                        );
-                    }
-                }
-                RsExpr::Call(Box::new(callee), args)
+                        let args: Vec<RsExpr> = call
+                            .args
+                            .iter()
+                            .map(|a| self.transform_expr(&a.expr))
+                            .collect();
+                        if let RsExpr::Member(ref _obj, ref method) = callee {
+                            if method == "stringify" {
+                                return RsExpr::Call(
+                                    Box::new(RsExpr::Path(vec![
+                                        "serde_json".to_string(),
+                                        "to_string".to_string(),
+                                    ])),
+                                    args,
+                                );
+                            }
+                            if method == "parse" {
+                                return RsExpr::Call(
+                                    Box::new(RsExpr::Path(vec![
+                                        "serde_json".to_string(),
+                                        "from_str".to_string(),
+                                    ])),
+                                    args,
+                                );
+                            }
+                        }
+                        RsExpr::Call(Box::new(callee), args)
                     }
                 };
                 RsExpr::OptionalChain(Box::new(inner))
@@ -698,17 +743,26 @@ impl Transformer {
                     .iter()
                     .enumerate()
                     .map(|(i, p)| {
-                        let pname = p.pat.as_ident()
+                        let pname = p
+                            .pat
+                            .as_ident()
                             .map(|id| atom_to_string(&id.id.sym))
                             .unwrap_or_else(|| format!("arg{}", i));
-                        let ty = sig.and_then(|s| s.params.get(i).map(|pd| pd.ty.clone()))
+                        let ty = sig
+                            .and_then(|s| s.params.get(i).map(|pd| pd.ty.clone()))
                             .or_else(|| {
                                 p.pat.as_ident().and_then(|id| {
-                                    id.type_ann.as_ref().map(|t| self.ts_type_to_type(&t.type_ann))
+                                    id.type_ann
+                                        .as_ref()
+                                        .map(|t| self.ts_type_to_type(&t.type_ann))
                                 })
                             })
                             .unwrap_or(Type::Any);
-                        ParamDef { name: pname, ty, default: None }
+                        ParamDef {
+                            name: pname,
+                            ty,
+                            default: None,
+                        }
                     })
                     .collect();
                 let ret = sig.map(|s| s.return_type.clone()).unwrap_or_else(|| {
@@ -839,63 +893,75 @@ impl Transformer {
                                 _ => RsStmt::LetMut(name, ty, init),
                             }]
                         }
-                        swc_ecma_ast::Pat::Array(arr) => {
-                            arr.elems.iter().enumerate().filter_map(|(i, elem)| {
+                        swc_ecma_ast::Pat::Array(arr) => arr
+                            .elems
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, elem)| {
                                 elem.as_ref().map(|pat| {
                                     let names = Self::pat_to_names(pat);
-                                    let name = names.first().cloned().unwrap_or_else(|| format!("_{}", i));
-                                    let ty = self.ctx.lookup_var(&name).cloned().unwrap_or(Type::Any);
+                                    let name =
+                                        names.first().cloned().unwrap_or_else(|| format!("_{}", i));
+                                    let ty =
+                                        self.ctx.lookup_var(&name).cloned().unwrap_or(Type::Any);
                                     let elem_init = RsExpr::Index(
                                         Box::new(init.clone()),
                                         Box::new(RsExpr::Lit(RsLit::I64(i as i64))),
                                     );
                                     match var_decl.kind {
-                                        swc_ecma_ast::VarDeclKind::Const => RsStmt::Let(name, ty, elem_init),
+                                        swc_ecma_ast::VarDeclKind::Const => {
+                                            RsStmt::Let(name, ty, elem_init)
+                                        }
                                         _ => RsStmt::LetMut(name, ty, elem_init),
                                     }
                                 })
-                            }).collect()
-                        }
-                        swc_ecma_ast::Pat::Object(obj) => {
-                            obj.props.iter().filter_map(|prop| {
-                                match prop {
-                                    swc_ecma_ast::ObjectPatProp::Assign(assign) => {
-                                        let name = atom_to_string(&assign.key.id.sym);
-                                        let ty = self.ctx.lookup_var(&name).cloned().unwrap_or(Type::Any);
-                                        let prop_init = RsExpr::Member(
-                                            Box::new(init.clone()),
-                                            name.clone(),
-                                        );
-                                        Some(match var_decl.kind {
-                                            swc_ecma_ast::VarDeclKind::Const => RsStmt::Let(name, ty, prop_init),
-                                            _ => RsStmt::LetMut(name, ty, prop_init),
-                                        })
-                                    }
-                                    swc_ecma_ast::ObjectPatProp::KeyValue(kv) => {
-                                        if let swc_ecma_ast::PropName::Ident(key) = &kv.key {
-                                            let key_name = atom_to_string(&key.sym);
-                                            if let swc_ecma_ast::Pat::Ident(id) = &*kv.value {
-                                                let name = atom_to_string(&id.id.sym);
-                                                let ty = self.ctx.lookup_var(&name).cloned().unwrap_or(Type::Any);
-                                                let prop_init = RsExpr::Member(
-                                                    Box::new(init.clone()),
-                                                    key_name,
-                                                );
-                                                Some(match var_decl.kind {
-                                                    swc_ecma_ast::VarDeclKind::Const => RsStmt::Let(name, ty, prop_init),
-                                                    _ => RsStmt::LetMut(name, ty, prop_init),
-                                                })
-                                            } else {
-                                                None
-                                            }
+                            })
+                            .collect(),
+                        swc_ecma_ast::Pat::Object(obj) => obj
+                            .props
+                            .iter()
+                            .filter_map(|prop| match prop {
+                                swc_ecma_ast::ObjectPatProp::Assign(assign) => {
+                                    let name = atom_to_string(&assign.key.id.sym);
+                                    let ty =
+                                        self.ctx.lookup_var(&name).cloned().unwrap_or(Type::Any);
+                                    let prop_init =
+                                        RsExpr::Member(Box::new(init.clone()), name.clone());
+                                    Some(match var_decl.kind {
+                                        swc_ecma_ast::VarDeclKind::Const => {
+                                            RsStmt::Let(name, ty, prop_init)
+                                        }
+                                        _ => RsStmt::LetMut(name, ty, prop_init),
+                                    })
+                                }
+                                swc_ecma_ast::ObjectPatProp::KeyValue(kv) => {
+                                    if let swc_ecma_ast::PropName::Ident(key) = &kv.key {
+                                        let key_name = atom_to_string(&key.sym);
+                                        if let swc_ecma_ast::Pat::Ident(id) = &*kv.value {
+                                            let name = atom_to_string(&id.id.sym);
+                                            let ty = self
+                                                .ctx
+                                                .lookup_var(&name)
+                                                .cloned()
+                                                .unwrap_or(Type::Any);
+                                            let prop_init =
+                                                RsExpr::Member(Box::new(init.clone()), key_name);
+                                            Some(match var_decl.kind {
+                                                swc_ecma_ast::VarDeclKind::Const => {
+                                                    RsStmt::Let(name, ty, prop_init)
+                                                }
+                                                _ => RsStmt::LetMut(name, ty, prop_init),
+                                            })
                                         } else {
                                             None
                                         }
+                                    } else {
+                                        None
                                     }
-                                    _ => None,
                                 }
-                            }).collect()
-                        }
+                                _ => None,
+                            })
+                            .collect(),
                         _ => vec![],
                     }
                 })
@@ -916,35 +982,40 @@ impl Transformer {
                 vec![RsStmt::If(test, cons, alt)]
             }
             swc_ecma_ast::Stmt::For(for_stmt) => {
-                let init = for_stmt.init.as_ref().map(|init| {
-                    match init {
-                        swc_ecma_ast::VarDeclOrExpr::VarDecl(decl) => {
-                            if let Some(VarDeclarator {
-                                name: swc_ecma_ast::Pat::Ident(BindingIdent { id, .. }),
-                                init: Some(init_expr),
-                                ..
-                            }) = decl.decls.first()
-                            {
-                                let init_expr = self.transform_expr(init_expr);
-                                let name = atom_to_string(&id.sym);
-                                let ty = self.ctx.lookup_var(&name).cloned().unwrap_or(Type::Any);
-                                match decl.kind {
-                                    swc_ecma_ast::VarDeclKind::Const => Box::new(RsStmt::Let(name, ty, init_expr)),
-                                    _ => Box::new(RsStmt::LetMut(name, ty, init_expr)),
+                let init = for_stmt.init.as_ref().map(|init| match init {
+                    swc_ecma_ast::VarDeclOrExpr::VarDecl(decl) => {
+                        if let Some(VarDeclarator {
+                            name: swc_ecma_ast::Pat::Ident(BindingIdent { id, .. }),
+                            init: Some(init_expr),
+                            ..
+                        }) = decl.decls.first()
+                        {
+                            let init_expr = self.transform_expr(init_expr);
+                            let name = atom_to_string(&id.sym);
+                            let ty = self.ctx.lookup_var(&name).cloned().unwrap_or(Type::Any);
+                            match decl.kind {
+                                swc_ecma_ast::VarDeclKind::Const => {
+                                    Box::new(RsStmt::Let(name, ty, init_expr))
                                 }
-                            } else {
-                                Box::new(RsStmt::Empty)
+                                _ => Box::new(RsStmt::LetMut(name, ty, init_expr)),
                             }
+                        } else {
+                            Box::new(RsStmt::Empty)
                         }
-                        swc_ecma_ast::VarDeclOrExpr::Expr(expr) => {
-                            Box::new(RsStmt::Expr(self.transform_expr(expr)))
-                        }
+                    }
+                    swc_ecma_ast::VarDeclOrExpr::Expr(expr) => {
+                        Box::new(RsStmt::Expr(self.transform_expr(expr)))
                     }
                 });
                 let test = for_stmt.test.as_ref().map(|e| self.transform_expr(e));
                 let update = for_stmt.update.as_ref().map(|e| self.transform_expr(e));
                 let body = self.transform_stmts(&block_stmts(&for_stmt.body));
-                vec![RsStmt::ForLoop { init, test, update, body }]
+                vec![RsStmt::ForLoop {
+                    init,
+                    test,
+                    update,
+                    body,
+                }]
             }
             swc_ecma_ast::Stmt::While(while_stmt) => {
                 let test = self.transform_expr(&while_stmt.test);
@@ -1014,26 +1085,24 @@ impl Transformer {
                 let body = self.transform_stmts(&block_stmts(&while_stmt.body));
                 vec![RsStmt::Loop({
                     let mut full_body = body;
-                    full_body.push(RsStmt::If(
-                        test,
-                        vec![],
-                        Some(vec![RsStmt::Break]),
-                    ));
+                    full_body.push(RsStmt::If(test, vec![], Some(vec![RsStmt::Break])));
                     full_body
                 })]
             }
             swc_ecma_ast::Stmt::Empty(_) => vec![RsStmt::Empty],
             swc_ecma_ast::Stmt::ForIn(for_in) => {
                 let name = match &for_in.left {
-                    swc_ecma_ast::ForHead::VarDecl(decl) => {
-                        decl.decls.first().and_then(|d| {
+                    swc_ecma_ast::ForHead::VarDecl(decl) => decl
+                        .decls
+                        .first()
+                        .and_then(|d| {
                             if let swc_ecma_ast::Pat::Ident(id) = &d.name {
                                 Some(atom_to_string(&id.id.sym))
                             } else {
                                 None
                             }
-                        }).unwrap_or_else(|| "_".to_string())
-                    }
+                        })
+                        .unwrap_or_else(|| "_".to_string()),
                     swc_ecma_ast::ForHead::Pat(pat) => {
                         if let swc_ecma_ast::Pat::Ident(id) = &**pat {
                             atom_to_string(&id.sym)
@@ -1049,15 +1118,17 @@ impl Transformer {
             }
             swc_ecma_ast::Stmt::ForOf(for_of) => {
                 let name = match &for_of.left {
-                    swc_ecma_ast::ForHead::VarDecl(decl) => {
-                        decl.decls.first().and_then(|d| {
+                    swc_ecma_ast::ForHead::VarDecl(decl) => decl
+                        .decls
+                        .first()
+                        .and_then(|d| {
                             if let swc_ecma_ast::Pat::Ident(id) = &d.name {
                                 Some(atom_to_string(&id.id.sym))
                             } else {
                                 None
                             }
-                        }).unwrap_or_else(|| "_".to_string())
-                    }
+                        })
+                        .unwrap_or_else(|| "_".to_string()),
                     swc_ecma_ast::ForHead::Pat(pat) => {
                         if let swc_ecma_ast::Pat::Ident(id) = &**pat {
                             atom_to_string(&id.sym)

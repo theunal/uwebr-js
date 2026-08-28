@@ -74,7 +74,8 @@ fn test_build_project_with_valid_uwebr() {
         r#"<div class="app">
   <h1>Hello</h1>
 </div>"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     // validate_project parses all .uwebr files
     commands::validate_project(tmp.path().to_str().unwrap()).unwrap();
@@ -140,10 +141,16 @@ fn test_build_cache_parse_result() {
     let tmp = TempDir::new().unwrap();
     let src = tmp.path().join("src/app");
     fs::create_dir_all(&src).unwrap();
-    fs::write(src.join("Page.uwebr"), "<div class=\"page\"><h1>Hello</h1></div>").unwrap();
+    fs::write(
+        src.join("Page.uwebr"),
+        "<div class=\"page\"><h1>Hello</h1></div>",
+    )
+    .unwrap();
 
     let cache = commands::BuildCache::new(tmp.path().to_path_buf());
-    let result = cache.parse_file(&tmp.path().join("src/app/Page.uwebr")).unwrap();
+    let result = cache
+        .parse_file(&tmp.path().join("src/app/Page.uwebr"))
+        .unwrap();
     assert!(result.error.is_none());
     assert!(result.html.contains("Hello"));
     assert!(result.parse_time_us > 0);
@@ -190,10 +197,13 @@ fn test_build_cache_detects_script_and_style() {
     fs::write(
         src.join("Page.uwebr"),
         "<div>\n<script>let x = 1;</script>\n<style>.a { color: red; }</style>\n</div>",
-    ).unwrap();
+    )
+    .unwrap();
 
     let cache = commands::BuildCache::new(tmp.path().to_path_buf());
-    let result = cache.parse_file(&tmp.path().join("src/app/Page.uwebr")).unwrap();
+    let result = cache
+        .parse_file(&tmp.path().join("src/app/Page.uwebr"))
+        .unwrap();
     assert!(result.has_script);
     assert!(result.has_style);
 }

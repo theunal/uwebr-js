@@ -1,11 +1,13 @@
-use uwebr_app::{App, AppEvent, FnComponent, RenderPipeline};
-use uwebr_app::component::Component;
-use uwebr_core::component::{Element, NodeType, PropValue};
-use uwebr_core::timer::{TimerRegistry, set_timeout, set_interval, cancel_timer, request_animation_frame};
-use winit::event::MouseButton;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use uwebr_app::component::Component;
+use uwebr_app::{App, AppEvent, FnComponent, RenderPipeline};
+use uwebr_core::component::{Element, NodeType, PropValue};
+use uwebr_core::timer::{
+    cancel_timer, request_animation_frame, set_interval, set_timeout, TimerRegistry,
+};
+use winit::event::MouseButton;
 
 #[test]
 fn test_app_creation() {
@@ -100,17 +102,15 @@ fn test_pipeline_nested_components() {
     let el = Element {
         node_type: NodeType::Element("div".into()),
         props: vec![("bg".into(), PropValue::String("black".into()))],
-        children: vec![
-            Element {
-                node_type: NodeType::Element("div".into()),
-                props: vec![("bg".into(), PropValue::String("red".into()))],
-                children: vec![Element {
-                    node_type: NodeType::Text("Nested".into()),
-                    props: vec![],
-                    children: vec![],
-                }],
-            },
-        ],
+        children: vec![Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("bg".into(), PropValue::String("red".into()))],
+            children: vec![Element {
+                node_type: NodeType::Text("Nested".into()),
+                props: vec![],
+                children: vec![],
+            }],
+        }],
     };
     let _scene = pipeline.render(&el, 800, 600);
 }
@@ -125,28 +125,42 @@ fn test_app_multi_window_fields() {
 
 #[test]
 fn test_app_open_window_pending() {
-    let app = App::new("Main")
-        .open_window("Child", 400, 300, FnComponent::new(|| Element {
+    let app = App::new("Main").open_window(
+        "Child",
+        400,
+        300,
+        FnComponent::new(|| Element {
             node_type: NodeType::Element("div".into()),
             props: vec![],
             children: vec![],
-        }));
+        }),
+    );
     assert_eq!(app.pending_window_count(), 1);
 }
 
 #[test]
 fn test_app_multiple_pending_windows() {
     let app = App::new("Main")
-        .open_window("Win1", 400, 300, FnComponent::new(|| Element {
-            node_type: NodeType::Element("div".into()),
-            props: vec![],
-            children: vec![],
-        }))
-        .open_window("Win2", 600, 400, FnComponent::new(|| Element {
-            node_type: NodeType::Element("span".into()),
-            props: vec![],
-            children: vec![],
-        }));
+        .open_window(
+            "Win1",
+            400,
+            300,
+            FnComponent::new(|| Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![],
+                children: vec![],
+            }),
+        )
+        .open_window(
+            "Win2",
+            600,
+            400,
+            FnComponent::new(|| Element {
+                node_type: NodeType::Element("span".into()),
+                props: vec![],
+                children: vec![],
+            }),
+        );
     assert_eq!(app.pending_window_count(), 2);
 }
 
@@ -198,9 +212,12 @@ fn test_tick_fires_expired() {
     let counter = Arc::new(AtomicUsize::new(0));
     let c = counter.clone();
 
-    let _h = r.set_timeout(move || {
-        c.fetch_add(1, Ordering::SeqCst);
-    }, Duration::from_millis(0));
+    let _h = r.set_timeout(
+        move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        },
+        Duration::from_millis(0),
+    );
 
     r.tick();
     assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -212,9 +229,12 @@ fn test_interval_reschedules() {
     let counter = Arc::new(AtomicUsize::new(0));
     let c = counter.clone();
 
-    let _h = r.set_interval(move || {
-        c.fetch_add(1, Ordering::SeqCst);
-    }, Duration::from_millis(0));
+    let _h = r.set_interval(
+        move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        },
+        Duration::from_millis(0),
+    );
 
     r.tick();
     assert_eq!(counter.load(Ordering::SeqCst), 1);

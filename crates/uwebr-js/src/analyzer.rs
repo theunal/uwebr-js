@@ -271,7 +271,13 @@ pub fn analyze(module: &ParsedModule) -> Result<(Context, Vec<RsStmt>)> {
                 }
             }
             swc_ecma_ast::ModuleItem::ModuleDecl(swc_ecma_ast::ModuleDecl::Import(import)) => {
-                let _path = import.src.value.to_atom_lossy().into_owned().as_str().to_string();
+                let _path = import
+                    .src
+                    .value
+                    .to_atom_lossy()
+                    .into_owned()
+                    .as_str()
+                    .to_string();
                 for specifier in &import.specifiers {
                     let name = match specifier {
                         swc_ecma_ast::ImportSpecifier::Named(n) => atom_str(&n.local.sym),
