@@ -12,6 +12,7 @@ use crate::context::GpuContext;
 use crate::event::AppEvent;
 use crate::pipeline::RenderPipeline;
 use crate::window::Window;
+use uwebr_render::stylebook::StyleBook;
 
 /// Per-window state
 struct WindowState {
@@ -51,6 +52,7 @@ pub struct App {
     windows: HashMap<WindowId, WindowState>,
     primary_window: Option<WindowId>,
     pending_windows: Vec<(String, u32, u32, Option<Box<dyn Component>>)>,
+    stylebook: Option<StyleBook>,
 }
 
 impl App {
@@ -64,6 +66,7 @@ impl App {
             windows: HashMap::new(),
             primary_window: None,
             pending_windows: vec![],
+            stylebook: None,
         }
     }
 
@@ -75,6 +78,20 @@ impl App {
 
     pub fn with_component(mut self, component: impl Component) -> Self {
         self.component = Some(Box::new(component));
+        self
+    }
+
+    /// Load CSS rules — parsed into StyleBook and applied to all windows
+    pub fn with_css(mut self, css: &str) -> Self {
+        if let Ok(sb) = StyleBook::parse(css) {
+            self.stylebook = Some(sb);
+        }
+        self
+    }
+
+    /// Set StyleBook directly (pre-parsed CSS rules)
+    pub fn with_stylebook(mut self, stylebook: StyleBook) -> Self {
+        self.stylebook = Some(stylebook);
         self
     }
 
@@ -167,7 +184,11 @@ impl ApplicationHandler for App {
 
             let id = ctx.window().id();
             self.primary_window = Some(id);
-            self.windows.insert(id, WindowState::new(ctx, self.component.take()));
+            let mut ws = WindowState::new(ctx, self.component.take());
+            if let Some(ref sb) = self.stylebook {
+                ws.pipeline = ws.pipeline.with_stylebook(sb.clone());
+            }
+            self.windows.insert(id, ws);
         }
 
         // Create pending windows
@@ -194,7 +215,11 @@ impl ApplicationHandler for App {
             };
 
             let id = ctx.window().id();
-            self.windows.insert(id, WindowState::new(ctx, component));
+            let mut ws = WindowState::new(ctx, component);
+            if let Some(ref sb) = self.stylebook {
+                ws.pipeline = ws.pipeline.with_stylebook(sb.clone());
+            }
+            self.windows.insert(id, ws);
         }
     }
 

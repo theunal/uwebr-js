@@ -329,7 +329,7 @@ pub fn build_project(path: &str, release: bool) -> Result<()> {
     Ok(())
 }
 
-/// Start dev server with incremental hot reload
+/// Start dev server with incremental hot reload (transpile + cargo build)
 pub fn dev_server(path: &str) -> Result<()> {
     let root = PathBuf::from(path);
     let (tx, rx) = mpsc::channel();
@@ -345,14 +345,30 @@ pub fn dev_server(path: &str) -> Result<()> {
     // Watch src/ directory
     watcher.watch(root.join("src").as_path(), RecursiveMode::Recursive)?;
 
-    // Initial full build
-    let mut cache = BuildCache::new(root.clone());
-    let initial = cache.build_all()?;
-    let total_errors = initial.iter().filter(|r| r.error.is_some()).count();
-    let total_files = initial.len();
+    // Initial full transpile + build
+    println!("uwebr dev — transpiling + building...");
+    let start = Instant::now();
+    match transpile_all(&root) {
+        Ok(count) => {
+            println!("  Transpiled {count} file(s) in {:?}", start.elapsed());
+        }
+        Err(e) => {
+            eprintln!("  Transpile error: {e}");
+        }
+    }
 
-    println!("uwebr dev server running at http://localhost:3000");
-    println!("Initial build: {total_files} file(s), {total_errors} error(s)");
+    // Run cargo build
+    println!("Building...");
+    let status = std::process::Command::new("cargo")
+        .args(["build"])
+        .current_dir(&root)
+        .status()?;
+    if status.success() {
+        println!("  Build succeeded in {:?}", start.elapsed());
+    } else {
+        println!("  Build failed");
+    }
+
     println!("Watching for changes in src/...");
     println!("Press Ctrl+C to stop.");
 
@@ -372,34 +388,48 @@ pub fn dev_server(path: &str) -> Result<()> {
                     }
                 }
 
-                let paths_display: Vec<_> = changed.iter()
+                // Filter to only .uwebr files
+                let uwebr_changed: Vec<_> = changed.iter()
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "uwebr"))
+                    .cloned()
+                    .collect();
+
+                if uwebr_changed.is_empty() {
+                    continue;
+                }
+
+                let paths_display: Vec<_> = uwebr_changed.iter()
                     .filter_map(|p| p.strip_prefix(&root).ok())
                     .map(|p| p.display().to_string())
                     .collect();
 
-                println!("[rebuild] {} file(s): {}", changed.len(), paths_display.join(", "));
+                println!("[rebuild] {} file(s): {}", uwebr_changed.len(), paths_display.join(", "));
 
                 let start = Instant::now();
 
-                // Incremental rebuild — only changed files
-                match cache.build_incremental(&changed) {
-                    Ok(results) => {
-                        let elapsed = start.elapsed();
-                        let rebuilt = results.len();
-                        let errors: Vec<_> = results.iter().filter_map(|r| r.error.as_ref()).collect();
-                        let parse_us: u128 = results.iter().map(|r| r.parse_time_us).sum();
+                // Transpile changed files
+                match transpile_incremental(&root, &uwebr_changed) {
+                    Ok(count) => {
+                        // Cargo build
+                        let build_status = std::process::Command::new("cargo")
+                            .args(["build"])
+                            .current_dir(&root)
+                            .status();
 
-                        if errors.is_empty() {
-                            println!("  ✓ Rebuilt {rebuilt} file(s) in {elapsed:?} (parse: {parse_us}μs)");
-                        } else {
-                            for err in &errors {
-                                println!("  ✗ ERROR: {err}");
+                        match build_status {
+                            Ok(s) if s.success() => {
+                                println!("  ✓ Transpiled {count} + built in {:?}", start.elapsed());
                             }
-                            println!("  Rebuilt {rebuilt} file(s) in {elapsed:?} with {} error(s)", errors.len());
+                            Ok(_) => {
+                                println!("  ⚠ Transpiled {count} file(s) but cargo build failed ({:?})", start.elapsed());
+                            }
+                            Err(e) => {
+                                eprintln!("  ✗ cargo build error: {e}");
+                            }
                         }
                     }
                     Err(e) => {
-                        eprintln!("  Build error: {e}");
+                        eprintln!("  ✗ Transpile error: {e}");
                     }
                 }
             }
@@ -414,6 +444,102 @@ pub fn dev_server(path: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Transpile all .uwebr files to .rs
+fn transpile_all(root: &Path) -> Result<usize> {
+    let files = find_uwebr_files(root)?;
+    let out_dir = root.join("src/generated");
+    fs::create_dir_all(&out_dir)?;
+
+    let mut count = 0;
+    let mut generated = vec![];
+
+    for file in &files {
+        let file_name = file.file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Component");
+        let content = fs::read_to_string(file)?;
+
+        match transpiler::transpile(&content, file_name) {
+            Ok(rs_code) => {
+                let out_file = out_dir.join(format!("{}.rs", file_name));
+                fs::write(&out_file, &rs_code)?;
+                generated.push(file_name.to_string());
+                count += 1;
+            }
+            Err(e) => {
+                let rel = file.strip_prefix(root).unwrap_or(file);
+                eprintln!("  ERROR in {}: {e}", rel.display());
+            }
+        }
+    }
+
+    // Write mod.rs
+    let mod_content: String = generated.iter()
+        .map(|name| format!("pub mod {};", transpiler::to_snake(name)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(out_dir.join("mod.rs"), mod_content)?;
+
+    // Ensure main.rs has `mod generated`
+    let main_rs = root.join("src/main.rs");
+    let main_content = if main_rs.exists() {
+        fs::read_to_string(&main_rs)?
+    } else {
+        String::new()
+    };
+    if !main_content.contains("mod generated") {
+        let new_main = format!("#[allow(unused)]\nmod generated;\n\n{main_content}");
+        fs::write(&main_rs, new_main)?;
+    }
+
+    Ok(count)
+}
+
+/// Transpile only changed .uwebr files (incremental)
+fn transpile_incremental(root: &Path, changed: &[PathBuf]) -> Result<usize> {
+    let out_dir = root.join("src/generated");
+    fs::create_dir_all(&out_dir)?;
+
+    let mut count = 0;
+    let mut generated = vec![];
+
+    // Re-transpile all to keep mod.rs consistent
+    let all_files = find_uwebr_files(root)?;
+
+    for file in &all_files {
+        let file_name = file.file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Component");
+
+        // Only re-transpile if this file was changed
+        if changed.contains(file) {
+            let content = fs::read_to_string(file)?;
+            match transpiler::transpile(&content, file_name) {
+                Ok(rs_code) => {
+                    let out_file = out_dir.join(format!("{}.rs", file_name));
+                    fs::write(&out_file, &rs_code)?;
+                    count += 1;
+                }
+                Err(e) => {
+                    let rel = file.strip_prefix(root).unwrap_or(file);
+                    eprintln!("  ERROR in {}: {e}", rel.display());
+                }
+            }
+        }
+
+        generated.push(file_name.to_string());
+    }
+
+    // Rewrite mod.rs
+    let mod_content: String = generated.iter()
+        .map(|name| format!("pub mod {};", transpiler::to_snake(name)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(out_dir.join("mod.rs"), mod_content)?;
+
+    Ok(count)
 }
 
 /// Recursively find all .uwebr files

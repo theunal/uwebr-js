@@ -30,12 +30,12 @@ uwebr/
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Kullanıcı Kodu                        │
+│                    Kullanıcı Kodu                       │
 │  .uwebr dosyaları (HTML + <script> + <style>)           │
 └──────────────────────────────┬──────────────────────────┘
                                │
 ┌──────────────────────────────┴──────────────────────────┐
-│                  Transpile Katmanı                        │
+│                  Transpile Katmanı                      │
 │  uwebr-html:  HTML → Element AST (html5ever)            │
 │  uwebr-css:   CSS → Taffy Style (custom parser)         │
 │  uwebr-js:    JS → Rust AST (swc_ecma_parser)           │
@@ -43,27 +43,27 @@ uwebr/
 └──────────────────────────────┬──────────────────────────┘
                                │
 ┌──────────────────────────────┴──────────────────────────┐
-│                 Framework Katmanı                         │
-│  uwebr-core: Signals, Effects, Lifecycle, Timer          │
-│  uwebr-macro: #[component], #[derive(Props)]             │
+│                 Framework Katmanı                       │
+│  uwebr-core: Signals, Effects, Lifecycle, Timer         │
+│  uwebr-macro: #[component], #[derive(Props)]            │
 └──────────────────────────────┬──────────────────────────┘
                                │
 ┌──────────────────────────────┴──────────────────────────┐
-│                 Rendering Katmanı                         │
-│  uwebr-render:                                           │
-│    StyleBook:  CSS rules → tag/class/id matching         │
-│    Layout:     Element → TaffyTree → PositionedNode      │
-│    Scene:      PositionedNode → vello::Scene              │
-│    Text:       Parley font layout + measure               │
+│                 Rendering Katmanı                       │
+│  uwebr-render:                                          │
+│    StyleBook:  CSS rules → tag/class/id matching        │
+│    Layout:     Element → TaffyTree → PositionedNode     │
+│    Scene:      PositionedNode → vello::Scene            │
+│    Text:       Parley font layout + measure             │
 └──────────────────────────────┬──────────────────────────┘
                                │
 ┌──────────────────────────────┴──────────────────────────┐
-│                 Platform Katmanı                          │
-│  uwebr-app:                                              │
-│    GpuContext:  wgpu device + surface + vello renderer    │
-│    App:         Winit ApplicationHandler                  │
-│    Multi-window: HashMap<WindowId, WindowState>           │
-│    Window:      per-window GPU context + pipeline         │
+│                 Platform Katmanı                        │
+│  uwebr-app:                                             │
+│    GpuContext:  wgpu device + surface + vello renderer  │
+│    App:         Winit ApplicationHandler                │
+│    Multi-window: HashMap<WindowId, WindowState>         │
+│    Window:      per-window GPU context + pipeline       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -78,7 +78,7 @@ uwebr/
         ▼
 ┌──────────────────────────┐
 │ 1. PARSE (uwebr-html)    │  html5ever → Element AST
-│    parse_html(content)    │  {#each}, {#if}, <Component/>
+│    parse_html(content)   │  {#each}, {#if}, <Component/>
 └────────────┬─────────────┘
              │
              ▼

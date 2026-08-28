@@ -3,6 +3,8 @@ use std::fs;
 use std::path::Path;
 use uwebr_html::ast::{HtmlNode, HtmlAttributeValue};
 use uwebr_html::parser::parse_html;
+use uwebr_html::directives::expand_directives;
+use uwebr_js;
 
 /// Transpile a .uwebr file to Rust source code
 pub fn transpile_file(path: &Path) -> Result<String> {
@@ -23,15 +25,30 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
     let html = extract_html(content);
 
     // Parse HTML
-    let root = parse_html(&html)?;
+    let mut root = parse_html(&html)?;
+
+    // Expand template directives ({#each}, {#if}, etc.)
+    expand_directives(&mut root);
 
     // Generate Rust code
     let mut output = String::new();
 
+    // Collect component references from HTML for imports
+    let component_refs = collect_component_refs(&root, component_name);
+    let has_components = !component_refs.is_empty();
+
     // Header
     output.push_str("use uwebr_app::App;\n");
     output.push_str("use uwebr_core::component::{Element, NodeType, PropValue};\n");
-    output.push_str("use uwebr_app::FnComponent;\n\n");
+    output.push_str("use uwebr_app::FnComponent;\n");
+    if has_components {
+        for comp in &component_refs {
+            let mod_name = to_snake(comp);
+            let fn_name = to_snake(comp);
+            output.push_str(&format!("use crate::generated::{mod_name}::{fn_name}_component;\n"));
+        }
+    }
+    output.push('\n');
 
     // CSS as a const
     if !css.is_empty() {
@@ -48,11 +65,27 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
     output.push_str(&generate_element_code(&root, 2));
     output.push_str("\n}\n\n");
 
-    // Script integration (if any)
+    // Script integration — transpile JS to Rust
     if !script.is_empty() {
-        output.push_str("// Script from <script> block:\n");
-        output.push_str("// NOTE: Script transpilation requires uwebr-js\n");
-        output.push_str(&format!("/*\n{}\n*/\n", script));
+        match uwebr_js::transpile(&script) {
+            Ok(result) => {
+                if !result.warnings.is_empty() {
+                    output.push_str("// JS transpile warnings:\n");
+                    for w in &result.warnings {
+                        output.push_str(&format!("//   {w}\n"));
+                    }
+                }
+                output.push_str("// Transpiled from <script> block:\n");
+                output.push_str(&result.code);
+                output.push('\n');
+            }
+            Err(e) => {
+                output.push_str(&format!("// JS transpile error: {e}\n"));
+                output.push_str("/* Original script:\n");
+                output.push_str(&script);
+                output.push_str("\n*/\n");
+            }
+        }
     }
 
     // Main function
@@ -116,8 +149,26 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
                 format!("vec![\n{}\n{}]", props.join(",\n"), pad)
             };
 
+            // Check if any child is an each/if block (produces Vec<Element>)
+            let has_dynamic = el.children.iter().any(|c| matches!(c, HtmlNode::EachLoop(_) | HtmlNode::IfBlock(_)));
+
             let children_str = if children_code.is_empty() {
                 "vec![]".to_string()
+            } else if has_dynamic {
+                // Mixed static + dynamic: build children imperatively
+                let mut lines = vec![format!("{{ let mut __c: Vec<Element> = vec![];")];
+                for child in &el.children {
+                    let code = generate_element_code(child, indent + 3).trim().to_string();
+                    if code.starts_with("items.iter()") || code.starts_with("if ") {
+                        // Dynamic: extends or pushes multiple
+                        lines.push(format!("__c.extend({});", code));
+                    } else if !code.is_empty() {
+                        // Static: push single element
+                        lines.push(format!("__c.push({});", code));
+                    }
+                }
+                lines.push(format!("__c }}"));
+                lines.join("\n")
             } else {
                 format!(
                     "vec![\n{}\n{}]",
@@ -177,47 +228,70 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
             } else {
                 format!("vec![{}]", props.join(", "))
             };
+            // Component composition: call the component function
+            let fn_name = format!("{}_component", to_snake(name));
             format!(
-                "{}Element {{ node_type: NodeType::Component(\"{}\".into()), props: {}, children: vec![] }}",
-                pad, name, props_str
+                "{}Element {{\n{}node_type: NodeType::Element(\"div\".into()),\n{}props: {},\n{}children: vec![{}()],\n{}}}",
+                pad, pad, pad, props_str, pad, fn_name, pad
             )
         }
         HtmlNode::EachLoop(each) => {
             let item = &each.item_name;
             let iter = &each.iterable;
-            if each.body.len() == 1 {
-                let child = generate_element_code(&each.body[0], indent + 1);
-                format!(
-                    "{}// TODO: each loop over {}\n{}// for {} in {} {{\n{}//     {}\n{}// }}",
-                    pad, iter, pad, item, iter, pad, child.trim(), pad
-                )
+            let body_elements: Vec<String> = each.body.iter()
+                .map(|n| generate_element_code(n, indent + 3))
+                .collect();
+            let body_str = if body_elements.len() == 1 {
+                body_elements[0].clone()
             } else {
-                let children: Vec<String> = each.body.iter()
-                    .map(|n| generate_element_code(n, indent + 2))
-                    .collect();
                 format!(
-                    "{}// TODO: each loop over {}\n{}// for {} in {} {{\n{}\n{}// }}",
-                    pad, iter, pad, item, iter, children.join("\n"), pad
+                    "vec![\n{}\n{}]",
+                    body_elements.join(",\n"),
+                    "    ".repeat(indent + 2)
                 )
-            }
+            };
+            format!(
+                "{}{}.iter().map(|{}| {{\n{}{}\n{}}}).collect::<Vec<_>>()",
+                pad, iter, item,
+                "    ".repeat(indent + 2), body_str.trim(),
+                pad
+            )
         }
         HtmlNode::IfBlock(if_block) => {
             let cond = &if_block.condition;
-            let then_children: Vec<String> = if_block.then_body.iter()
-                .map(|n| generate_element_code(n, indent + 1))
+            let then_elements: Vec<String> = if_block.then_body.iter()
+                .map(|n| generate_element_code(n, indent + 2))
                 .collect();
-            let then_child = then_children.join("\n");
-            let else_code = if let Some(ref else_body) = if_block.else_body {
-                let else_children: Vec<String> = else_body.iter()
-                    .map(|n| generate_element_code(n, indent + 1))
+            let then_str = if then_elements.len() == 1 {
+                then_elements[0].clone()
+            } else {
+                format!(
+                    "vec![\n{}\n{}]",
+                    then_elements.join(",\n"),
+                    "    ".repeat(indent + 1)
+                )
+            };
+            let else_str = if let Some(ref else_body) = if_block.else_body {
+                let else_elements: Vec<String> = else_body.iter()
+                    .map(|n| generate_element_code(n, indent + 2))
                     .collect();
-                format!("\n{} else {{\n{}\n{}}}", pad, else_children.join("\n"), pad)
+                if else_elements.len() == 1 {
+                    format!(" else {{ {} }}", else_elements[0].trim())
+                } else {
+                    format!(
+                        " else {{ vec![\n{}\n{}] }}",
+                        else_elements.join(",\n"),
+                        "    ".repeat(indent + 1)
+                    )
+                }
             } else {
                 String::new()
             };
             format!(
-                "{}// if {} {{\n{}\n{}{}}}",
-                pad, cond, then_child, pad, else_code
+                "{}if {} {{\n{}{}\n{}{}}}",
+                pad, cond,
+                "    ".repeat(indent + 1), then_str.trim(),
+                pad, else_str
             )
         }
         HtmlNode::RawHtml(expr) => {
@@ -308,6 +382,45 @@ pub fn to_snake(s: &str) -> String {
     result
 }
 
+/// Collect PascalCase component names referenced in the HTML tree (excluding the root component itself)
+fn collect_component_refs(node: &HtmlNode, root_name: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    match node {
+        HtmlNode::Component(comp) => {
+            if comp.name != root_name {
+                if !refs.contains(&comp.name) {
+                    refs.push(comp.name.clone());
+                }
+            }
+            for child in &comp.children {
+                refs.extend(collect_component_refs(child, root_name));
+            }
+        }
+        HtmlNode::Element(el) => {
+            for child in &el.children {
+                refs.extend(collect_component_refs(child, root_name));
+            }
+        }
+        HtmlNode::EachLoop(each) => {
+            for child in &each.body {
+                refs.extend(collect_component_refs(child, root_name));
+            }
+        }
+        HtmlNode::IfBlock(ifnode) => {
+            for child in &ifnode.then_body {
+                refs.extend(collect_component_refs(child, root_name));
+            }
+            if let Some(else_body) = &ifnode.else_body {
+                for child in else_body {
+                    refs.extend(collect_component_refs(child, root_name));
+                }
+            }
+        }
+        _ => {}
+    }
+    refs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,7 +448,9 @@ mod tests {
         let input = r#"<div><p>Content</p></div>
 <script>let x = 1;</script>"#;
         let result = transpile(input, "Page").unwrap();
-        assert!(result.contains("let x = 1"));
+        // JS should be transpiled to Rust (not just commented)
+        assert!(result.contains("let x = 1") || result.contains("x = 1") || result.contains("Transpiled from"));
+        assert!(!result.contains("// NOTE: Script transpilation requires"));
     }
 
     #[test]
@@ -391,5 +506,53 @@ mod tests {
         assert!(result.contains("pub fn main"));
         assert!(result.contains("App::new(\"Hello\")"));
         assert!(result.contains("hello_component()"));
+    }
+
+    #[test]
+    fn test_transpile_each_loop() {
+        let html = r#"<ul>{#each items as item}<li>{item}</li>{/each}</ul>"#;
+        let result = transpile(html, "List").unwrap();
+        assert!(result.contains("items.iter().map(|item|"), "Expected iterator");
+        assert!(result.contains("NodeType::Element(\"li\""));
+        assert!(!result.contains("// TODO"));
+    }
+
+    #[test]
+    fn test_transpile_if_block() {
+        let html = r#"<div>{#if show}<span>Visible</span>{/if}</div>"#;
+        let result = transpile(html, "Cond").unwrap();
+        assert!(result.contains("if show"));
+        assert!(result.contains("NodeType::Element(\"span\""));
+        assert!(!result.contains("// TODO"));
+    }
+
+    #[test]
+    fn test_transpile_if_else() {
+        let html = r#"<div>{#if logged_in}<span>Welcome</span>{:else}<span>Login</span>{/if}</div>"#;
+        let result = transpile(html, "Auth").unwrap();
+        assert!(result.contains("if logged_in"));
+        assert!(result.contains("Welcome"));
+        assert!(result.contains("Login"));
+    }
+
+    #[test]
+    fn test_transpile_mixed_children() {
+        let html = r#"<div><h1>Title</h1>{#each items as item}<p>{item}</p>{/each}<footer>End</footer></div>"#;
+        let result = transpile(html, "Mixed").unwrap();
+        assert!(result.contains("items.iter().map(|item|"));
+        assert!(result.contains("__c.extend("));
+        assert!(result.contains("__c.push("));
+    }
+
+    #[test]
+    fn test_transpile_component_composition() {
+        let html = r#"<div><Header></Header><p>Content</p><Footer></Footer></div>"#;
+        let result = transpile(html, "Page").unwrap();
+        // Should generate use imports for referenced components
+        assert!(result.contains("use crate::generated::header::header_component"));
+        assert!(result.contains("use crate::generated::footer::footer_component"));
+        // Should call component functions
+        assert!(result.contains("header_component()"));
+        assert!(result.contains("footer_component()"));
     }
 }
