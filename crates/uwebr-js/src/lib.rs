@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod codegen;
 pub mod context;
 pub mod parser;
+pub mod script;
 pub mod transformer;
 pub mod types;
 pub mod utils;
@@ -9,6 +10,7 @@ pub mod utils;
 use anyhow::Result;
 
 pub use context::Context;
+pub use script::ScriptState;
 pub use types::*;
 
 #[derive(Debug, Clone)]
@@ -37,8 +39,58 @@ pub struct TranspileResult {
     pub warnings: Vec<String>,
 }
 
+/// Transpiled `<script>` block: Rust code plus the reactive state it declares.
+#[derive(Debug, Clone)]
+pub struct ScriptResult {
+    pub code: String,
+    pub warnings: Vec<String>,
+    /// Top-level bindings lowered into `uwebr_core::state` accessors.
+    pub states: Vec<ScriptState>,
+    /// Names of top-level functions, used to bind `on:click={handler}`.
+    pub functions: Vec<String>,
+}
+
 pub fn transpile(js_code: &str) -> Result<TranspileResult> {
     transpile_with_options(js_code, &TranspileOptions::default())
+}
+
+/// Transpile a `.uwebr` `<script>` block.
+///
+/// Unlike [`transpile`], top-level `let`/`const` bindings are lowered into
+/// reactive accessor functions rather than emitted as module-scope `let`
+/// statements, which Rust rejects.
+pub fn transpile_script(js_code: &str) -> Result<ScriptResult> {
+    let options = TranspileOptions::default();
+    let module = parser::parse_js(js_code)?;
+    let (ctx, _analysis_stmts) = analyzer::analyze(&module)?;
+    let mut transformer = transformer::Transformer::with_context(ctx);
+    let rust_ast = transformer.transform_module(&module)?;
+
+    let (lowered, states) = script::lower_script_state(&rust_ast);
+
+    let functions = lowered
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RsStmt::Fn(f) => Some(f.name.clone()),
+            RsStmt::Pub(inner) => match &**inner {
+                RsStmt::Fn(f) => Some(f.name.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        // Generated accessors are an implementation detail, not event handlers.
+        .filter(|name| !name.starts_with("__state_") && !name.starts_with("__set_state_"))
+        .collect();
+
+    let generated = codegen::generate(&lowered, &options)?;
+
+    Ok(ScriptResult {
+        code: generated.code,
+        warnings: generated.warnings,
+        states,
+        functions,
+    })
 }
 
 pub fn transpile_with_options(
