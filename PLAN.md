@@ -21,8 +21,8 @@ uwebr/
     ├── uwebr-js/                   # ✅ JS/TS → Rust transpiler (13 test)
     ├── uwebr-html/                 # ✅ HTML parser + template directives + components (31 test)
     ├── uwebr-css/                  # ✅ CSS parser → Taffy Style (43 test)
-    ├── uwebr-core/                 # 🔄 Reactive system: Signal, Context, Router (5 test, devam ediyor)
-    ├── uwebr-render/               # 🔄 Iskelet: wgpu + vello renderer (3 test)
+    ├── uwebr-core/                 # ✅ Reactive system: Signal, Context, Router, Effects, Lifecycle (48 test)
+    ├── uwebr-render/               # ✅ GPU: color, scene, text, layout, scene_builder, renderer (38 test)
     ├── uwebr-app/                  # 🔄 Iskelet: App runner + window (2 test)
     └── uwebr-cli/                  # 🔄 Iskelet: CLI binary (uwebr init/build/dev)
 ```
@@ -199,20 +199,81 @@ HTML/CSS/JS Dosyaları
 - [x] `provide_context` / `use_context` — global context sharing
 - [x] Integration tests (48 test)
 
-### FAZ 4 — uwebr-render (GPU Pipeline) 🔄 BEKLİYOR
+### FAZ 4 — uwebr-render (GPU Pipeline) ✅ TAMAMLANDI
 **Süre:** 3-4 hafta
-**Hedef:** GPU rendering pipeline
+**Hedef:** GPU rendering pipeline — Element → Layout → Scene → GPU
 
-- [x] Iskelet: Renderer, Scene, LayoutEngine
-- [ ] Vello scene builder
-- [ ] Rect/RoundRect/Line çizimi
-- [ ] Text rendering (parley + vello)
-- [ ] Gradient, Shadow, Opacity, Transform
-- [ ] Image rendering
-- [ ] Hit testing
-- [ ] Scroll container
-- [ ] Taffy layout integration
-- [ ] Benchmarks
+**Mimari:**
+```
+Element (uwebr-core)          CSS Rules (uwebr-css)
+     │                              │
+     ▼                              ▼
+┌──────────────────────────────────────────────┐
+│  LayoutEngine (taffy 0.14)                   │
+│  Element → TaffyTree → compute_layout()      │
+│  → Vec<PositionedNode>                       │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  SceneBuilder                                │
+│  PositionedNode + css::Color → vello::Scene  │
+│  fill(), stroke(), draw_glyphs(), layers     │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  Renderer (wgpu + vello)                     │
+│  Scene → render_to_texture → surface blit    │
+└──────────────────────────────────────────────┘
+```
+
+**Modül 1 — color.rs: CSS Color → peniko::Color**
+- [x] `css_color_to_peniko()` — CssColor → peniko::Color dönüşümü
+- [x] `parse_color_to_peniko()` — hex (3/6/8) + named color parse
+- [x] 6 test
+
+**Modül 2 — scene.rs: Zenginleştirilmiş Scene Graph**
+- [x] `RenderScene`, `RenderNode`, `RenderStyle`
+- [x] `Background` enum: Solid, LinearGradient, RadialGradient
+- [x] `BorderStyle`, `LayoutInfo`
+- [x] `RenderNodeKind`: Rect, RoundRect, Text, Image, Container
+- [x] 6 test
+
+**Modül 3 — text.rs: Parley + Vello Text Rendering**
+- [x] `TextRenderer` — parley font context + layout context
+- [x] `layout_text()` — text'i parley ile layout et
+- [x] `measure_text()` — text boyutunu ölç
+- [x] 4 test
+
+**Modül 4 — layout.rs: Element → TaffyTree → PositionedNode**
+- [x] `LayoutEngine` — TaffyTree wrapper
+- [x] `build_tree()` — Element tree → TaffyTree
+- [x] `compute()` — layout hesaplama
+- [x] `get_layout_info()` — pozisyon + boyut çıkarma
+- [x] `collect_positioned_nodes()` — tree traversal
+- [x] CSS class → taffy Style eşleme (tag-based defaults + inline props)
+- [x] 7 test
+
+**Modül 5 — scene_builder.rs: PositionedNode → vello Scene**
+- [x] `SceneBuilder::build_scene()` — node listesinden vello Scene
+- [x] `draw_node()` — tek node'u draw call'a çevir
+- [x] `make_brush()` — Background → peniko::Brush
+- [x] Gradient, opacity, border-radius desteği
+- [x] 7 test
+
+**Modül 6 — renderer.rs: GPU Pipeline**
+- [x] `Renderer::new()` — wgpu device + vello renderer
+- [x] `resize()` — boyut güncelleme
+- [x] `render_frame()` — scene → vello Scene (GPU submit caller'da)
+- [x] `update_scene()` — yeni positioned nodes ile güncelle
+- [x] 6 test (GPU gerektirmeyen unit testler)
+
+**Modül 7 — lib.rs + Cargo.toml**
+- [x] Mod tanımları + re-export
+- [x] Dependencies: parley, kurbo, uwebr-core, uwebr-css ekle
+
+**Toplam:** 38 test ✅
 
 ### FAZ 5 — uwebr-app (Window + Events)
 **Süre:** 2 hafta
@@ -247,11 +308,11 @@ HTML/CSS/JS Dosyaları
 | uwebr-html | ✅ Tamamlandı | 31/31 | FAZ 1: markup5ever, template directives, components, PascalCase detection |
 | uwebr-css | ✅ Tamamlandı | 43/43 | FAZ 2: CSS parser + Taffy Style mapping |
 | uwebr-core | ✅ Tamamlandı | 48/48 | FAZ 3: Signal, Memo, Effect, Diff, Events, Lifecycle, Hooks, Context, Macros |
-| uwebr-render | 🔄 Geliyor | 3/3 iskelet | FAZ 4: vello entegrasyonu bekliyor |
+| uwebr-render | ✅ Tamamlandı | 38/38 | FAZ 4: color, scene, text, layout, scene_builder, renderer |
 | uwebr-app | 🔄 Geliyor | 2/2 iskelet | FAZ 5: winit ApplicationHandler bekliyor |
 | uwebr-cli | 🔄 Geliyor | - | FAZ 6: scaffolding + hot reload bekliyor |
 
-**Toplam:** 141/141 test geçti
+**Toplam:** 175/175 test geçti
 
 ---
 

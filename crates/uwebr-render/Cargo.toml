@@ -8,10 +8,14 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
-winit = "0.30"
-wgpu = "30"
-vello = "0.10"
+winit.workspace = true
+wgpu.workspace = true
+vello.workspace = true
 taffy.workspace = true
+parley.workspace = true
+kurbo.workspace = true
+uwebr-core.workspace = true
+uwebr-css.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
