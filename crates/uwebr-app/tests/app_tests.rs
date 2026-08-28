@@ -115,6 +115,53 @@ fn test_pipeline_nested_components() {
     let _scene = pipeline.render(&el, 800, 600);
 }
 
+// ── Multi-window tests ───────────────────────────────────────
+
+#[test]
+fn test_app_multi_window_fields() {
+    let app = App::new("Test");
+    assert_eq!(app.window_count(), 0);
+}
+
+#[test]
+fn test_app_open_window_pending() {
+    let app = App::new("Main")
+        .open_window("Child", 400, 300, FnComponent::new(|| Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![],
+        }));
+    assert_eq!(app.pending_window_count(), 1);
+}
+
+#[test]
+fn test_app_multiple_pending_windows() {
+    let app = App::new("Main")
+        .open_window("Win1", 400, 300, FnComponent::new(|| Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![],
+        }))
+        .open_window("Win2", 600, 400, FnComponent::new(|| Element {
+            node_type: NodeType::Element("span".into()),
+            props: vec![],
+            children: vec![],
+        }));
+    assert_eq!(app.pending_window_count(), 2);
+}
+
+#[test]
+fn test_app_primary_window_before_run() {
+    let app = App::new("Test");
+    assert!(app.primary_window().is_none());
+}
+
+#[test]
+fn test_app_window_count_before_run() {
+    let app = App::new("Test");
+    assert_eq!(app.window_count(), 0);
+}
+
 // ── Timer tests ──────────────────────────────────────────────
 
 #[test]
