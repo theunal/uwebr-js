@@ -1,16 +1,17 @@
+use crate::transpiler;
 use anyhow::{Context, Result};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use notify::{Watcher, RecursiveMode, Event, EventKind};
-use crate::transpiler;
 
 /// Scaffold a new uwebr project
 pub fn init_project(name: &str) -> Result<()> {
     let root = Path::new(name);
-    let crate_name = root.file_name()
+    let crate_name = root
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("my-app");
 
@@ -37,25 +38,18 @@ anyhow = "1"
         ),
     )?;
 
-    // src/main.rs
+    // src/main.rs — placeholder, overwritten by build/dev
     fs::write(
         root.join("src/main.rs"),
-        r#"use uwebr_app::App;
-use uwebr_core::component::{Element, NodeType};
-use uwebr_app::FnComponent;
+        r#"mod generated;
 
-fn main() -> anyhow::Result<()> {
-    App::new("My App")
-        .with_size(800, 600)
-        .with_component(FnComponent::new(|| Element {
-            node_type: NodeType::Element("div".into()),
-            props: vec![],
-            children: vec![Element {
-                node_type: NodeType::Text("Hello from uwebr!".into()),
-                props: vec![],
-                children: vec![],
-            }],
-        }))
+use uwebr_app::App;
+use uwebr_app::FnComponent;
+use generated::app::app_component;
+
+pub fn main() -> anyhow::Result<()> {
+    App::new("App")
+        .with_component(FnComponent::new(|| app_component()))
         .run()
 }
 "#,
@@ -252,7 +246,8 @@ pub fn build_project(path: &str, release: bool) -> Result<()> {
 
     for file in &uwebr_files {
         let rel = file.strip_prefix(root).unwrap_or(file);
-        let file_name = file.file_stem()
+        let file_name = file
+            .file_stem()
             .and_then(|n| n.to_str())
             .unwrap_or("Component");
 
@@ -266,7 +261,10 @@ pub fn build_project(path: &str, release: bool) -> Result<()> {
             Ok(rs_code) => {
                 let out_file = out_dir.join(format!("{}.rs", file_name));
                 fs::write(&out_file, &rs_code)?;
-                println!("    → {}", out_file.strip_prefix(root).unwrap_or(&out_file).display());
+                println!(
+                    "    → {}",
+                    out_file.strip_prefix(root).unwrap_or(&out_file).display()
+                );
                 generated_files.push((file_name.to_string(), out_file));
             }
             Err(e) => {
@@ -281,34 +279,15 @@ pub fn build_project(path: &str, release: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Generate mod.rs for generated directory
-    let mod_content: String = generated_files
-        .iter()
-        .map(|(name, _)| format!("pub mod {};", transpiler::to_snake(name)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mod_file = out_dir.join("mod.rs");
-    fs::write(&mod_file, mod_content)?;
+    // Write mod.rs + main.rs
+    let names: Vec<String> = generated_files.iter().map(|(n, _)| n.clone()).collect();
+    write_mod_and_main(root, &names)?;
+    println!("  Generated src/main.rs + mod.rs");
 
-    // Update src/main.rs to include generated modules
-    let main_rs = root.join("src/main.rs");
-    let main_content = if main_rs.exists() {
-        fs::read_to_string(&main_rs)?
-    } else {
-        String::new()
-    };
-
-    // Check if generated mod is already included
-    if !main_content.contains("mod generated") {
-        let new_main = format!(
-            "#[allow(unused)]\nmod generated;\n\n{}",
-            main_content
-        );
-        fs::write(&main_rs, new_main)?;
-        println!("  Updated src/main.rs with `mod generated`");
-    }
-
-    println!("Transpilation complete. {} file(s) generated.", generated_files.len());
+    println!(
+        "Transpilation complete. {} file(s) generated.",
+        generated_files.len()
+    );
 
     // Run cargo build if not check-only mode
     println!("\nCompiling with cargo...");
@@ -336,7 +315,10 @@ pub fn dev_server(path: &str) -> Result<()> {
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| {
         if let Ok(event) = res {
-            if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)) {
+            if matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            ) {
                 let _ = tx.send(event);
             }
         }
@@ -389,7 +371,8 @@ pub fn dev_server(path: &str) -> Result<()> {
                 }
 
                 // Filter to only .uwebr files
-                let uwebr_changed: Vec<_> = changed.iter()
+                let uwebr_changed: Vec<_> = changed
+                    .iter()
                     .filter(|p| p.extension().is_some_and(|ext| ext == "uwebr"))
                     .cloned()
                     .collect();
@@ -398,12 +381,17 @@ pub fn dev_server(path: &str) -> Result<()> {
                     continue;
                 }
 
-                let paths_display: Vec<_> = uwebr_changed.iter()
+                let paths_display: Vec<_> = uwebr_changed
+                    .iter()
                     .filter_map(|p| p.strip_prefix(&root).ok())
                     .map(|p| p.display().to_string())
                     .collect();
 
-                println!("[rebuild] {} file(s): {}", uwebr_changed.len(), paths_display.join(", "));
+                println!(
+                    "[rebuild] {} file(s): {}",
+                    uwebr_changed.len(),
+                    paths_display.join(", ")
+                );
 
                 let start = Instant::now();
 
@@ -421,7 +409,10 @@ pub fn dev_server(path: &str) -> Result<()> {
                                 println!("  ✓ Transpiled {count} + built in {:?}", start.elapsed());
                             }
                             Ok(_) => {
-                                println!("  ⚠ Transpiled {count} file(s) but cargo build failed ({:?})", start.elapsed());
+                                println!(
+                                    "  ⚠ Transpiled {count} file(s) but cargo build failed ({:?})",
+                                    start.elapsed()
+                                );
                             }
                             Err(e) => {
                                 eprintln!("  ✗ cargo build error: {e}");
@@ -456,7 +447,8 @@ fn transpile_all(root: &Path) -> Result<usize> {
     let mut generated = vec![];
 
     for file in &files {
-        let file_name = file.file_stem()
+        let file_name = file
+            .file_stem()
             .and_then(|n| n.to_str())
             .unwrap_or("Component");
         let content = fs::read_to_string(file)?;
@@ -475,24 +467,8 @@ fn transpile_all(root: &Path) -> Result<usize> {
         }
     }
 
-    // Write mod.rs
-    let mod_content: String = generated.iter()
-        .map(|name| format!("pub mod {};", transpiler::to_snake(name)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(out_dir.join("mod.rs"), mod_content)?;
-
-    // Ensure main.rs has `mod generated`
-    let main_rs = root.join("src/main.rs");
-    let main_content = if main_rs.exists() {
-        fs::read_to_string(&main_rs)?
-    } else {
-        String::new()
-    };
-    if !main_content.contains("mod generated") {
-        let new_main = format!("#[allow(unused)]\nmod generated;\n\n{main_content}");
-        fs::write(&main_rs, new_main)?;
-    }
+    // Write mod.rs + main.rs
+    write_mod_and_main(root, &generated)?;
 
     Ok(count)
 }
@@ -509,7 +485,8 @@ fn transpile_incremental(root: &Path, changed: &[PathBuf]) -> Result<usize> {
     let all_files = find_uwebr_files(root)?;
 
     for file in &all_files {
-        let file_name = file.file_stem()
+        let file_name = file
+            .file_stem()
             .and_then(|n| n.to_str())
             .unwrap_or("Component");
 
@@ -532,12 +509,8 @@ fn transpile_incremental(root: &Path, changed: &[PathBuf]) -> Result<usize> {
         generated.push(file_name.to_string());
     }
 
-    // Rewrite mod.rs
-    let mod_content: String = generated.iter()
-        .map(|name| format!("pub mod {};", transpiler::to_snake(name)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(out_dir.join("mod.rs"), mod_content)?;
+    // Rewrite mod.rs + main.rs
+    write_mod_and_main(root, &generated)?;
 
     Ok(count)
 }
@@ -558,6 +531,69 @@ fn find_uwebr_files(root: &Path) -> Result<Vec<PathBuf>> {
 
     files.sort();
     Ok(files)
+}
+
+/// Write mod.rs and main.rs to connect generated components
+fn write_mod_and_main(root: &Path, generated: &[String]) -> Result<()> {
+    let out_dir = root.join("src/generated");
+
+    // Write mod.rs
+    let mod_content: String = generated
+        .iter()
+        .map(|name| format!("pub mod {};", transpiler::to_snake(name)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(out_dir.join("mod.rs"), mod_content)?;
+
+    // Determine root component: prefer "App", else first file
+    let root_name = generated
+        .iter()
+        .find(|n| n.eq_ignore_ascii_case("App"))
+        .or(generated.first())
+        .cloned()
+        .unwrap_or_default();
+    if root_name.is_empty() {
+        return Ok(());
+    }
+    let root_snake = transpiler::to_snake(&root_name);
+    let root_upper = root_name.to_uppercase();
+
+    // Check if root component has CSS
+    let root_rs = out_dir.join(format!("{}.rs", root_name));
+    let root_has_css = fs::read_to_string(&root_rs)
+        .map(|c| c.contains("const CSS_"))
+        .unwrap_or(false);
+
+    // Generate main.rs
+    let main_rs = root.join("src/main.rs");
+    let mut main_content = String::new();
+    main_content.push_str("mod generated;\n\n");
+    main_content.push_str("use uwebr_app::App;\n");
+    main_content.push_str("use uwebr_app::FnComponent;\n\n");
+    main_content.push_str(&format!(
+        "use generated::{root_snake}::{root_snake}_component;\n"
+    ));
+    if root_has_css {
+        main_content.push_str(&format!(
+            "use generated::{root_snake}::CSS_{root_upper};\n"
+        ));
+    }
+    main_content.push_str("\npub fn main() -> anyhow::Result<()> {\n");
+    main_content.push_str(&format!(
+        "    let mut app = App::new(\"{}\");\n",
+        root_name
+    ));
+    if root_has_css {
+        main_content.push_str(&format!("    app = app.with_css(CSS_{root_upper});\n"));
+    }
+    main_content.push_str("    app.with_component(FnComponent::new(|| {\n");
+    main_content.push_str(&format!("        {root_snake}_component()\n"));
+    main_content.push_str("    }))\n");
+    main_content.push_str("    .run()\n");
+    main_content.push_str("}\n");
+    fs::write(&main_rs, main_content)?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -607,9 +643,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let src = tmp.path().join("src/app");
         fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("Page.uwebr"), r#"<div class="page"><h1>Hello</h1></div>"#).unwrap();
+        fs::write(
+            src.join("Page.uwebr"),
+            r#"<div class="page"><h1>Hello</h1></div>"#,
+        )
+        .unwrap();
         let cache = BuildCache::new(tmp.path().to_path_buf());
-        let result = cache.parse_file(&tmp.path().join("src/app/Page.uwebr")).unwrap();
+        let result = cache
+            .parse_file(&tmp.path().join("src/app/Page.uwebr"))
+            .unwrap();
         assert!(result.error.is_none());
         assert!(result.html.contains("Hello"));
         assert!(result.parse_time_us > 0);

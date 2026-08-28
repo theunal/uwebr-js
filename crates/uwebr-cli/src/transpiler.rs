@@ -1,15 +1,16 @@
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
-use uwebr_html::ast::{HtmlNode, HtmlAttributeValue};
-use uwebr_html::parser::parse_html;
+use uwebr_html::ast::{HtmlAttributeValue, HtmlNode};
 use uwebr_html::directives::expand_directives;
+use uwebr_html::parser::parse_html;
 use uwebr_js;
 
 /// Transpile a .uwebr file to Rust source code
 pub fn transpile_file(path: &Path) -> Result<String> {
     let content = fs::read_to_string(path)?;
-    let file_name = path.file_stem()
+    let file_name = path
+        .file_stem()
         .and_then(|n| n.to_str())
         .unwrap_or("Component");
     transpile(&content, file_name)
@@ -38,14 +39,14 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
     let has_components = !component_refs.is_empty();
 
     // Header
-    output.push_str("use uwebr_app::App;\n");
     output.push_str("use uwebr_core::component::{Element, NodeType, PropValue};\n");
-    output.push_str("use uwebr_app::FnComponent;\n");
     if has_components {
         for comp in &component_refs {
             let mod_name = to_snake(comp);
             let fn_name = to_snake(comp);
-            output.push_str(&format!("use crate::generated::{mod_name}::{fn_name}_component;\n"));
+            output.push_str(&format!(
+                "use crate::generated::{mod_name}::{fn_name}_component;\n"
+            ));
         }
     }
     output.push('\n');
@@ -60,7 +61,10 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
     }
 
     // Component function
-    output.push_str(&format!("pub fn {}_component() -> Element {{\n", to_snake(component_name)));
+    output.push_str(&format!(
+        "pub fn {}_component() -> Element {{\n",
+        to_snake(component_name)
+    ));
     output.push_str(&format!("    // HTML from {}.uwebr\n", component_name));
     output.push_str(&generate_element_code(&root, 2));
     output.push_str("\n}\n\n");
@@ -87,19 +91,6 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
             }
         }
     }
-
-    // Main function
-    output.push_str("pub fn main() -> anyhow::Result<()> {\n");
-    output.push_str(&format!("    let mut app = App::new(\"{}\");\n", component_name));
-    if !css.is_empty() {
-        output.push_str(&format!("    app = app.with_css(CSS_{});\n", component_name.to_uppercase()));
-    }
-    output.push_str("    app.with_component(FnComponent::new(|| {\n");
-    output.push_str(&format!("        {}_component()\n", to_snake(component_name)));
-    output.push_str("    }))\n");
-    output.push_str("    .run()\n");
-    output.push_str("}\n");
-
     Ok(output)
 }
 
@@ -115,17 +106,26 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
             for attr in &el.attributes {
                 match &attr.value {
                     HtmlAttributeValue::Literal(val) => {
-                        props.push(format!("(\"{}\".into(), PropValue::String(\"{}\".into()))", attr.name, val));
+                        props.push(format!(
+                            "(\"{}\".into(), PropValue::String(\"{}\".into()))",
+                            attr.name, val
+                        ));
                     }
                     HtmlAttributeValue::Expression(expr) => {
-                        props.push(format!("(\"{}\".into(), PropValue::String({}.into()))", attr.name, expr));
+                        props.push(format!(
+                            "(\"{}\".into(), PropValue::String({}.into()))",
+                            attr.name, expr
+                        ));
                     }
                     HtmlAttributeValue::Boolean(true) => {
                         props.push(format!("(\"{}\".into(), PropValue::Bool(true))", attr.name));
                     }
                     HtmlAttributeValue::Boolean(false) => {}
                     HtmlAttributeValue::Shorthand(name) => {
-                        props.push(format!("(\"{}\".into(), PropValue::String({}.into()))", attr.name, name));
+                        props.push(format!(
+                            "(\"{}\".into(), PropValue::String({}.into()))",
+                            attr.name, name
+                        ));
                     }
                     HtmlAttributeValue::Conditional(cond, then_val, else_val) => {
                         props.push(format!(
@@ -150,7 +150,10 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
             };
 
             // Check if any child is an each/if block (produces Vec<Element>)
-            let has_dynamic = el.children.iter().any(|c| matches!(c, HtmlNode::EachLoop(_) | HtmlNode::IfBlock(_)));
+            let has_dynamic = el
+                .children
+                .iter()
+                .any(|c| matches!(c, HtmlNode::EachLoop(_) | HtmlNode::IfBlock(_)));
 
             let children_str = if children_code.is_empty() {
                 "vec![]".to_string()
@@ -170,11 +173,7 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
                 lines.push(format!("__c }}"));
                 lines.join("\n")
             } else {
-                format!(
-                    "vec![\n{}\n{}]",
-                    children_code.join(",\n"),
-                    pad
-                )
+                format!("vec![\n{}\n{}]", children_code.join(",\n"), pad)
             };
 
             format!(
@@ -201,7 +200,8 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
             if nodes.len() == 1 {
                 return generate_element_code(&nodes[0], indent);
             }
-            let children: Vec<String> = nodes.iter()
+            let children: Vec<String> = nodes
+                .iter()
                 .map(|n| generate_element_code(n, indent + 1))
                 .collect();
             format!(
@@ -215,10 +215,16 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
             for attr in &comp.attributes {
                 match &attr.value {
                     HtmlAttributeValue::Literal(val) => {
-                        props.push(format!("(\"{}\".into(), PropValue::String(\"{}\".into()))", attr.name, val));
+                        props.push(format!(
+                            "(\"{}\".into(), PropValue::String(\"{}\".into()))",
+                            attr.name, val
+                        ));
                     }
                     HtmlAttributeValue::Expression(expr) => {
-                        props.push(format!("(\"{}\".into(), PropValue::String({}.into()))", attr.name, expr));
+                        props.push(format!(
+                            "(\"{}\".into(), PropValue::String({}.into()))",
+                            attr.name, expr
+                        ));
                     }
                     _ => {}
                 }
@@ -238,7 +244,9 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
         HtmlNode::EachLoop(each) => {
             let item = &each.item_name;
             let iter = &each.iterable;
-            let body_elements: Vec<String> = each.body.iter()
+            let body_elements: Vec<String> = each
+                .body
+                .iter()
                 .map(|n| generate_element_code(n, indent + 3))
                 .collect();
             let body_str = if body_elements.len() == 1 {
@@ -252,14 +260,19 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
             };
             format!(
                 "{}{}.iter().map(|{}| {{\n{}{}\n{}}}).collect::<Vec<_>>()",
-                pad, iter, item,
-                "    ".repeat(indent + 2), body_str.trim(),
+                pad,
+                iter,
+                item,
+                "    ".repeat(indent + 2),
+                body_str.trim(),
                 pad
             )
         }
         HtmlNode::IfBlock(if_block) => {
             let cond = &if_block.condition;
-            let then_elements: Vec<String> = if_block.then_body.iter()
+            let then_elements: Vec<String> = if_block
+                .then_body
+                .iter()
                 .map(|n| generate_element_code(n, indent + 2))
                 .collect();
             let then_str = if then_elements.len() == 1 {
@@ -272,7 +285,8 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
                 )
             };
             let else_str = if let Some(ref else_body) = if_block.else_body {
-                let else_elements: Vec<String> = else_body.iter()
+                let else_elements: Vec<String> = else_body
+                    .iter()
                     .map(|n| generate_element_code(n, indent + 2))
                     .collect();
                 if else_elements.len() == 1 {
@@ -289,9 +303,12 @@ fn generate_element_code(node: &HtmlNode, indent: usize) -> String {
             };
             format!(
                 "{}if {} {{\n{}{}\n{}{}}}",
-                pad, cond,
-                "    ".repeat(indent + 1), then_str.trim(),
-                pad, else_str
+                pad,
+                cond,
+                "    ".repeat(indent + 1),
+                then_str.trim(),
+                pad,
+                else_str
             )
         }
         HtmlNode::RawHtml(expr) => {
@@ -332,11 +349,7 @@ fn extract_html(content: &str) -> String {
         if let Some(tag_end) = result[start..].find('>') {
             let tag_end = start + tag_end + 1;
             if let Some(close_end) = result[tag_end..].find("</style>") {
-                result = format!(
-                    "{}{}",
-                    &result[..start],
-                    &result[tag_end + close_end + 8..]
-                );
+                result = format!("{}{}", &result[..start], &result[tag_end + close_end + 8..]);
             } else {
                 break;
             }
@@ -350,11 +363,7 @@ fn extract_html(content: &str) -> String {
         if let Some(tag_end) = result[start..].find('>') {
             let tag_end = start + tag_end + 1;
             if let Some(close_end) = result[tag_end..].find("</script>") {
-                result = format!(
-                    "{}{}",
-                    &result[..start],
-                    &result[tag_end + close_end + 9..]
-                );
+                result = format!("{}{}", &result[..start], &result[tag_end + close_end + 9..]);
             } else {
                 break;
             }
@@ -449,7 +458,11 @@ mod tests {
 <script>let x = 1;</script>"#;
         let result = transpile(input, "Page").unwrap();
         // JS should be transpiled to Rust (not just commented)
-        assert!(result.contains("let x = 1") || result.contains("x = 1") || result.contains("Transpiled from"));
+        assert!(
+            result.contains("let x = 1")
+                || result.contains("x = 1")
+                || result.contains("Transpiled from")
+        );
         assert!(!result.contains("// NOTE: Script transpilation requires"));
     }
 
@@ -479,7 +492,8 @@ mod tests {
 
     #[test]
     fn test_extract_tag() {
-        let content = r#"Hello <style>.a { color: red; }</style> World <script>let x = 1;</script> End"#;
+        let content =
+            r#"Hello <style>.a { color: red; }</style> World <script>let x = 1;</script> End"#;
         let css = extract_tag(content, "style");
         assert_eq!(css, ".a { color: red; }");
         let js = extract_tag(content, "script");
@@ -496,23 +510,27 @@ mod tests {
     #[test]
     fn test_transpile_empty() {
         let result = transpile("", "Empty").unwrap();
-        assert!(result.contains("fn main"));
+        assert!(result.contains("pub fn empty_component()"));
     }
 
     #[test]
-    fn test_transpile_main_function() {
+    fn test_transpile_component_function() {
         let html = r#"<div>Hello</div>"#;
         let result = transpile(html, "Hello").unwrap();
-        assert!(result.contains("pub fn main"));
-        assert!(result.contains("App::new(\"Hello\")"));
-        assert!(result.contains("hello_component()"));
+        assert!(result.contains("pub fn hello_component()"));
+        assert!(result.contains("NodeType::Element(\"div\""));
+        assert!(result.contains("NodeType::Text(\"Hello\""));
+        assert!(!result.contains("pub fn main"));
     }
 
     #[test]
     fn test_transpile_each_loop() {
         let html = r#"<ul>{#each items as item}<li>{item}</li>{/each}</ul>"#;
         let result = transpile(html, "List").unwrap();
-        assert!(result.contains("items.iter().map(|item|"), "Expected iterator");
+        assert!(
+            result.contains("items.iter().map(|item|"),
+            "Expected iterator"
+        );
         assert!(result.contains("NodeType::Element(\"li\""));
         assert!(!result.contains("// TODO"));
     }
@@ -528,7 +546,8 @@ mod tests {
 
     #[test]
     fn test_transpile_if_else() {
-        let html = r#"<div>{#if logged_in}<span>Welcome</span>{:else}<span>Login</span>{/if}</div>"#;
+        let html =
+            r#"<div>{#if logged_in}<span>Welcome</span>{:else}<span>Login</span>{/if}</div>"#;
         let result = transpile(html, "Auth").unwrap();
         assert!(result.contains("if logged_in"));
         assert!(result.contains("Welcome"));
