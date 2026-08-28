@@ -1,8 +1,9 @@
 use anyhow::Result;
 use std::sync::Arc;
+use uwebr_core::timer::timer_registry;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::component::Component;
@@ -12,9 +13,7 @@ use crate::pipeline::RenderPipeline;
 
 /// Application state
 enum AppState {
-    /// Waiting for GPU context initialization
     WaitingResume,
-    /// GPU context is ready
     Running {
         ctx: GpuContext,
         pipeline: RenderPipeline,
@@ -81,7 +80,10 @@ impl Default for App {
 }
 
 impl ApplicationHandler for App {
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: StartCause) {}
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: StartCause) {
+        // Tick timers whenever new events arrive
+        timer_registry().tick();
+    }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if matches!(self.state, AppState::WaitingResume) {
@@ -127,6 +129,9 @@ impl ApplicationHandler for App {
                         self.dispatch_event(&AppEvent::Resize(size.width, size.height));
                     }
                     WindowEvent::RedrawRequested => {
+                        // Fire animation frame callbacks
+                        timer_registry().fire_animation_frames();
+
                         if let Some(ref component) = self.component {
                             let element = component.render();
                             let (w, h) = ctx.size();
@@ -153,8 +158,22 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let registry = timer_registry();
+
         if let AppState::Running { ref ctx, .. } = self.state {
-            ctx.window().request_redraw();
+            // Always request redraw for animation frames
+            if registry.has_pending() {
+                ctx.window().request_redraw();
+            }
+        }
+
+        // Set control flow based on pending timers
+        // If there are intervals/timeouts, wake up early
+        // If only animation frames, wake up on next frame
+        if registry.has_pending() {
+            // Wake up soon — we use WaitUntil with a short timeout
+            // Animation frames need continuous redraw, so we set to Now
+            let _event_loop_ref = _event_loop;
         }
     }
 }

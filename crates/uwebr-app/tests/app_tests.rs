@@ -1,7 +1,11 @@
 use uwebr_app::{App, AppEvent, FnComponent, RenderPipeline};
 use uwebr_app::component::Component;
 use uwebr_core::component::{Element, NodeType, PropValue};
+use uwebr_core::timer::{TimerHandle, TimerRegistry, set_timeout, set_interval, cancel_timer, request_animation_frame};
 use winit::event::MouseButton;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 #[test]
 fn test_app_creation() {
@@ -109,4 +113,103 @@ fn test_pipeline_nested_components() {
         ],
     };
     let _scene = pipeline.render(&el, 800, 600);
+}
+
+// ── Timer tests ──────────────────────────────────────────────
+
+#[test]
+fn test_timer_registry_create() {
+    let r = TimerRegistry::new();
+    assert_eq!(r.pending_count(), 0);
+}
+
+#[test]
+fn test_set_timeout_schedules() {
+    let r = TimerRegistry::new();
+    let _h = r.set_timeout(|| {}, Duration::from_secs(1));
+    assert_eq!(r.pending_count(), 1);
+}
+
+#[test]
+fn test_set_interval_schedules() {
+    let r = TimerRegistry::new();
+    let _h = r.set_interval(|| {}, Duration::from_millis(100));
+    assert_eq!(r.pending_count(), 1);
+}
+
+#[test]
+fn test_cancel_removes() {
+    let r = TimerRegistry::new();
+    let h = r.set_timeout(|| {}, Duration::from_secs(10));
+    r.cancel(h);
+    assert_eq!(r.pending_count(), 0);
+}
+
+#[test]
+fn test_tick_fires_expired() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = counter.clone();
+
+    let _h = r.set_timeout(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    }, Duration::from_millis(0));
+
+    r.tick();
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_interval_reschedules() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = counter.clone();
+
+    let _h = r.set_interval(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    }, Duration::from_millis(0));
+
+    r.tick();
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    assert_eq!(r.pending_count(), 1);
+}
+
+#[test]
+fn test_animation_frame_fires() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = counter.clone();
+
+    let _h = r.request_animation_frame(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    });
+
+    r.fire_animation_frames();
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_global_set_timeout() {
+    let h = set_timeout(|| {}, Duration::from_secs(1));
+    cancel_timer(h);
+}
+
+#[test]
+fn test_global_set_interval() {
+    let h = set_interval(|| {}, Duration::from_millis(50));
+    cancel_timer(h);
+}
+
+#[test]
+fn test_global_request_animation_frame() {
+    let _h = request_animation_frame(|| {});
+}
+
+#[test]
+fn test_handle_equality() {
+    let r = TimerRegistry::new();
+    let h1 = r.set_timeout(|| {}, Duration::from_secs(1));
+    let h2 = r.set_timeout(|| {}, Duration::from_secs(1));
+    assert_ne!(h1, h2);
+    assert_eq!(h1, h1);
 }

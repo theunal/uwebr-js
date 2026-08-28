@@ -11,3 +11,7 @@ pub use crate::signal::{
     batch, create_effect, create_effect_once, create_memo, create_signal, flush_effects, use_memo,
     use_signal, Memo, Signal, SignalSetter,
 };
+pub use crate::timer::{
+    cancel_timer, request_animation_frame, set_interval, set_timeout, TimerHandle, TimerRegistry,
+    timer_registry,
+};
