@@ -14,17 +14,17 @@ JavaScript/TypeScript/HTML/CSS kodunu alıp, doğrudan GPU ile çizilen masaüst
 
 ```
 uwebr/
-├── Cargo.toml                      # Workspace root
+├── Cargo.toml                      # Workspace root (8 member)
 ├── PLAN.md                         # Bu dosya
-├── ARCHITECTURE.md
 └── crates/
     ├── uwebr-js/                   # ✅ JS/TS → Rust transpiler (13 test)
     ├── uwebr-html/                 # ✅ HTML parser + template directives + components (31 test)
     ├── uwebr-css/                  # ✅ CSS parser → Taffy Style (43 test)
-    ├── uwebr-core/                 # ✅ Reactive system: Signal, Context, Router, Effects, Lifecycle (48 test)
-    ├── uwebr-render/               # ✅ GPU: color, scene, text, layout, scene_builder, renderer (38 test)
-    ├── uwebr-app/                  # ✅ App runner: GpuContext + winit ApplicationHandler + Component trait + RenderPipeline (28 test)
-    └── uwebr-cli/                  # ✅ CLI binary: init/build/dev + hot reload (7 test)
+    ├── uwebr-core/                 # ✅ Reactive system + Timer (54 test)
+    ├── uwebr-macro/                # ✅ #[component] + #[derive(Props)] (5 test)
+    ├── uwebr-render/               # ✅ GPU pipeline + StyleBook (47 test)
+    ├── uwebr-app/                  # ✅ Multi-window + RenderPipeline (31 test)
+    └── uwebr-cli/                  # ✅ CLI: init/build/check/dev + transpiler (28 test)
 ```
 
 ---
@@ -34,85 +34,50 @@ uwebr/
 | Katman | Crate | Versiyon | Neden |
 |--------|-------|----------|-------|
 | Pencere Yönetimi | `winit` | 0.30.x | Tüm Rust GUI frameworklerinin ortak altyapısı |
-| GPU Soyutlama | `wgpu` | 30.x | WebGPU standardı, Vulkan/Metal/DX12/WebGPU |
+| GPU Soyutlama | `wgpu` | 29.x | WebGPU standardı, Vulkan/Metal/DX12/WebGPU |
 | 2D Vektörel Çizim | `vello` | 0.10.0 | GPU compute-centric, 177 FPS |
-| CPU Fallback | `vello_cpu` | 0.0.6 | GPU yokken CPU ile çizim |
 | Text Yerleşimi | `parley` | 0.9.0 | Linebender ekosistemi |
 | Layout Motoru | `taffy` | 0.14.0 | CSS Flexbox/Grid/Block |
-| Biçimler | `kurbo` | 0.13.1 | Bezier eğrileri, vello entegrasyonu |
+| Biçimler | `kurbo` | 0.13.x | Bezier eğrileri, vello entegrasyonu |
 | HTML Parse | `html5ever` | 0.29 | Gerçek HTML5 parser |
-| CSS Parse | Custom | - | Hand-written CSS parser (lightningcss alpha API çok kararsız) |
+| CSS Parse | Custom | - | Hand-written (lightningcss alpha API kararsız) |
 | JS Parse | `swc_ecma_parser` | 45.1 | ES2020+ parsing |
 | Error Handling | `anyhow` + `thiserror` | - | - |
 | CLI | `clap` | 4.x | - |
 
-### Mimari Diagram
-
-```
-                    Uygulama Katmanı
-                         │
-                   ┌─────┴─────┐
-                   │   State   │
-                   │  Manager  │
-                   │ (Signals) │
-                   └─────┬─────┘
-                         │
-             ┌───────────┼───────────┐
-             │           │           │
-        ┌────┴────┐ ┌────┴────┐ ┌────┴────┐
-        │ taffy   │ │ parley  │ │ Event   │
-        │ Layout  │ │  Text   │ │ System  │
-        │ Engine  │ │         │ │         │
-        └────┬────┘ └────┬────┘ └────┬────┘
-             │           │           │
-             └───────────┼───────────┘
-                         │
-                   ┌─────┴─────┐
-                   │   winit   │  Pencere + Event Loop
-                   └─────┬─────┘
-                         │
-             ┌───────────┼───────────┐
-             │                       │
-       ┌─────┴─────┐          ┌─────┴─────┐
-       │   wgpu    │          │ softbuffer│  (CPU fallback)
-       │   (GPU)   │          │           │
-       └─────┬─────┘          └─────┬─────┘
-             │                       │
-       ┌─────┴─────┐          ┌─────┴─────┐
-       │   vello   │          │ vello_cpu │
-       │  (GPU 2D) │          │  (CPU 2D) │
-       └───────────┘          └───────────┘
-```
-
 ### Veri Akışı
 
 ```
-HTML/CSS/JS Dosyaları
+.uwebr Dosyası (HTML + <script> + <style>)
         │
         ▼
 ┌──────────────────┐
-│  Parse Katmanı   │  html5ever + custom CSS parser + swc_ecma_parser
-│  (AST üretimi)   │
+│  uwebr-html      │  html5ever → Element AST
+│  Parse           │  {#each}, {#if}, <Component/>
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│  Transform Katman│  uwebr-html: HTML → rsx! AST + template directives
-│  (AST → AST)     │  uwebr-css: CSS → Taffy Style
-│                  │  uwebr-js: JS → Rust AST (mevcut)
+│  uwebr-css       │  CSS rules → Taffy Style
+│  StyleBook       │  tag < class < id priority
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│  Codegen Katmanı │  rsx! macro, Rust fonksiyonları
-│  (AST → Kod)     │
+│  uwebr-render    │  Element → TaffyTree → PositionedNode
+│  Layout          │  (taffy 0.14 compute_layout)
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│  Runtime         │  uwebr-core: Reactive Signals, Virtual DOM Diff
-│  (Çalışma Zamanı)│  uwebr-render: Vello + Taffy + Parley
-│                  │  uwebr-app: Winit EventLoop
+│  uwebr-render    │  PositionedNode → vello::Scene
+│  Scene Builder   │  fill(), stroke(), gradients
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  uwebr-app       │  wgpu + vello → GPU render
+│  Renderer        │  Scene → surface texture
 └──────────────────┘
          │
          ▼
@@ -124,196 +89,124 @@ HTML/CSS/JS Dosyaları
 ## 🚀 Fazlara Ayrılmış Yol Haritası
 
 ### FAZ 0 — Workspace Kurulumu ✅ TAMAMLANDI
-**Süre:** 1-2 saat
-**Hedef:** Workspace yapısını oluştur
+- [x] Root `Cargo.toml` (workspace, 8 member)
+- [x] Tüm crate iskeletleri
+- [x] Ortak dependency versiyonları
 
-- [x] Root `Cargo.toml` oluştur (workspace, 7 member)
-- [x] `uwebr-js`'i `crates/uwebr-js` altına taşı (13 test geçti)
-- [x] Ortak dependency versiyonlarını paylaş
-- [x] uwebr-html iskeleti: AST + parser + codegen (5 test)
-- [x] uwebr-css iskeleti: AST + parser + codegen (4 test)
-- [x] uwebr-core iskeleti: Signal, Component, Router, Context (5 test)
-- [x] uwebr-render iskeleti: Renderer, Scene, Layout (3 test)
-- [x] uwebr-app iskeleti: App, Window, Event (2 test)
-- [x] uwebr-cli iskeleti: CLI binary (init/build/dev)
-- [x] Workspace build + test (33/33 geçti)
-
-### FAZ 1 — uwebr-html (Gerçek Parser) ✅ TAMAMLANDI
-**Süre:** 1-2 hafta
-**Hedef:** markup5ever ile gerçek HTML parsing
-
-- [x] Iskelet: AST tanımları, basit hand-written parser, rsx! codegen
-- [x] markup5ever + html5ever entegrasyonu (gerçek HTML5 parsing)
-- [x] Namespace prefix handling (on:click, xmlns)
-- [x] `{expression}` interpolasyon desteği
+### FAZ 1 — uwebr-html ✅ TAMAMLANDI (31 test)
+- [x] markup5ever + html5ever ile gerçek HTML5 parsing
+- [x] `{expression}` interpolasyon
 - [x] `{#each items as item}...{/each}` loop
 - [x] `{#if condition}...{:else}...{/if}` conditional
-- [x] `<Component />` component composition (PascalCase)
-- [x] `{@html raw_html}` raw HTML insertion
-- [x] `on:click={handler}` event handler attribute
+- [x] `<Component />` composition (PascalCase detection)
+- [x] `{@html raw_html}` raw insertion
+- [x] `on:click={handler}` event handlers
 - [x] Fragment desteği (`<>...</>`)
-- [x] Integration tests (20 test)
+- [x] Block directive reassembly (html5ever text node splitting)
 
-### FAZ 2 — uwebr-css (CSS → Taffy) ✅ TAMAMLANDI
-**Süre:** 1-2 hafta
-**Hedef:** CSS → Taffy Style
+### FAZ 2 — uwebr-css ✅ TAMAMLANDI (43 test)
+- [x] Custom CSS parser: selector, property, value
+- [x] Selectors: tag, class, id, universal, child, descendant, list
+- [x] Values: px, em, rem, %, vw, vh, auto, hex/named colors, rgb(), hsl()
+- [x] Shorthand: padding/margin 1-4 values
+- [x] Properties: display, flex-*, justify-*, align-*, gap, width/height, position, overflow, border-*
+- [x] `convert_to_taffy_styles(rules) -> Vec<(String, Style)>`
 
-- [x] Iskelet: basit CSS parser, property mapping
-- [x] CSS parser: selector, property, value parsing (class, id, tag, universal, child, list, descendant)
-- [x] CSS value parsing: px, em, rem, %, vw, vh, auto, hex/named colors, rgb(), hsl()
-- [x] Shorthand support: padding/margin 1-4 values
-- [x] Comment and @media support
-- [x] CSS property → Taffy Style mapping:
-  - [x] display (flex, grid, none)
-  - [x] flex-direction, flex-wrap, flex-grow, flex-shrink
-  - [x] justify-content, align-items, align-self
-  - [x] gap, row-gap, column-gap
-  - [x] padding/margin (shorthand + individual sides)
-  - [x] width/height (Dimension), min/max-size (LengthPercentageAuto)
-  - [x] position (relative, absolute), inset (top/right/bottom/left)
-  - [x] overflow (visible, hidden, scroll, clip)
-  - [x] border-radius, border-width
-- [x] Taffy 0.14 API: LengthPercentage::length(), percent(), Rect<LengthPercentageAuto>, Size<Dimension>
-- [x] Runtime API: `convert_to_taffy_styles(rules) -> Vec<(String, Style)>`
-- [x] Codegen API: `generate_taffy_styles(rules) -> String`
-- [x] 43 tests (31 parser + 12 codegen)
-- [x] Tamamlandı: FAZ 2 ✅
-
-### FAZ 3 — uwebr-core (Reactive System) ✅ TAMAMLANDI
-**Süre:** 2-3 hafta
-**Hedef:** State management + lifecycle
-
-- [x] Iskelet: Signal, Component, Router, Context (5 test)
+### FAZ 3 — uwebr-core ✅ TAMAMLANDI (54 test)
 - [x] Signal: create_signal, get, set, update, clone
-- [x] Memo: create_memo (basit cached computation)
-- [x] Context: provide/get with TypeId-based storage
+- [x] Memo: create_memo (lazy, dependency tracking)
+- [x] Effect: create_effect (reactive side effects)
+- [x] Context: provide_context / use_context (TypeId-based)
 - [x] Router: add_route, navigate, resolve
-- [x] `create_effect` — reactive side effects (dependency tracking ile)
-- [x] `create_memo` geliştirme — lazy re-evaluation, dependency tracking
-- [x] Virtual DOM diffing — iki Element tree'sini karşılaştır
-- [x] Event system — on:click, on:input event dispatch
-- [x] Lifecycle hooks — on_mount, on_cleanup, with_component
-- [x] `#[component]` macro — functional component pattern + lifetime fix
-- [x] `#[derive(Props)]` macro — builder pattern for component props
-- [x] `use_signal` / `use_memo` hooks — component-scoped state
-- [x] `provide_context` / `use_context` — global context sharing
-- [x] Integration tests (48 test)
+- [x] Virtual DOM diffing
+- [x] Event system: on:click, on:input
+- [x] Lifecycle: on_mount, on_cleanup, with_component
+- [x] `use_signal` / `use_memo` hooks
 
-### FAZ 4 — uwebr-render (GPU Pipeline) ✅ TAMAMLANDI
-**Süre:** 3-4 hafta
-**Hedef:** GPU rendering pipeline — Element → Layout → Scene → GPU
+### FAZ 3.5 — Timer/Animation Frame ✅ TAMAMLANDI
+- [x] `TimerRegistry` — global timer collection (Arc<Mutex<>>)
+- [x] `set_timeout` — one-shot timer
+- [x] `set_interval` — repeating timer
+- [x] `request_animation_frame` — vsync-aligned callback
+- [x] `cancel_timer` — cancel by handle
+- [x] App integration: tick in new_events(), fire in RedrawRequested
 
-**Mimari:**
-```
-Element (uwebr-core)          CSS Rules (uwebr-css)
-     │                              │
-     ▼                              ▼
-┌──────────────────────────────────────────────┐
-│  LayoutEngine (taffy 0.14)                   │
-│  Element → TaffyTree → compute_layout()      │
-│  → Vec<PositionedNode>                       │
-└──────────────────┬───────────────────────────┘
-                   │
-                   ▼
-┌──────────────────────────────────────────────┐
-│  SceneBuilder                                │
-│  PositionedNode + css::Color → vello::Scene  │
-│  fill(), stroke(), draw_glyphs(), layers     │
-└──────────────────┬───────────────────────────┘
-                   │
-                   ▼
-┌──────────────────────────────────────────────┐
-│  Renderer (wgpu + vello)                     │
-│  Scene → render_to_texture → surface blit    │
-└──────────────────────────────────────────────┘
-```
+### FAZ 4 — uwebr-render ✅ TAMAMLANDI (47 test)
+- [x] `color.rs` — CSS Color → peniko::Color (6 test)
+- [x] `scene.rs` — RenderScene, RenderNode, RenderStyle (6 test)
+- [x] `text.rs` — Parley + Vello text rendering (4 test)
+- [x] `layout.rs` — LayoutEngine (TaffyTree wrapper) (7 test)
+- [x] `scene_builder.rs` — PositionedNode → vello Scene (8 test)
+- [x] `renderer.rs` — GPU pipeline (wgpu + vello) (6 test)
 
-**Modül 1 — color.rs: CSS Color → peniko::Color**
-- [x] `css_color_to_peniko()` — CssColor → peniko::Color dönüşümü
-- [x] `parse_color_to_peniko()` — hex (3/6/8) + named color parse
-- [x] 6 test
+### FAZ 4.5 — CSS Integration (StyleBook) ✅ TAMAMLANDI
+- [x] `StyleBook` — parse CSS, match elements by tag/class/id
+- [x] Priority: tag < class < id
+- [x] `LayoutEngine::build_tree()` accepts `&StyleBook`
+- [x] `RenderPipeline::with_css()` / `with_stylebook()` API
+- [x] 8 StyleBook tests
 
-**Modül 2 — scene.rs: Zenginleştirilmiş Scene Graph**
-- [x] `RenderScene`, `RenderNode`, `RenderStyle`
-- [x] `Background` enum: Solid, LinearGradient, RadialGradient
-- [x] `BorderStyle`, `LayoutInfo`
-- [x] `RenderNodeKind`: Rect, RoundRect, Text, Image, Container
-- [x] 6 test
-
-**Modül 3 — text.rs: Parley + Vello Text Rendering**
-- [x] `TextRenderer` — parley font context + layout context
-- [x] `layout_text()` — text'i parley ile layout et
-- [x] `measure_text()` — text boyutunu ölç
-- [x] 4 test
-
-**Modül 4 — layout.rs: Element → TaffyTree → PositionedNode**
-- [x] `LayoutEngine` — TaffyTree wrapper
-- [x] `build_tree()` — Element tree → TaffyTree
-- [x] `compute()` — layout hesaplama
-- [x] `get_layout_info()` — pozisyon + boyut çıkarma
-- [x] `collect_positioned_nodes()` — tree traversal
-- [x] CSS class → taffy Style eşleme (tag-based defaults + inline props)
-- [x] 7 test
-
-**Modül 5 — scene_builder.rs: PositionedNode → vello Scene**
-- [x] `SceneBuilder::build_scene()` — node listesinden vello Scene
-- [x] `draw_node()` — tek node'u draw call'a çevir
-- [x] `make_brush()` — Background → peniko::Brush
-- [x] Gradient, opacity, border-radius desteği
-- [x] 7 test
-
-**Modül 6 — renderer.rs: GPU Pipeline**
-- [x] `Renderer::new()` — wgpu device + vello renderer
-- [x] `resize()` — boyut güncelleme
-- [x] `render_frame()` — scene → vello Scene (GPU submit caller'da)
-- [x] `update_scene()` — yeni positioned nodes ile güncelle
-- [x] 6 test (GPU gerektirmeyen unit testler)
-
-**Modül 7 — lib.rs + Cargo.toml**
-- [x] Mod tanımları + re-export
-- [x] Dependencies: parley, kurbo, uwebr-core, uwebr-css ekle
-
-**Toplam:** 38 test ✅
-
-### FAZ 5 — uwebr-app (Window + Events) ✅ TAMAMLANDI
-**Süre:** 2 hafta
-**Hedef:** Pencere + event loop
-
-- [x] Iskelet: App, Window, Event
-- [x] Winit ApplicationHandler
+### FAZ 5 — uwebr-app ✅ TAMAMLANDI (31 test)
+- [x] Winit ApplicationHandler (resumed, window_event, about_to_wait)
 - [x] GPU device initialization (wgpu + vello)
-- [x] RedrawRequested → render pipeline (GpuContext::render_scene)
+- [x] RenderPipeline: Element → Layout → Scene → vello Scene
+- [x] Component trait + FnComponent
 - [x] Mouse/Keyboard event dispatch
-- [x] RenderPipeline: Element → Layout → Scene → vello Scene (end-to-end)
-- [ ] Multi-window desteği
-- [ ] Timer/animation frame
+- [x] Multi-window: `HashMap<WindowId, WindowState>`
+- [x] `open_window()` API — queue windows for creation on resume
+- [x] Per-window event dispatch + close
 
-### FAZ 6 — uwebr-cli (Developer Experience) ✅ TAMAMLANDI
-**Süre:** 1 hafta
-**Hedef:** Developer experience
+### FAZ 6 — uwebr-cli ✅ TAMAMLANDI (28 test)
+- [x] `uwebr init <name>` — scaffolding (Cargo.toml, main.rs, App.uwebr)
+- [x] `uwebr build [--release]` — transpile .uwebr → .rs + cargo build
+- [x] `uwebr check` — validate-only (parse all .uwebr files)
+- [x] `uwebr dev` — file watching (notify 7) + incremental rebuild
+- [x] `BuildCache` — incremental parse cache, 100ms debounce
+- [x] **Transpiler:** .uwebr → Rust Element tree codegen (10 tests)
 
-- [x] Iskelet: init/build/dev komutları
-- [x] `init` komutu (scaffolding, template: Cargo.toml, src/main.rs, .uwebr)
-- [x] `dev` komutu (file watching via notify 7, auto-rebuild)
-- [x] `build` komutu (parse .uwebr files, validate HTML)
-- [x] Dosya değişikliği algılama (notify + RecursiveMode)
-- [ ] Incremental rebuild (ileri FAZ)
+### FAZ 7 — Transpiler (Production Build) ✅ TAMAMLANDI
+- [x] `transpiler::transpile(content, name) -> Result<String>`
+- [x] HTML → `Element { node_type, props, children }` tree
+- [x] CSS → `const CSS_NAME: &str` embedding
+- [x] Script → comment block (JS→Rust via uwebr-js TODO)
+- [x] Auto-generate: main.rs, mod.rs, component function
+- [x] Handles: elements, text, attributes, fragments, components, each/if blocks
 
 ---
 
 ## 📊 Durum Tablosu
 
-| Component | Durum | Test | Not |
-|-----------|-------|------|-----|
-| uwebr-js | ✅ Tamamlandı | 13/13 | JS→Rust transpiler, tüm FAZ'lar tamam |
-| uwebr-html | ✅ Tamamlandı | 31/31 | FAZ 1: markup5ever, template directives, components, PascalCase detection |
-| uwebr-css | ✅ Tamamlandı | 43/43 | FAZ 2: CSS parser + Taffy Style mapping |
-| uwebr-core | ✅ Tamamlandı | 48/48 | FAZ 3: Signal, Memo, Effect, Diff, Events, Lifecycle, Hooks, Context, Macros |
-| uwebr-render | ✅ Tamamlandı | 38/38 | FAZ 4: color, scene, text, layout, scene_builder, renderer |
-| uwebr-app | ✅ FAZ 5+pipeline | 28/28 | GpuContext + ApplicationHandler + Component trait + RenderPipeline |
-| uwebr-cli | ✅ FAZ 6 tamam | 7/7 | init/build/dev + notify file watcher |
+| Crate | Durum | Test | Özellikler |
+|-------|-------|------|------------|
+| uwebr-js | ✅ Tamamlandı | 13/13 | JS→Rust transpiler |
+| uwebr-html | ✅ Tamamlandı | 31/31 | HTML parser, template directives |
+| uwebr-css | ✅ Tamamlandı | 43/43 | CSS parser → Taffy Style |
+| uwebr-core | ✅ Tamamlandı | 54/54 | Signals, effects, lifecycle, timer |
+| uwebr-macro | ✅ Tamamlandı | 5/5 | #[component], #[derive(Props)] |
+| uwebr-render | ✅ Tamamlandı | 47/47 | Layout, scene, text, renderer |
+| uwebr-app | ✅ Tamamlandı | 57/57 | Multi-window, GPU, Component |
+| uwebr-cli | ✅ Tamamlandı | 33/33 | Transpiler, incremental rebuild |
 
-**Toplam:** 208/208 test geçti
+**Toplam:** 283/283 test geçti (unit + integration)
+
+---
+
+## 📋 CLI Referansı
+
+```bash
+# Yeni proje oluştur
+uwebr init my-app
+cd my-app
+
+# Geliştirme modu (hot reload)
+uwebr dev
+
+# Production build
+uwebr build --release
+
+# Validate-only
+uwebr check
+```
 
 ---
 
@@ -324,11 +217,10 @@ Element (uwebr-core)          CSS Rules (uwebr-css)
 - [Parley](https://github.com/linebender/parley) — Text layout
 - [Wgpu](https://github.com/gfx-rs/wgpu) — WebGPU abstraction
 - [Winit](https://github.com/rust-windowing/winit) — Window management
-- [LightningCSS](https://github.com/parcel-bundler/lightningcss) — CSS parser
 - [markup5ever](https://github.com/servo/rust-html5ever) — HTML5 parser
-- [Leptos](https://github.com/leptos-rs/leptos) — Reference for signals/component model
-- [Slint](https://slint.dev/) — Reference for declarative UI
-- [Xilem](https://github.com/linebender/xilem) — Reference for reactive UI with vello
+- [Leptos](https://github.com/leptos-rs/leptos) — Signals/component model reference
+- [Slint](https://slint.dev/) — Declarative UI reference
+- [Xilem](https://github.com/linebender/xilem) — Reactive UI with vello reference
 
 ---
 
