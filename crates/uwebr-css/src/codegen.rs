@@ -50,7 +50,10 @@ fn generate_style_property(prop: &CssProperty) -> Option<String> {
         "justify-content" => generate_justify_content(&prop.value),
         "align-items" => generate_align_items(&prop.value),
         "align-self" => generate_align_self(&prop.value),
-        "gap" => Some(format!("gap(LengthPercentage::Length({}))", generate_length(&prop.value)?)),
+        "gap" => Some(format!(
+            "gap(LengthPercentage::Length({}))",
+            generate_length(&prop.value)?
+        )),
         "padding" => Some(format!("padding({})", generate_val(&prop.value)?)),
         "margin" => Some(format!("margin({})", generate_val(&prop.value)?)),
         "width" => Some(format!("width({})", generate_val(&prop.value)?)),
@@ -90,9 +93,7 @@ fn generate_flex_direction(val: &CssValue) -> Option<String> {
             "row" => Some("flex_direction(FlexDirection::Row)".to_string()),
             "row-reverse" => Some("flex_direction(FlexDirection::RowReverse)".to_string()),
             "column" => Some("flex_direction(FlexDirection::Column)".to_string()),
-            "column-reverse" => {
-                Some("flex_direction(FlexDirection::ColumnReverse)".to_string())
-            }
+            "column-reverse" => Some("flex_direction(FlexDirection::ColumnReverse)".to_string()),
             _ => None,
         },
         _ => None,
@@ -114,20 +115,12 @@ fn generate_flex_wrap(val: &CssValue) -> Option<String> {
 fn generate_justify_content(val: &CssValue) -> Option<String> {
     match val {
         CssValue::Keyword(k) => match k.as_str() {
-            "flex-start" => {
-                Some("justify_content(JustifyContent::FlexStart)".to_string())
-            }
+            "flex-start" => Some("justify_content(JustifyContent::FlexStart)".to_string()),
             "flex-end" => Some("justify_content(JustifyContent::FlexEnd)".to_string()),
             "center" => Some("justify_content(JustifyContent::Center)".to_string()),
-            "space-between" => {
-                Some("justify_content(JustifyContent::SpaceBetween)".to_string())
-            }
-            "space-around" => {
-                Some("justify_content(JustifyContent::SpaceAround)".to_string())
-            }
-            "space-evenly" => {
-                Some("justify_content(JustifyContent::SpaceEvenly)".to_string())
-            }
+            "space-between" => Some("justify_content(JustifyContent::SpaceBetween)".to_string()),
+            "space-around" => Some("justify_content(JustifyContent::SpaceAround)".to_string()),
+            "space-evenly" => Some("justify_content(JustifyContent::SpaceEvenly)".to_string()),
             _ => None,
         },
         _ => None,
@@ -201,10 +194,7 @@ fn generate_length(val: &CssValue) -> Option<String> {
 
 fn generate_val(val: &CssValue) -> Option<String> {
     match val {
-        CssValue::Length(_, _) => Some(format!(
-            "Length::Length({})",
-            generate_length(val)?
-        )),
+        CssValue::Length(_, _) => Some(format!("Length::Length({})", generate_length(val)?)),
         CssValue::Auto => Some("Length::Auto".to_string()),
         _ => Some("Length::Length(Val::Px(0.0))".to_string()),
     }

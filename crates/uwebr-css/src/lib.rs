@@ -1,7 +1,7 @@
 pub mod ast;
-pub mod parser;
 pub mod codegen;
+pub mod parser;
 
-pub use ast::{CssRule, CssProperty, CssSelector};
-pub use parser::parse_css;
+pub use ast::{CssProperty, CssRule, CssSelector};
 pub use codegen::generate_taffy_styles;
+pub use parser::parse_css;

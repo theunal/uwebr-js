@@ -269,7 +269,10 @@ impl CssParser {
                 c,
                 self.pos
             )),
-            None => Err(anyhow::anyhow!("Expected '{}', found end of input", expected)),
+            None => Err(anyhow::anyhow!(
+                "Expected '{}', found end of input",
+                expected
+            )),
         }
     }
 }
