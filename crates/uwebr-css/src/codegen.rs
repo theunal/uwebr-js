@@ -4,22 +4,227 @@ use taffy::geometry::Point;
 use taffy::prelude::*;
 use taffy::style::Overflow;
 
-/// Convert CssRule list to Vec<(String, Style)> for runtime use
-pub fn convert_to_taffy_styles(rules: &[CssRule]) -> Result<Vec<(String, Style)>> {
-    let mut styles = Vec::new();
+/// Tracks which taffy `Style` fields a CSS rule actually specified.
+///
+/// Without this, merging two rules would reset unspecified fields back to
+/// `Style::default()` — a class rule setting only `width` would wipe out the
+/// `display` / `flex-direction` coming from a tag rule.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StyleMask {
+    pub display: bool,
+    pub flex_direction: bool,
+    pub flex_wrap: bool,
+    pub justify_content: bool,
+    pub align_items: bool,
+    pub align_self: bool,
+    pub flex_grow: bool,
+    pub flex_shrink: bool,
+    pub flex_basis: bool,
+    pub width: bool,
+    pub height: bool,
+    pub min_width: bool,
+    pub min_height: bool,
+    pub max_width: bool,
+    pub max_height: bool,
+    pub padding: bool,
+    pub margin: bool,
+    pub border: bool,
+    pub position: bool,
+    pub inset: bool,
+    pub overflow: bool,
+    pub gap_width: bool,
+    pub gap_height: bool,
+}
 
-    for rule in rules {
-        let key = selector_key(&rule.selector);
-        let mut style = Style::default();
-
-        for prop in &rule.properties {
-            apply_property(&mut style, &prop.name, &prop.value);
-        }
-
-        styles.push((key, style));
+impl StyleMask {
+    /// Union of two masks (used while cascading tag → class → id).
+    pub fn or_assign(&mut self, other: &StyleMask) {
+        self.display |= other.display;
+        self.flex_direction |= other.flex_direction;
+        self.flex_wrap |= other.flex_wrap;
+        self.justify_content |= other.justify_content;
+        self.align_items |= other.align_items;
+        self.align_self |= other.align_self;
+        self.flex_grow |= other.flex_grow;
+        self.flex_shrink |= other.flex_shrink;
+        self.flex_basis |= other.flex_basis;
+        self.width |= other.width;
+        self.height |= other.height;
+        self.min_width |= other.min_width;
+        self.min_height |= other.min_height;
+        self.max_width |= other.max_width;
+        self.max_height |= other.max_height;
+        self.padding |= other.padding;
+        self.margin |= other.margin;
+        self.border |= other.border;
+        self.position |= other.position;
+        self.inset |= other.inset;
+        self.overflow |= other.overflow;
+        self.gap_width |= other.gap_width;
+        self.gap_height |= other.gap_height;
     }
 
-    Ok(styles)
+    /// True when the rule specified no layout property at all.
+    pub fn is_empty(&self) -> bool {
+        *self == StyleMask::default()
+    }
+}
+
+/// CSS paint properties that Taffy has no place for.
+///
+/// Taffy only models layout; `background-color`, `color`, `font-size` etc. would
+/// otherwise be dropped at the layout boundary and never reach the scene.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PaintProps {
+    pub background: Option<Color>,
+    pub color: Option<Color>,
+    pub font_size: Option<f32>,
+    pub font_family: Option<String>,
+    pub border_color: Option<Color>,
+    pub border_width: Option<f32>,
+    pub border_radius: Option<f32>,
+    pub opacity: Option<f32>,
+}
+
+impl PaintProps {
+    /// True when the rule specified no paint property at all.
+    pub fn is_empty(&self) -> bool {
+        *self == PaintProps::default()
+    }
+
+    /// Overwrite only the fields the `other` rule actually specified.
+    pub fn merge(&mut self, other: &PaintProps) {
+        if other.background.is_some() {
+            self.background = other.background.clone();
+        }
+        if other.color.is_some() {
+            self.color = other.color.clone();
+        }
+        if other.font_size.is_some() {
+            self.font_size = other.font_size;
+        }
+        if other.font_family.is_some() {
+            self.font_family = other.font_family.clone();
+        }
+        if other.border_color.is_some() {
+            self.border_color = other.border_color.clone();
+        }
+        if other.border_width.is_some() {
+            self.border_width = other.border_width;
+        }
+        if other.border_radius.is_some() {
+            self.border_radius = other.border_radius;
+        }
+        if other.opacity.is_some() {
+            self.opacity = other.opacity;
+        }
+    }
+}
+
+/// A CSS rule converted for runtime use: layout + paint + "what was specified".
+#[derive(Debug, Clone)]
+pub struct StyleEntry {
+    pub selector: String,
+    pub style: Style,
+    pub mask: StyleMask,
+    pub paint: PaintProps,
+}
+
+/// Convert CssRule list to Vec<(String, Style)> for runtime use
+pub fn convert_to_taffy_styles(rules: &[CssRule]) -> Result<Vec<(String, Style)>> {
+    Ok(convert_to_style_entries(rules)?
+        .into_iter()
+        .map(|entry| (entry.selector, entry.style))
+        .collect())
+}
+
+/// Convert CssRule list into full style entries (layout + mask + paint).
+pub fn convert_to_style_entries(rules: &[CssRule]) -> Result<Vec<StyleEntry>> {
+    let mut entries = Vec::with_capacity(rules.len());
+
+    for rule in rules {
+        let selector = selector_key(&rule.selector);
+        let mut style = Style::default();
+        let mut mask = StyleMask::default();
+
+        for prop in &rule.properties {
+            apply_property(&mut style, &mut mask, &prop.name, &prop.value);
+        }
+
+        entries.push(StyleEntry {
+            selector,
+            style,
+            mask,
+            paint: extract_paint(&rule.properties),
+        });
+    }
+
+    Ok(entries)
+}
+
+/// Pull the non-layout (paint) properties out of a rule's declarations.
+pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
+    let mut paint = PaintProps::default();
+
+    for prop in properties {
+        match prop.name.as_str() {
+            "background" | "background-color" => {
+                if let CssValue::Color(c) = &prop.value {
+                    paint.background = Some(c.clone());
+                }
+            }
+            "color" => {
+                if let CssValue::Color(c) = &prop.value {
+                    paint.color = Some(c.clone());
+                }
+            }
+            "border-color" => {
+                if let CssValue::Color(c) = &prop.value {
+                    paint.border_color = Some(c.clone());
+                }
+            }
+            "font-size" => {
+                if let Some(px) = to_px(&prop.value) {
+                    paint.font_size = Some(px);
+                }
+            }
+            "font-family" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.font_family = Some(k.clone());
+                }
+            }
+            "border-width" => {
+                if let Some(px) = to_px(&prop.value) {
+                    paint.border_width = Some(px);
+                }
+            }
+            "border-radius" => {
+                if let Some(px) = to_px(&prop.value) {
+                    paint.border_radius = Some(px);
+                }
+            }
+            "opacity" => {
+                if let CssValue::Length(n, _) = &prop.value {
+                    paint.opacity = Some(n.clamp(0.0, 1.0));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    paint
+}
+
+/// Resolve a CSS length to absolute pixels. `em`/`rem` assume a 16px root.
+fn to_px(value: &CssValue) -> Option<f32> {
+    match value {
+        CssValue::Length(n, unit) => match unit {
+            LengthUnit::Px => Some(*n),
+            LengthUnit::Em | LengthUnit::Rem => Some(*n * 16.0),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn selector_key(sel: &CssSelector) -> String {
@@ -43,164 +248,202 @@ fn selector_key(sel: &CssSelector) -> String {
     }
 }
 
-fn apply_property(style: &mut Style, name: &str, value: &CssValue) {
+fn apply_property(style: &mut Style, mask: &mut StyleMask, name: &str, value: &CssValue) {
     match name {
         "display" => {
             if let Some(v) = to_display(value) {
                 style.display = v;
+                mask.display = true;
             }
         }
         "flex-direction" => {
             if let Some(v) = to_flex_direction(value) {
                 style.flex_direction = v;
+                mask.flex_direction = true;
             }
         }
         "flex-wrap" => {
             if let Some(v) = to_flex_wrap(value) {
                 style.flex_wrap = v;
+                mask.flex_wrap = true;
             }
         }
         "justify-content" => {
             if let Some(v) = to_justify_content(value) {
                 style.justify_content = Some(v);
+                mask.justify_content = true;
             }
         }
         "align-items" => {
             if let Some(v) = to_align_items(value) {
                 style.align_items = Some(v);
+                mask.align_items = true;
             }
         }
         "align-self" => {
             if let Some(v) = to_align_items(value) {
                 style.align_self = Some(v);
+                mask.align_self = true;
             }
         }
         "flex-grow" => {
             if let CssValue::Length(n, _) = value {
                 style.flex_grow = *n;
+                mask.flex_grow = true;
             }
         }
         "flex-shrink" => {
             if let CssValue::Length(n, _) = value {
                 style.flex_shrink = *n;
+                mask.flex_shrink = true;
             }
         }
         "gap" => {
             if let Some(lp) = to_length_percentage(value) {
                 style.gap.width = lp;
                 style.gap.height = lp;
+                mask.gap_width = true;
+                mask.gap_height = true;
             }
         }
         "row-gap" => {
             if let Some(lp) = to_length_percentage(value) {
                 style.gap.height = lp;
+                mask.gap_height = true;
             }
         }
         "column-gap" => {
             if let Some(lp) = to_length_percentage(value) {
                 style.gap.width = lp;
+                mask.gap_width = true;
             }
         }
-        "padding" => apply_rect_lp(&mut style.padding, value),
+        "padding" => {
+            apply_rect_lp(&mut style.padding, value);
+            mask.padding = true;
+        }
         "padding-top" => {
             if let Some(lp) = to_length_percentage(value) {
                 style.padding.top = lp;
+                mask.padding = true;
             }
         }
         "padding-right" => {
             if let Some(lp) = to_length_percentage(value) {
                 style.padding.right = lp;
+                mask.padding = true;
             }
         }
         "padding-bottom" => {
             if let Some(lp) = to_length_percentage(value) {
                 style.padding.bottom = lp;
+                mask.padding = true;
             }
         }
         "padding-left" => {
             if let Some(lp) = to_length_percentage(value) {
                 style.padding.left = lp;
+                mask.padding = true;
             }
         }
-        "margin" => apply_rect_lpa(&mut style.margin, value),
+        "margin" => {
+            apply_rect_lpa(&mut style.margin, value);
+            mask.margin = true;
+        }
         "margin-top" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.margin.top = v;
+                mask.margin = true;
             }
         }
         "margin-right" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.margin.right = v;
+                mask.margin = true;
             }
         }
         "margin-bottom" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.margin.bottom = v;
+                mask.margin = true;
             }
         }
         "margin-left" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.margin.left = v;
+                mask.margin = true;
             }
         }
         "width" => {
             if let Some(d) = to_dimension(value) {
                 style.size.width = d;
+                mask.width = true;
             }
         }
         "height" => {
             if let Some(d) = to_dimension(value) {
                 style.size.height = d;
+                mask.height = true;
             }
         }
         "min-width" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.min_size.width = v;
+                mask.min_width = true;
             }
         }
         "min-height" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.min_size.height = v;
+                mask.min_height = true;
             }
         }
         "max-width" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.max_size.width = v;
+                mask.max_width = true;
             }
         }
         "max-height" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.max_size.height = v;
+                mask.max_height = true;
             }
         }
         "position" => {
             if let Some(v) = to_position(value) {
                 style.position = v;
+                mask.position = true;
             }
         }
         "top" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.inset.top = v;
+                mask.inset = true;
             }
         }
         "right" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.inset.right = v;
+                mask.inset = true;
             }
         }
         "bottom" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.inset.bottom = v;
+                mask.inset = true;
             }
         }
         "left" => {
             if let Some(v) = to_length_percentage_auto(value) {
                 style.inset.left = v;
+                mask.inset = true;
             }
         }
         "overflow" => {
             if let Some(v) = to_overflow(value) {
                 style.overflow = Point { x: v, y: v };
+                mask.overflow = true;
             }
         }
         "border-radius" => {
@@ -209,6 +452,7 @@ fn apply_property(style: &mut Style, name: &str, value: &CssValue) {
                 style.border.right = lp;
                 style.border.bottom = lp;
                 style.border.left = lp;
+                mask.border = true;
             }
         }
         "border-width" => {
@@ -217,6 +461,7 @@ fn apply_property(style: &mut Style, name: &str, value: &CssValue) {
                 style.border.right = lp;
                 style.border.bottom = lp;
                 style.border.left = lp;
+                mask.border = true;
             }
         }
         _ => {}
@@ -316,7 +561,14 @@ fn to_overflow(val: &CssValue) -> Option<Overflow> {
 fn to_length_percentage(val: &CssValue) -> Option<LengthPercentage> {
     match val {
         CssValue::Length(n, unit) => match unit {
-            LengthUnit::Percent => Some(LengthPercentage::percent(*n / 100.0)),
+            // Viewport units are approximated as percentages. The layout root is
+            // sized to the window, so `100vh` resolves to the viewport height at
+            // the top level. For nested elements this resolves against the parent
+            // instead of the viewport — an approximation, but far closer than the
+            // previous behaviour of treating `100vh` as 100 pixels.
+            LengthUnit::Percent | LengthUnit::Vw | LengthUnit::Vh => {
+                Some(LengthPercentage::percent(*n / 100.0))
+            }
             _ => Some(LengthPercentage::length(*n)),
         },
         _ => None,
@@ -327,7 +579,9 @@ fn to_length_percentage_auto(val: &CssValue) -> Option<LengthPercentageAuto> {
     match val {
         CssValue::Auto => Some(LengthPercentageAuto::auto()),
         CssValue::Length(n, unit) => match unit {
-            LengthUnit::Percent => Some(LengthPercentageAuto::percent(*n / 100.0)),
+            LengthUnit::Percent | LengthUnit::Vw | LengthUnit::Vh => {
+                Some(LengthPercentageAuto::percent(*n / 100.0))
+            }
             _ => Some(LengthPercentageAuto::length(*n)),
         },
         _ => None,
@@ -338,7 +592,9 @@ fn to_dimension(val: &CssValue) -> Option<Dimension> {
     match val {
         CssValue::Auto => Some(Dimension::auto()),
         CssValue::Length(n, unit) => match unit {
-            LengthUnit::Percent => Some(Dimension::percent(*n / 100.0)),
+            LengthUnit::Percent | LengthUnit::Vw | LengthUnit::Vh => {
+                Some(Dimension::percent(*n / 100.0))
+            }
             _ => Some(Dimension::length(*n)),
         },
         CssValue::Keyword(k) if k == "auto" => Some(Dimension::auto()),
@@ -349,10 +605,8 @@ fn to_dimension(val: &CssValue) -> Option<Dimension> {
 fn apply_rect_lp(target: &mut Rect<LengthPercentage>, value: &CssValue) {
     match value {
         CssValue::Shorthand(parts) => {
-            let vals: Vec<LengthPercentage> = parts
-                .iter()
-                .filter_map(|v| to_length_percentage(v))
-                .collect();
+            let vals: Vec<LengthPercentage> =
+                parts.iter().filter_map(to_length_percentage).collect();
             match vals.len() {
                 1 => {
                     *target = Rect {
@@ -405,10 +659,8 @@ fn apply_rect_lp(target: &mut Rect<LengthPercentage>, value: &CssValue) {
 fn apply_rect_lpa(target: &mut Rect<LengthPercentageAuto>, value: &CssValue) {
     match value {
         CssValue::Shorthand(parts) => {
-            let vals: Vec<LengthPercentageAuto> = parts
-                .iter()
-                .filter_map(|v| to_length_percentage_auto(v))
-                .collect();
+            let vals: Vec<LengthPercentageAuto> =
+                parts.iter().filter_map(to_length_percentage_auto).collect();
             match vals.len() {
                 1 => {
                     *target = Rect {
@@ -729,5 +981,163 @@ mod tests {
         assert_eq!(styles.len(), 2);
         assert_eq!(styles[0].1.display, Display::Flex);
         assert_eq!(styles[1].1.display, Display::Grid);
+    }
+
+    // ── StyleMask ───────────────────────────────────────────────
+
+    #[test]
+    fn test_mask_tracks_only_specified_properties() {
+        let css = ".only-width { width: 100px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let mask = entries[0].mask;
+        assert!(mask.width, "width should be marked as specified");
+        assert!(!mask.display, "display was never specified");
+        assert!(!mask.flex_direction);
+        assert!(!mask.padding);
+    }
+
+    #[test]
+    fn test_mask_multiple_properties() {
+        let css = ".card { display: flex; flex-direction: column; padding: 8px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let mask = entries[0].mask;
+        assert!(mask.display);
+        assert!(mask.flex_direction);
+        assert!(mask.padding);
+        assert!(!mask.width);
+        assert!(!mask.margin);
+    }
+
+    #[test]
+    fn test_mask_empty_for_paint_only_rule() {
+        let css = ".text { color: red; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(
+            entries[0].mask.is_empty(),
+            "color is paint-only, no layout field set"
+        );
+    }
+
+    #[test]
+    fn test_mask_or_assign() {
+        let mut a = StyleMask {
+            width: true,
+            ..Default::default()
+        };
+        let b = StyleMask {
+            display: true,
+            ..Default::default()
+        };
+        a.or_assign(&b);
+        assert!(a.width);
+        assert!(a.display);
+    }
+
+    #[test]
+    fn test_gap_shorthand_marks_both_axes() {
+        let css = ".g { gap: 4px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.gap_width);
+        assert!(entries[0].mask.gap_height);
+    }
+
+    // ── PaintProps ──────────────────────────────────────────────
+
+    #[test]
+    fn test_paint_background_color() {
+        let css = ".app { background-color: #1a1a2e; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let bg = entries[0].paint.background.clone().unwrap();
+        assert_eq!((bg.r, bg.g, bg.b), (0x1a, 0x1a, 0x2e));
+    }
+
+    #[test]
+    fn test_paint_text_color() {
+        let css = ".app { color: #e0e0e0; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let c = entries[0].paint.color.clone().unwrap();
+        assert_eq!((c.r, c.g, c.b), (0xe0, 0xe0, 0xe0));
+    }
+
+    #[test]
+    fn test_paint_font_size_px() {
+        let css = "h1 { font-size: 32px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.font_size, Some(32.0));
+    }
+
+    #[test]
+    fn test_paint_font_size_rem_resolves_to_px() {
+        let css = "h1 { font-size: 2rem; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.font_size, Some(32.0));
+    }
+
+    #[test]
+    fn test_paint_font_family() {
+        let css = ".app { font-family: monospace; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.font_family.as_deref(), Some("monospace"));
+    }
+
+    #[test]
+    fn test_paint_empty_for_layout_only_rule() {
+        let css = ".row { display: flex; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].paint.is_empty());
+    }
+
+    #[test]
+    fn test_paint_merge_keeps_unspecified() {
+        let mut base = PaintProps {
+            background: Some(Color::rgb(1, 2, 3)),
+            font_size: Some(16.0),
+            ..Default::default()
+        };
+        let over = PaintProps {
+            font_size: Some(24.0),
+            ..Default::default()
+        };
+        base.merge(&over);
+        assert_eq!(base.font_size, Some(24.0), "specified field overwritten");
+        assert_eq!(
+            base.background,
+            Some(Color::rgb(1, 2, 3)),
+            "unspecified field preserved"
+        );
+    }
+
+    #[test]
+    fn test_paint_border_and_opacity() {
+        let css = ".b { border-width: 2px; border-radius: 6px; border-color: blue; opacity: 0.5; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let paint = &entries[0].paint;
+        assert_eq!(paint.border_width, Some(2.0));
+        assert_eq!(paint.border_radius, Some(6.0));
+        assert_eq!(paint.opacity, Some(0.5));
+        assert!(paint.border_color.is_some());
+    }
+
+    #[test]
+    fn test_convert_to_taffy_styles_still_compatible() {
+        // The legacy (String, Style) API must keep working for existing callers.
+        let css = ".container { display: flex; padding: 16px; }";
+        let rules = parse_css(css).unwrap();
+        let legacy = convert_to_taffy_styles(&rules).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(legacy.len(), entries.len());
+        assert_eq!(legacy[0].0, entries[0].selector);
+        assert_eq!(legacy[0].1.display, entries[0].style.display);
     }
 }

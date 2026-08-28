@@ -408,13 +408,15 @@ fn parse_length(raw: &str) -> Option<CssValue> {
         let num: f32 = raw.trim_end_matches("px").parse().ok()?;
         return Some(CssValue::Length(num, LengthUnit::Px));
     }
-    if raw.ends_with("em") {
-        let num: f32 = raw.trim_end_matches("em").parse().ok()?;
-        return Some(CssValue::Length(num, LengthUnit::Em));
-    }
+    // "rem" must be tested before "em", otherwise "2rem" matches the "em"
+    // branch, leaves "2r", and fails to parse.
     if raw.ends_with("rem") {
         let num: f32 = raw.trim_end_matches("rem").parse().ok()?;
         return Some(CssValue::Length(num, LengthUnit::Rem));
+    }
+    if raw.ends_with("em") {
+        let num: f32 = raw.trim_end_matches("em").parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Em));
     }
     if raw.ends_with('%') {
         let num: f32 = raw.trim_end_matches('%').parse().ok()?;
@@ -806,5 +808,26 @@ mod tests {
         let css = ".w { width: 50%; } .h { height: 100vh; }";
         let rules = parse_css(css).unwrap();
         assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_rem_not_swallowed_by_em() {
+        // `ends_with("em")` matches "2rem" too; rem must be checked first.
+        let css = "h1 { font-size: 2rem; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(
+            rules[0].properties[0].value,
+            CssValue::Length(2.0, LengthUnit::Rem)
+        );
+    }
+
+    #[test]
+    fn test_parse_em_still_works() {
+        let css = "p { font-size: 1.5em; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(
+            rules[0].properties[0].value,
+            CssValue::Length(1.5, LengthUnit::Em)
+        );
     }
 }
