@@ -5,7 +5,7 @@ pub trait Component {
 }
 
 /// Element represents a renderable node
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Element {
     pub node_type: NodeType,
     pub props: Vec<(String, PropValue)>,
@@ -13,15 +13,16 @@ pub struct Element {
 }
 
 /// Node types
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NodeType {
+    Element(String),
     Text(String),
     Component(String),
     Raw(String),
 }
 
 /// Property values
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PropValue {
     String(String),
     Bool(bool),

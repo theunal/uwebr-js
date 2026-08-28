@@ -19,12 +19,12 @@ uwebr/
 ├── ARCHITECTURE.md
 └── crates/
     ├── uwebr-js/                   # ✅ JS/TS → Rust transpiler (13 test)
-    ├── uwebr-html/                 # ✅ Iskelet: HTML parser + AST + rsx! codegen (5 test)
-    ├── uwebr-css/                  # ✅ CSS parser → Taffy Style (32 test)
-    ├── uwebr-core/                 # ✅ Iskelet: Signal, Component, Router, Context (5 test)
-    ├── uwebr-render/               # ✅ Iskelet: wgpu + vello renderer (3 test)
-    ├── uwebr-app/                  # ✅ Iskelet: App runner + window (2 test)
-    └── uwebr-cli/                  # ✅ Iskelet: CLI binary (uwebr init/build/dev)
+    ├── uwebr-html/                 # ✅ HTML parser + template directives + components (31 test)
+    ├── uwebr-css/                  # ✅ CSS parser → Taffy Style (43 test)
+    ├── uwebr-core/                 # 🔄 Reactive system: Signal, Context, Router (5 test, devam ediyor)
+    ├── uwebr-render/               # 🔄 Iskelet: wgpu + vello renderer (3 test)
+    ├── uwebr-app/                  # 🔄 Iskelet: App runner + window (2 test)
+    └── uwebr-cli/                  # 🔄 Iskelet: CLI binary (uwebr init/build/dev)
 ```
 
 ---
@@ -40,8 +40,8 @@ uwebr/
 | Text Yerleşimi | `parley` | 0.9.0 | Linebender ekosistemi |
 | Layout Motoru | `taffy` | 0.14.0 | CSS Flexbox/Grid/Block |
 | Biçimler | `kurbo` | 0.13.1 | Bezier eğrileri, vello entegrasyonu |
-| HTML Parse | `markup5ever` | 0.14.1 | html5ever wrapper |
-| CSS Parse | `lightningcss` | 1.0.0-alpha.72 | Firefox CSS parser'ı |
+| HTML Parse | `html5ever` | 0.29 | Gerçek HTML5 parser |
+| CSS Parse | Custom | - | Hand-written CSS parser (lightningcss alpha API çok kararsız) |
 | JS Parse | `swc_ecma_parser` | 45.1 | ES2020+ parsing |
 | Error Handling | `anyhow` + `thiserror` | - | - |
 | CLI | `clap` | 4.x | - |
@@ -91,13 +91,13 @@ HTML/CSS/JS Dosyaları
         │
         ▼
 ┌──────────────────┐
-│  Parse Katmanı   │  markup5ever + lightningcss + swc_ecma_parser
+│  Parse Katmanı   │  html5ever + custom CSS parser + swc_ecma_parser
 │  (AST üretimi)   │
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│  Transform Katman│  uwebr-html: HTML → rsx! AST
+│  Transform Katman│  uwebr-html: HTML → rsx! AST + template directives
 │  (AST → AST)     │  uwebr-css: CSS → Taffy Style
 │                  │  uwebr-js: JS → Rust AST (mevcut)
 └────────┬─────────┘
@@ -110,7 +110,7 @@ HTML/CSS/JS Dosyaları
          │
          ▼
 ┌──────────────────┐
-│  Runtime         │  uwebr-core: State, Lifecycle, Diff
+│  Runtime         │  uwebr-core: Reactive Signals, Virtual DOM Diff
 │  (Çalışma Zamanı)│  uwebr-render: Vello + Taffy + Parley
 │                  │  uwebr-app: Winit EventLoop
 └──────────────────┘
@@ -176,23 +176,29 @@ HTML/CSS/JS Dosyaları
 - [x] Taffy 0.14 API: LengthPercentage::length(), percent(), Rect<LengthPercentageAuto>, Size<Dimension>
 - [x] Runtime API: `convert_to_taffy_styles(rules) -> Vec<(String, Style)>`
 - [x] Codegen API: `generate_taffy_styles(rules) -> String`
-- [x] 32 tests (20 parser + 12 codegen)
+- [x] 43 tests (31 parser + 12 codegen)
 - [x] Tamamlandı: FAZ 2 ✅
 
-### FAZ 3 — uwebr-core (Reactive System)
+### FAZ 3 — uwebr-core (Reactive System) 🔄 DEVAM EDİYOR
 **Süre:** 2-3 hafta
 **Hedef:** State management + lifecycle
 
-- [x] Iskelet: Signal, Component, Router, Context
-- [ ] `#[component]` macro (proc-macro)
-- [ ] `#[derive(Props)]` macro
-- [ ] create_effect (reactive side effects)
-- [ ] Virtual DOM diffing
-- [ ] Event system (on:click, on:input)
-- [ ] Spawn/async desteği
-- [ ] Integration tests
+**Tamamlanan:**
+- [x] Iskelet: Signal, Component, Router, Context (5 test)
+- [x] Signal: create_signal, get, set, update, clone
+- [x] Memo: create_memo (basit cached computation)
+- [x] Context: provide/get with TypeId-based storage
+- [x] Router: add_route, navigate, resolve
 
-### FAZ 4 — uwebr-render (GPU Pipeline)
+**Devam Eden:**
+- [x] `create_effect` — reactive side effects (dependency tracking ile)
+- [x] `create_memo` geliştirme — lazy re-evaluation, dependency tracking
+- [x] Virtual DOM diffing — iki Element tree'sini karşılaştır
+- [x] Event system — on:click, on:input event dispatch
+- [ ] Lifecycle hooks — on_mount, on_cleanup geliştirme
+- [x] Integration tests (27 test)
+
+### FAZ 4 — uwebr-render (GPU Pipeline) 🔄 BEKLİYOR
 **Süre:** 3-4 hafta
 **Hedef:** GPU rendering pipeline
 
@@ -237,14 +243,14 @@ HTML/CSS/JS Dosyaları
 | Component | Durum | Test | Not |
 |-----------|-------|------|-----|
 | uwebr-js | ✅ Tamamlandı | 13/13 | JS→Rust transpiler, tüm FAZ'lar tamam |
-| uwebr-html | ✅ Tamamlandı | 20/20 | FAZ 1: markup5ever, template directives, components |
-| uwebr-css | ✅ Tamamlandı | 32/32 | FAZ 2: CSS parser + Taffy Style mapping |
-| uwebr-core | 🔄 Geliyor | 5/5 iskelet | FAZ 3: proc-macro bekliyor |
+| uwebr-html | ✅ Tamamlandı | 31/31 | FAZ 1: markup5ever, template directives, components, PascalCase detection |
+| uwebr-css | ✅ Tamamlandı | 43/43 | FAZ 2: CSS parser + Taffy Style mapping |
+| uwebr-core | ✅ Tamamlandı | 27/27 | FAZ 3: Signal, Memo, Effect, Diff, Events |
 | uwebr-render | 🔄 Geliyor | 3/3 iskelet | FAZ 4: vello entegrasyonu bekliyor |
 | uwebr-app | 🔄 Geliyor | 2/2 iskelet | FAZ 5: winit ApplicationHandler bekliyor |
 | uwebr-cli | 🔄 Geliyor | - | FAZ 6: scaffolding + hot reload bekliyor |
 
-**Toplam:** 75/75 test geçti
+**Toplam:** 106/106 test geçti (+ 13 integration test)
 
 ---
 
