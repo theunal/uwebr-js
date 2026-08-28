@@ -1,0 +1,17 @@
+[package]
+name = "uwebr-render"
+description = "wgpu + vello GPU renderer for uwebr"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+winit = "0.30"
+wgpu = "30"
+vello = "0.10"
+taffy.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "uwebr-html"
+description = "HTML parser → rsx! component tree for uwebr"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+markup5ever = "0.14"
+serde.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

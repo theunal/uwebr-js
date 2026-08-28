@@ -1,0 +1,10 @@
+[package]
+name = "uwebr-core"
+description = "Framework core: state, lifecycle, routing for uwebr"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "uwebr-cli"
+description = "CLI tool for uwebr projects"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "uwebr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+uwebr-js = { workspace = true }
+uwebr-html = { workspace = true }
+
+[dev-dependencies]
+tempfile.workspace = true

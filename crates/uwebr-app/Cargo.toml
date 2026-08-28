@@ -1,0 +1,16 @@
+[package]
+name = "uwebr-app"
+description = "Application runner for uwebr apps"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+uwebr-core = { workspace = true }
+uwebr-render = { workspace = true }
+winit = "0.30"
+
+[dev-dependencies]
+tempfile.workspace = true
