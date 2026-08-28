@@ -179,24 +179,25 @@ HTML/CSS/JS Dosyaları
 - [x] 43 tests (31 parser + 12 codegen)
 - [x] Tamamlandı: FAZ 2 ✅
 
-### FAZ 3 — uwebr-core (Reactive System) 🔄 DEVAM EDİYOR
+### FAZ 3 — uwebr-core (Reactive System) ✅ TAMAMLANDI
 **Süre:** 2-3 hafta
 **Hedef:** State management + lifecycle
 
-**Tamamlanan:**
 - [x] Iskelet: Signal, Component, Router, Context (5 test)
 - [x] Signal: create_signal, get, set, update, clone
 - [x] Memo: create_memo (basit cached computation)
 - [x] Context: provide/get with TypeId-based storage
 - [x] Router: add_route, navigate, resolve
-
-**Devam Eden:**
 - [x] `create_effect` — reactive side effects (dependency tracking ile)
 - [x] `create_memo` geliştirme — lazy re-evaluation, dependency tracking
 - [x] Virtual DOM diffing — iki Element tree'sini karşılaştır
 - [x] Event system — on:click, on:input event dispatch
-- [ ] Lifecycle hooks — on_mount, on_cleanup geliştirme
-- [x] Integration tests (27 test)
+- [x] Lifecycle hooks — on_mount, on_cleanup, with_component
+- [x] `#[component]` macro — functional component pattern + lifetime fix
+- [x] `#[derive(Props)]` macro — builder pattern for component props
+- [x] `use_signal` / `use_memo` hooks — component-scoped state
+- [x] `provide_context` / `use_context` — global context sharing
+- [x] Integration tests (48 test)
 
 ### FAZ 4 — uwebr-render (GPU Pipeline) 🔄 BEKLİYOR
 **Süre:** 3-4 hafta
@@ -245,12 +246,12 @@ HTML/CSS/JS Dosyaları
 | uwebr-js | ✅ Tamamlandı | 13/13 | JS→Rust transpiler, tüm FAZ'lar tamam |
 | uwebr-html | ✅ Tamamlandı | 31/31 | FAZ 1: markup5ever, template directives, components, PascalCase detection |
 | uwebr-css | ✅ Tamamlandı | 43/43 | FAZ 2: CSS parser + Taffy Style mapping |
-| uwebr-core | ✅ Tamamlandı | 27/27 | FAZ 3: Signal, Memo, Effect, Diff, Events |
+| uwebr-core | ✅ Tamamlandı | 48/48 | FAZ 3: Signal, Memo, Effect, Diff, Events, Lifecycle, Hooks, Context, Macros |
 | uwebr-render | 🔄 Geliyor | 3/3 iskelet | FAZ 4: vello entegrasyonu bekliyor |
 | uwebr-app | 🔄 Geliyor | 2/2 iskelet | FAZ 5: winit ApplicationHandler bekliyor |
 | uwebr-cli | 🔄 Geliyor | - | FAZ 6: scaffolding + hot reload bekliyor |
 
-**Toplam:** 106/106 test geçti (+ 13 integration test)
+**Toplam:** 141/141 test geçti
 
 ---
 

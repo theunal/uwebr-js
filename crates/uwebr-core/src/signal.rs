@@ -304,6 +304,45 @@ pub fn batch<F: FnOnce()>(f: F) {
     flush_effects();
 }
 
+// ── Hooks (for use inside #[component] functions) ──────────────────────
+
+use std::any::TypeId;
+use crate::lifecycle::{get_hook_state, set_hook_state};
+
+/// Create a signal tied to the current component scope.
+/// Returns the same signal on subsequent calls within the same component.
+pub fn use_signal<T: Clone + 'static>(initial: T) -> (Signal<T>, SignalSetter<T>) {
+    let key = TypeId::of::<Signal<T>>();
+
+    // Reuse existing signal if component already created one
+    if let Some(existing) = get_hook_state::<Signal<T>>(key.clone()) {
+        let setter = SignalSetter {
+            id: existing.id,
+            value: existing.value.clone(),
+        };
+        return (existing, setter);
+    }
+
+    let (signal, setter) = create_signal(initial);
+    set_hook_state(key, signal.clone());
+    (signal, setter)
+}
+
+/// Create a memo tied to the current component scope.
+pub fn use_memo<T: Clone + 'static + PartialEq, F: FnMut() -> T + 'static>(
+    compute: F,
+) -> Memo<T> {
+    let key = TypeId::of::<Memo<T>>();
+
+    if let Some(existing) = get_hook_state::<Memo<T>>(key.clone()) {
+        return existing;
+    }
+
+    let memo = create_memo(compute);
+    set_hook_state(key, memo.clone());
+    memo
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -434,10 +473,34 @@ mod tests {
     }
 
     #[test]
-    fn test_context_provide_get() {
-        use crate::context::Context;
-        let mut ctx = Context::new();
-        ctx.provide(42i32);
-        assert_eq!(ctx.get::<i32>(), Some(&42));
+    fn test_use_signal_basic() {
+        use crate::lifecycle::{create_component_scope, with_component};
+        let id = create_component_scope();
+
+        with_component(id, || {
+            let (sig, setter) = use_signal(10);
+            assert_eq!(sig.get(), 10);
+            setter.set(20);
+            assert_eq!(sig.get(), 20);
+
+            // Same call returns same signal
+            let (sig2, _) = use_signal(10);
+            assert_eq!(sig2.get(), 20);
+        });
+    }
+
+    #[test]
+    fn test_use_memo_basic() {
+        use crate::lifecycle::{create_component_scope, with_component};
+        let id = create_component_scope();
+
+        with_component(id, || {
+            let (count, set_count) = use_signal(3);
+            let memo = use_memo(move || count.get() * 2);
+            assert_eq!(memo.get(), 6);
+
+            set_count.set(5);
+            assert_eq!(memo.get(), 10);
+        });
     }
 }

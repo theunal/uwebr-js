@@ -8,3 +8,6 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+uwebr-macro = { path = "../uwebr-macro" }

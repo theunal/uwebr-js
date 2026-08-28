@@ -5,6 +5,7 @@ members = [
     "crates/uwebr-html",
     "crates/uwebr-css",
     "crates/uwebr-core",
+    "crates/uwebr-macro",
     "crates/uwebr-render",
     "crates/uwebr-app",
     "crates/uwebr-cli",
@@ -53,6 +54,7 @@ uwebr-js = { path = "crates/uwebr-js" }
 uwebr-html = { path = "crates/uwebr-html" }
 uwebr-css = { path = "crates/uwebr-css" }
 uwebr-core = { path = "crates/uwebr-core" }
+uwebr-macro = { path = "crates/uwebr-macro" }
 uwebr-render = { path = "crates/uwebr-render" }
 uwebr-app = { path = "crates/uwebr-app" }
 

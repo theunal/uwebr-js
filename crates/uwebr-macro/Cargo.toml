@@ -1,0 +1,14 @@
+[package]
+name = "uwebr-macro"
+description = "Proc macros for uwebr framework: #[component], #[derive(Props)]"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3.0.4", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
