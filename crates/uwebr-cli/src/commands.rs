@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use notify::{Watcher, RecursiveMode, Event, EventKind};
+use crate::transpiler;
 
 /// Scaffold a new uwebr project
 pub fn init_project(name: &str) -> Result<()> {
@@ -195,11 +196,10 @@ impl BuildCache {
     }
 }
 
-/// Build the project (parse .uwebr files + validate)
-pub fn build_project(path: &str) -> Result<()> {
+/// Validate all .uwebr files (parse-only, no transpile/compile)
+pub fn validate_project(path: &str) -> Result<()> {
     let root = Path::new(path);
 
-    // Find all .uwebr files
     let uwebr_files = find_uwebr_files(root)?;
 
     if uwebr_files.is_empty() {
@@ -207,16 +207,15 @@ pub fn build_project(path: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("Building {} .uwebr file(s)...", uwebr_files.len());
+    println!("Validating {} .uwebr file(s)...", uwebr_files.len());
 
     for file in &uwebr_files {
         let rel = file.strip_prefix(root).unwrap_or(file);
-        println!("  Compiling: {}", rel.display());
+        println!("  Validating: {}", rel.display());
 
         let content = fs::read_to_string(file)
             .with_context(|| format!("Failed to read {}", file.display()))?;
 
-        // Parse HTML
         match uwebr_html::parse_html(&content) {
             Ok(_node) => {
                 println!("    OK");
@@ -227,7 +226,106 @@ pub fn build_project(path: &str) -> Result<()> {
         }
     }
 
-    println!("Build complete.");
+    println!("Validation complete.");
+    Ok(())
+}
+
+/// Transpile .uwebr files → .rs and compile with cargo
+pub fn build_project(path: &str, release: bool) -> Result<()> {
+    let root = Path::new(path);
+    let out_dir = root.join("src/generated");
+
+    // Find all .uwebr files
+    let uwebr_files = find_uwebr_files(root)?;
+
+    if uwebr_files.is_empty() {
+        println!("No .uwebr files found in {path}");
+        return Ok(());
+    }
+
+    fs::create_dir_all(&out_dir)?;
+
+    println!("Transpiling {} .uwebr file(s)...", uwebr_files.len());
+
+    let mut generated_files = vec![];
+    let mut errors = 0;
+
+    for file in &uwebr_files {
+        let rel = file.strip_prefix(root).unwrap_or(file);
+        let file_name = file.file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Component");
+
+        println!("  Compiling: {}", rel.display());
+
+        let content = fs::read_to_string(file)
+            .with_context(|| format!("Failed to read {}", file.display()))?;
+
+        // Transpile .uwebr → Rust
+        match transpiler::transpile(&content, file_name) {
+            Ok(rs_code) => {
+                let out_file = out_dir.join(format!("{}.rs", file_name));
+                fs::write(&out_file, &rs_code)?;
+                println!("    → {}", out_file.strip_prefix(root).unwrap_or(&out_file).display());
+                generated_files.push((file_name.to_string(), out_file));
+            }
+            Err(e) => {
+                println!("    ERROR: {e}");
+                errors += 1;
+            }
+        }
+    }
+
+    if errors > 0 {
+        println!("\nBuild failed with {errors} error(s).");
+        return Ok(());
+    }
+
+    // Generate mod.rs for generated directory
+    let mod_content: String = generated_files
+        .iter()
+        .map(|(name, _)| format!("pub mod {};", transpiler::to_snake(name)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mod_file = out_dir.join("mod.rs");
+    fs::write(&mod_file, mod_content)?;
+
+    // Update src/main.rs to include generated modules
+    let main_rs = root.join("src/main.rs");
+    let main_content = if main_rs.exists() {
+        fs::read_to_string(&main_rs)?
+    } else {
+        String::new()
+    };
+
+    // Check if generated mod is already included
+    if !main_content.contains("mod generated") {
+        let new_main = format!(
+            "#[allow(unused)]\nmod generated;\n\n{}",
+            main_content
+        );
+        fs::write(&main_rs, new_main)?;
+        println!("  Updated src/main.rs with `mod generated`");
+    }
+
+    println!("Transpilation complete. {} file(s) generated.", generated_files.len());
+
+    // Run cargo build if not check-only mode
+    println!("\nCompiling with cargo...");
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("build");
+    if release {
+        cmd.arg("--release");
+    }
+    cmd.current_dir(root);
+
+    let status = cmd.status()?;
+    if status.success() {
+        println!("Build succeeded.");
+    } else {
+        println!("Cargo build failed.");
+    }
+
     Ok(())
 }
 

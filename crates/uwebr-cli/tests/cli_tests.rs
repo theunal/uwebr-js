@@ -59,8 +59,8 @@ fn test_init_project_uwebr_template() {
 fn test_build_project_no_files() {
     let tmp = TempDir::new().unwrap();
 
-    // No .uwebr files
-    commands::build_project(tmp.path().to_str().unwrap()).unwrap();
+    // No .uwebr files — validate_project handles empty case
+    commands::validate_project(tmp.path().to_str().unwrap()).unwrap();
 }
 
 #[test]
@@ -76,7 +76,8 @@ fn test_build_project_with_valid_uwebr() {
 </div>"#,
     ).unwrap();
 
-    commands::build_project(tmp.path().to_str().unwrap()).unwrap();
+    // validate_project parses all .uwebr files
+    commands::validate_project(tmp.path().to_str().unwrap()).unwrap();
 }
 
 #[test]
@@ -89,9 +90,8 @@ fn test_find_uwebr_files() {
     fs::write(src.join("Home.uwebr"), "<div>home</div>").unwrap();
     fs::write(src.join("other.rs"), "fn main() {}").unwrap();
 
-    // We can't call find_uwebr_files directly (private), but build_project will use it
-    // Just verify build_project finds the files
-    commands::build_project(tmp.path().to_str().unwrap()).unwrap();
+    // validate_project will find and parse the .uwebr files
+    commands::validate_project(tmp.path().to_str().unwrap()).unwrap();
 }
 
 // ── Incremental build tests ──────────────────────────────────

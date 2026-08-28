@@ -15,8 +15,17 @@ enum Commands {
         /// Project name
         name: String,
     },
-    /// Build the project
+    /// Transpile .uwebr → Rust and compile to binary
     Build {
+        /// Project path
+        #[arg(default_value = ".")]
+        path: String,
+        /// Build in release mode
+        #[arg(long)]
+        release: bool,
+    },
+    /// Validate .uwebr files (parse-only check)
+    Check {
         /// Project path
         #[arg(default_value = ".")]
         path: String,
@@ -36,8 +45,11 @@ fn main() -> Result<()> {
         Commands::Init { name } => {
             uwebr_cli::commands::init_project(&name)?;
         }
-        Commands::Build { path } => {
-            uwebr_cli::commands::build_project(&path)?;
+        Commands::Build { path, release } => {
+            uwebr_cli::commands::build_project(&path, release)?;
+        }
+        Commands::Check { path } => {
+            uwebr_cli::commands::validate_project(&path)?;
         }
         Commands::Dev { path } => {
             uwebr_cli::commands::dev_server(&path)?;
