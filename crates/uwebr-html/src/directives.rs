@@ -1,4 +1,4 @@
-use crate::ast::{HtmlNode, HtmlEach, HtmlIf};
+use crate::ast::{HtmlEach, HtmlIf, HtmlNode};
 
 /// Post-process HTML AST to expand template directives in text nodes
 /// Handles: {expression}, {#each}, {#if}, {@html}
@@ -23,7 +23,7 @@ pub fn expand_directives(node: &mut HtmlNode) {
 fn expand_children(children: &mut Vec<HtmlNode>) {
     // First pass: reassemble split block directives
     reassemble_block_directives(children);
-    
+
     // Second pass: expand directives in each child
     let mut i = 0;
     while i < children.len() {
@@ -39,7 +39,7 @@ fn reassemble_block_directives(children: &mut Vec<HtmlNode>) {
     while i < children.len() {
         if let HtmlNode::Text(text) = &children[i] {
             let trimmed = text.trim();
-            
+
             // Check for {#each ...} opening tag
             if trimmed.starts_with("{#each ") {
                 // Look for matching {/each} in subsequent siblings
@@ -52,14 +52,14 @@ fn reassemble_block_directives(children: &mut Vec<HtmlNode>) {
                         }
                     }
                 }
-                
+
                 if let Some(end) = end_idx {
                     // Collect all children between {#each} and {/each}
                     let mut body_children: Vec<HtmlNode> = Vec::new();
                     for k in (i + 1)..end {
                         body_children.push(children[k].clone());
                     }
-                    
+
                     // Parse the opening tag
                     if let Some(each_node) = parse_each_with_body(trimmed, body_children) {
                         // Replace the range with the assembled directive
@@ -69,7 +69,7 @@ fn reassemble_block_directives(children: &mut Vec<HtmlNode>) {
                     }
                 }
             }
-            
+
             // Check for {#if ...} opening tag
             if trimmed.starts_with("{#if ") {
                 // Look for matching {/if} in subsequent siblings
@@ -82,14 +82,14 @@ fn reassemble_block_directives(children: &mut Vec<HtmlNode>) {
                         }
                     }
                 }
-                
+
                 if let Some(end) = end_idx {
                     // Collect all children between {#if} and {/if}
                     let mut body_children: Vec<HtmlNode> = Vec::new();
                     for k in (i + 1)..end {
                         body_children.push(children[k].clone());
                     }
-                    
+
                     // Parse the opening tag and assemble
                     if let Some(if_node) = parse_if_with_body(trimmed, body_children) {
                         // Replace the range with the assembled directive
@@ -109,7 +109,7 @@ fn parse_each_with_body(text: &str, body_children: Vec<HtmlNode>) -> Option<Html
     let rest = text.strip_prefix("{#each ")?;
     let (iterable, rest) = split_at_word(rest, "as")?;
     let (item_name, _) = split_at_brace(rest)?;
-    
+
     Some(HtmlNode::EachLoop(HtmlEach {
         iterable: iterable.trim().to_string(),
         item_name: item_name.trim().to_string(),
@@ -126,7 +126,7 @@ fn parse_each_with_body(text: &str, body_children: Vec<HtmlNode>) -> Option<Html
 fn parse_if_with_body(text: &str, body_children: Vec<HtmlNode>) -> Option<HtmlNode> {
     let rest = text.strip_prefix("{#if ")?;
     let (condition, _) = split_at_brace(rest)?;
-    
+
     Some(HtmlNode::IfBlock(HtmlIf {
         condition: condition.trim().to_string(),
         then_body: if body_children.is_empty() {

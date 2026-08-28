@@ -67,7 +67,12 @@ mod tests {
 
     #[test]
     fn test_css_color_to_peniko() {
-        let css = CssColor { r: 255, g: 128, b: 0, a: 1.0 };
+        let css = CssColor {
+            r: 255,
+            g: 128,
+            b: 0,
+            a: 1.0,
+        };
         let peniko = css_color_to_peniko(css);
         assert_eq!(peniko, peniko::Color::from_rgba8(255, 128, 0, 255));
     }

@@ -38,7 +38,8 @@ impl LayoutEngine {
                 Ok(node)
             }
             NodeType::Element(_) | NodeType::Component(_) => {
-                let child_ids: Vec<taffy::NodeId> = element.children
+                let child_ids: Vec<taffy::NodeId> = element
+                    .children
                     .iter()
                     .map(|child| self.build_node(child))
                     .collect::<anyhow::Result<_>>()?;
@@ -58,28 +59,26 @@ impl LayoutEngine {
         let mut style = Style::default();
 
         match &element.node_type {
-            NodeType::Element(tag) => {
-                match tag.as_str() {
-                    "div" | "section" | "main" | "article" | "aside" | "header" | "footer" | "nav" => {
-                        style.display = Display::Flex;
-                        style.flex_direction = FlexDirection::Column;
-                    }
-                    "span" | "a" | "strong" | "em" | "b" | "i" | "code" => {
-                        style.display = Display::Flex;
-                    }
-                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                        style.display = Display::Flex;
-                        style.flex_direction = FlexDirection::Column;
-                    }
-                    "p" => {
-                        style.display = Display::Flex;
-                        style.flex_direction = FlexDirection::Column;
-                    }
-                    _ => {
-                        style.display = Display::Flex;
-                    }
+            NodeType::Element(tag) => match tag.as_str() {
+                "div" | "section" | "main" | "article" | "aside" | "header" | "footer" | "nav" => {
+                    style.display = Display::Flex;
+                    style.flex_direction = FlexDirection::Column;
                 }
-            }
+                "span" | "a" | "strong" | "em" | "b" | "i" | "code" => {
+                    style.display = Display::Flex;
+                }
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    style.display = Display::Flex;
+                    style.flex_direction = FlexDirection::Column;
+                }
+                "p" => {
+                    style.display = Display::Flex;
+                    style.flex_direction = FlexDirection::Column;
+                }
+                _ => {
+                    style.display = Display::Flex;
+                }
+            },
             NodeType::Text(_) => {
                 style.display = Display::Flex;
             }
@@ -128,9 +127,15 @@ impl LayoutEngine {
                         "center" => style.justify_content = Some(JustifyContent::CENTER),
                         "flex-start" => style.justify_content = Some(JustifyContent::FLEX_START),
                         "flex-end" => style.justify_content = Some(JustifyContent::FLEX_END),
-                        "space-between" => style.justify_content = Some(JustifyContent::SPACE_BETWEEN),
-                        "space-around" => style.justify_content = Some(JustifyContent::SPACE_AROUND),
-                        "space-evenly" => style.justify_content = Some(JustifyContent::SPACE_EVENLY),
+                        "space-between" => {
+                            style.justify_content = Some(JustifyContent::SPACE_BETWEEN)
+                        }
+                        "space-around" => {
+                            style.justify_content = Some(JustifyContent::SPACE_AROUND)
+                        }
+                        "space-evenly" => {
+                            style.justify_content = Some(JustifyContent::SPACE_EVENLY)
+                        }
                         _ => {}
                     }
                 }
@@ -150,13 +155,23 @@ impl LayoutEngine {
             "padding" => {
                 if let uwebr_core::component::PropValue::Number(n) = value {
                     let lp = LengthPercentage::length(*n as f32);
-                    style.padding = Rect { left: lp, right: lp, top: lp, bottom: lp };
+                    style.padding = Rect {
+                        left: lp,
+                        right: lp,
+                        top: lp,
+                        bottom: lp,
+                    };
                 }
             }
             "margin" => {
                 if let uwebr_core::component::PropValue::Number(n) = value {
                     let lpa = LengthPercentageAuto::length(*n as f32);
-                    style.margin = Rect { left: lpa, right: lpa, top: lpa, bottom: lpa };
+                    style.margin = Rect {
+                        left: lpa,
+                        right: lpa,
+                        top: lpa,
+                        bottom: lpa,
+                    };
                 }
             }
             _ => {}
@@ -187,7 +202,11 @@ impl LayoutEngine {
     }
 
     /// Collect all positioned nodes from the tree with depth info
-    pub fn collect_positioned_nodes(&self, root: taffy::NodeId, root_element: &Element) -> Vec<PositionedNode> {
+    pub fn collect_positioned_nodes(
+        &self,
+        root: taffy::NodeId,
+        root_element: &Element,
+    ) -> Vec<PositionedNode> {
         let mut nodes = vec![];
         self.collect_recursive(root, root_element, 0, &mut nodes);
         nodes
@@ -306,8 +325,14 @@ mod tests {
         let el = Element {
             node_type: NodeType::Element("div".to_string()),
             props: vec![
-                ("width".to_string(), uwebr_core::component::PropValue::Number(200.0)),
-                ("height".to_string(), uwebr_core::component::PropValue::Number(100.0)),
+                (
+                    "width".to_string(),
+                    uwebr_core::component::PropValue::Number(200.0),
+                ),
+                (
+                    "height".to_string(),
+                    uwebr_core::component::PropValue::Number(100.0),
+                ),
             ],
             children: vec![],
         };

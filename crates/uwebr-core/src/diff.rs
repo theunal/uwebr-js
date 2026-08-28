@@ -114,7 +114,10 @@ fn diff_props(old: &Element, new: &Element, path: &mut Vec<usize>, patches: &mut
         if !new_props.contains_key(key) {
             // Mark as removed by setting to empty string
             // In a real impl, we'd have a RemoveProp variant
-            changed.push((key.clone(), crate::component::PropValue::String(String::new())));
+            changed.push((
+                key.clone(),
+                crate::component::PropValue::String(String::new()),
+            ));
         }
     }
 
@@ -126,12 +129,7 @@ fn diff_props(old: &Element, new: &Element, path: &mut Vec<usize>, patches: &mut
     }
 }
 
-fn diff_children(
-    old: &Element,
-    new: &Element,
-    path: &mut Vec<usize>,
-    patches: &mut Vec<Patch>,
-) {
+fn diff_children(old: &Element, new: &Element, path: &mut Vec<usize>, patches: &mut Vec<Patch>) {
     let old_len = old.children.len();
     let new_len = new.children.len();
     let min_len = old_len.min(new_len);
@@ -213,11 +211,7 @@ pub fn apply_patches(root: &mut Element, patches: &[Patch]) -> bool {
                     }
                 }
             }
-            Patch::Insert {
-                path,
-                index,
-                child,
-            } => {
+            Patch::Insert { path, index, child } => {
                 if let Some(node) = navigate_to(root, path) {
                     let idx = (*index).min(node.children.len());
                     node.children.insert(idx, child.clone());
@@ -347,14 +341,8 @@ mod tests {
 
     #[test]
     fn test_nested_diff() {
-        let old = div_elem(
-            "outer",
-            vec![div_elem("inner", vec![text_elem("old")])],
-        );
-        let new = div_elem(
-            "outer",
-            vec![div_elem("inner", vec![text_elem("new")])],
-        );
+        let old = div_elem("outer", vec![div_elem("inner", vec![text_elem("old")])]);
+        let new = div_elem("outer", vec![div_elem("inner", vec![text_elem("new")])]);
         let patches = diff(&old, &new);
         assert_eq!(patches.len(), 1);
         match &patches[0] {

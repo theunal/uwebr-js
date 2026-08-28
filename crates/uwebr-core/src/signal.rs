@@ -306,8 +306,8 @@ pub fn batch<F: FnOnce()>(f: F) {
 
 // ── Hooks (for use inside #[component] functions) ──────────────────────
 
-use std::any::TypeId;
 use crate::lifecycle::{get_hook_state, set_hook_state};
+use std::any::TypeId;
 
 /// Create a signal tied to the current component scope.
 /// Returns the same signal on subsequent calls within the same component.
@@ -329,9 +329,7 @@ pub fn use_signal<T: Clone + 'static>(initial: T) -> (Signal<T>, SignalSetter<T>
 }
 
 /// Create a memo tied to the current component scope.
-pub fn use_memo<T: Clone + 'static + PartialEq, F: FnMut() -> T + 'static>(
-    compute: F,
-) -> Memo<T> {
+pub fn use_memo<T: Clone + 'static + PartialEq, F: FnMut() -> T + 'static>(compute: F) -> Memo<T> {
     let key = TypeId::of::<Memo<T>>();
 
     if let Some(existing) = get_hook_state::<Memo<T>>(key.clone()) {

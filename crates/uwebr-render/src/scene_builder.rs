@@ -1,5 +1,5 @@
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
-use vello::peniko::{self, Fill, color::palette};
+use vello::peniko::{self, color::palette, Fill};
 
 use crate::scene::{Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle};
 
@@ -58,7 +58,11 @@ impl SceneBuilder {
             RenderNodeKind::RoundRect { radius } => {
                 Self::draw_round_rect(scene, &node.style, x, y, w, h, *radius as f64);
             }
-            RenderNodeKind::Text { content: _, font_size, color } => {
+            RenderNodeKind::Text {
+                content: _,
+                font_size,
+                color,
+            } => {
                 // Text placeholder — real text rendering via text.rs
                 scene.fill(
                     Fill::NonZero,
@@ -102,7 +106,15 @@ impl SceneBuilder {
     }
 
     /// Draw a filled rounded rectangle
-    fn draw_round_rect(scene: &mut vello::Scene, style: &RenderStyle, x: f64, y: f64, w: f64, h: f64, radius: f64) {
+    fn draw_round_rect(
+        scene: &mut vello::Scene,
+        style: &RenderStyle,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        radius: f64,
+    ) {
         let brush = Self::make_brush(style);
         scene.fill(
             Fill::NonZero,
@@ -114,16 +126,18 @@ impl SceneBuilder {
     }
 
     /// Draw a rectangle border
-    fn draw_border(scene: &mut vello::Scene, x: f64, y: f64, w: f64, h: f64, width: f64, color: peniko::Color) {
+    fn draw_border(
+        scene: &mut vello::Scene,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        width: f64,
+        color: peniko::Color,
+    ) {
         let stroke = Stroke::new(width);
         let rect = Rect::new(x, y, x + w, y + h);
-        scene.stroke(
-            &stroke,
-            Affine::IDENTITY,
-            color,
-            None,
-            &rect,
-        );
+        scene.stroke(&stroke, Affine::IDENTITY, color, None, &rect);
     }
 
     /// Create a peniko::Brush from a Background
@@ -145,7 +159,11 @@ impl SceneBuilder {
                 .with_stops(color_stops.as_slice());
                 peniko::Brush::Gradient(gradient)
             }
-            Some(Background::RadialGradient { center, radius, stops }) => {
+            Some(Background::RadialGradient {
+                center,
+                radius,
+                stops,
+            }) => {
                 let color_stops: Vec<peniko::ColorStop> = stops
                     .iter()
                     .map(|(offset, color)| peniko::ColorStop {
@@ -153,11 +171,9 @@ impl SceneBuilder {
                         color: (*color).into(),
                     })
                     .collect();
-                let gradient = peniko::Gradient::new_radial(
-                    (center[0] as f64, center[1] as f64),
-                    *radius,
-                )
-                .with_stops(color_stops.as_slice());
+                let gradient =
+                    peniko::Gradient::new_radial((center[0] as f64, center[1] as f64), *radius)
+                        .with_stops(color_stops.as_slice());
                 peniko::Brush::Gradient(gradient)
             }
             None => palette::css::TRANSPARENT.into(),
@@ -179,7 +195,11 @@ mod tests {
     #[test]
     fn test_draw_rect() {
         let mut scene = RenderScene::new();
-        scene.add_node(RenderNode::rect(1, LayoutInfo::new(10.0, 20.0, 100.0, 50.0), palette::css::RED));
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(10.0, 20.0, 100.0, 50.0),
+            palette::css::RED,
+        ));
         let _vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
     }
 
@@ -198,7 +218,11 @@ mod tests {
     #[test]
     fn test_draw_with_opacity() {
         let mut scene = RenderScene::new();
-        let mut node = RenderNode::rect(1, LayoutInfo::new(0.0, 0.0, 100.0, 100.0), palette::css::GREEN);
+        let mut node = RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 100.0, 100.0),
+            palette::css::GREEN,
+        );
         node.style.opacity = 0.5;
         scene.add_node(node);
         let _vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
@@ -220,10 +244,7 @@ mod tests {
             background: Some(Background::LinearGradient {
                 start: [0.0, 0.0],
                 end: [100.0, 0.0],
-                stops: vec![
-                    (0.0, palette::css::RED),
-                    (1.0, palette::css::BLUE),
-                ],
+                stops: vec![(0.0, palette::css::RED), (1.0, palette::css::BLUE)],
             }),
             ..Default::default()
         };
@@ -234,7 +255,11 @@ mod tests {
     #[test]
     fn test_draw_border() {
         let mut scene = RenderScene::new();
-        let mut node = RenderNode::rect(1, LayoutInfo::new(10.0, 10.0, 100.0, 50.0), palette::css::WHITE);
+        let mut node = RenderNode::rect(
+            1,
+            LayoutInfo::new(10.0, 10.0, 100.0, 50.0),
+            palette::css::WHITE,
+        );
         node.style.border = Some(crate::scene::BorderStyle {
             width: 2.0,
             color: palette::css::BLACK,
@@ -246,7 +271,11 @@ mod tests {
     #[test]
     fn test_skip_zero_size_node() {
         let mut scene = RenderScene::new();
-        scene.add_node(RenderNode::rect(1, LayoutInfo::new(0.0, 0.0, 0.0, 0.0), palette::css::RED));
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 0.0, 0.0),
+            palette::css::RED,
+        ));
         let _vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
     }
 }

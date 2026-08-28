@@ -12,7 +12,7 @@ use std::collections::HashMap;
 pub fn detect_components(html: &str) -> HashMap<String, String> {
     let mut components = HashMap::new();
     let mut chars = html.char_indices().peekable();
-    
+
     while let Some((i, c)) = chars.next() {
         if c == '<' {
             // Skip </ closing tags
@@ -33,7 +33,7 @@ pub fn detect_components(html: &str) -> HashMap<String, String> {
             if end > start {
                 let tag = &html[start..end];
                 // PascalCase: starts with uppercase, has at least 2 chars
-                if tag.len() >= 2 
+                if tag.len() >= 2
                     && tag.chars().next().map_or(false, |c| c.is_uppercase())
                     && tag.chars().any(|c| c.is_lowercase())
                 {
@@ -70,7 +70,10 @@ pub fn parse_html(html: &str) -> Result<HtmlNode> {
 }
 
 /// Parse HTML with known component names (PascalCase tags that html5ever lowercases)
-pub fn parse_html_with_components(html: &str, components: &HashMap<String, String>) -> Result<HtmlNode> {
+pub fn parse_html_with_components(
+    html: &str,
+    components: &HashMap<String, String>,
+) -> Result<HtmlNode> {
     let component_names: HashSet<String> = components.keys().cloned().collect();
     let dom = parse_document(RcDom::default(), Default::default())
         .from_utf8()
@@ -100,7 +103,11 @@ pub fn parse_fragment(html: &str) -> Result<Vec<HtmlNode>> {
 
     let body = find_body_or_head(&dom.document);
     match body {
-        Some(body_handle) => Ok(convert_children(&body_handle, &component_names, &components)),
+        Some(body_handle) => Ok(convert_children(
+            &body_handle,
+            &component_names,
+            &components,
+        )),
         None => Ok(vec![]),
     }
 }
@@ -141,7 +148,11 @@ fn find_element(handle: &Handle, target_tag: &str) -> Option<Handle> {
 }
 
 /// Convert all children of a node
-fn convert_children(handle: &Handle, component_names: &HashSet<String>, components: &HashMap<String, String>) -> Vec<HtmlNode> {
+fn convert_children(
+    handle: &Handle,
+    component_names: &HashSet<String>,
+    components: &HashMap<String, String>,
+) -> Vec<HtmlNode> {
     handle
         .children
         .borrow()
@@ -151,7 +162,11 @@ fn convert_children(handle: &Handle, component_names: &HashSet<String>, componen
         .collect()
 }
 
-fn convert_node(handle: &Handle, component_names: &HashSet<String>, components: &HashMap<String, String>) -> HtmlNode {
+fn convert_node(
+    handle: &Handle,
+    component_names: &HashSet<String>,
+    components: &HashMap<String, String>,
+) -> HtmlNode {
     let children = convert_children(handle, component_names, components);
 
     match &handle.data {
@@ -205,7 +220,10 @@ fn convert_node(handle: &Handle, component_names: &HashSet<String>, components: 
             let (is_component, original_name) = if let Some(original) = components.get(&tag) {
                 (true, original.clone())
             } else {
-                (tag.chars().next().map_or(false, |c| c.is_uppercase()), tag.clone())
+                (
+                    tag.chars().next().map_or(false, |c| c.is_uppercase()),
+                    tag.clone(),
+                )
             };
 
             if is_component {

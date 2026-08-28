@@ -78,7 +78,7 @@ impl Default for Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{RenderNode, LayoutInfo};
+    use crate::scene::{LayoutInfo, RenderNode};
     use vello::peniko::color::palette;
 
     #[test]
@@ -103,7 +103,11 @@ mod tests {
         assert!(r.needs_redraw());
 
         let mut scene = RenderScene::new();
-        scene.add_node(RenderNode::rect(1, LayoutInfo::new(0.0, 0.0, 100.0, 50.0), palette::css::RED));
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 100.0, 50.0),
+            palette::css::RED,
+        ));
         r.update_scene(scene);
 
         assert_eq!(r.scene().node_count(), 1);
@@ -114,7 +118,11 @@ mod tests {
     fn test_build_vello_scene() {
         let mut r = Renderer::new(800, 600);
         let mut scene = RenderScene::new();
-        scene.add_node(RenderNode::rect(1, LayoutInfo::new(10.0, 20.0, 100.0, 50.0), palette::css::BLUE));
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(10.0, 20.0, 100.0, 50.0),
+            palette::css::BLUE,
+        ));
         r.update_scene(scene);
 
         let _vello_scene = r.build_vello_scene();
@@ -124,7 +132,11 @@ mod tests {
     fn test_render_frame() {
         let mut r = Renderer::new(800, 600);
         let mut scene = RenderScene::new();
-        scene.add_node(RenderNode::rect(1, LayoutInfo::new(0.0, 0.0, 800.0, 600.0), palette::css::WHITE));
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 800.0, 600.0),
+            palette::css::WHITE,
+        ));
         r.update_scene(scene);
 
         let _vello_scene = r.render_frame().unwrap();

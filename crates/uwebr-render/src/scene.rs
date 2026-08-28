@@ -13,11 +13,21 @@ pub struct LayoutInfo {
 
 impl LayoutInfo {
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn zero() -> Self {
-        Self { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        }
     }
 }
 
@@ -74,9 +84,19 @@ impl Default for RenderStyle {
 #[derive(Debug, Clone)]
 pub enum RenderNodeKind {
     Rect,
-    RoundRect { radius: f32 },
-    Text { content: String, font_size: f32, color: peniko::Color },
-    Image { data: Vec<u8>, width: u32, height: u32 },
+    RoundRect {
+        radius: f32,
+    },
+    Text {
+        content: String,
+        font_size: f32,
+        color: peniko::Color,
+    },
+    Image {
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
     Container,
 }
 
@@ -116,7 +136,13 @@ impl RenderNode {
         }
     }
 
-    pub fn text(id: u64, layout: LayoutInfo, content: &str, font_size: f32, color: peniko::Color) -> Self {
+    pub fn text(
+        id: u64,
+        layout: LayoutInfo,
+        content: &str,
+        font_size: f32,
+        color: peniko::Color,
+    ) -> Self {
         Self {
             id,
             kind: RenderNodeKind::Text {
@@ -184,7 +210,11 @@ mod tests {
     #[test]
     fn test_render_scene_add_node() {
         let mut scene = RenderScene::new();
-        scene.add_node(RenderNode::rect(1, LayoutInfo::new(0.0, 0.0, 100.0, 50.0), palette::css::RED));
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 100.0, 50.0),
+            palette::css::RED,
+        ));
         assert_eq!(scene.node_count(), 1);
     }
 
@@ -209,10 +239,7 @@ mod tests {
         let bg = Background::LinearGradient {
             start: [0.0, 0.0],
             end: [100.0, 100.0],
-            stops: vec![
-                (0.0, palette::css::RED),
-                (1.0, palette::css::BLUE),
-            ],
+            stops: vec![(0.0, palette::css::RED), (1.0, palette::css::BLUE)],
         };
         match bg {
             Background::LinearGradient { start, end, stops } => {
@@ -226,7 +253,11 @@ mod tests {
 
     #[test]
     fn test_render_node_rect() {
-        let node = RenderNode::rect(1, LayoutInfo::new(10.0, 20.0, 100.0, 50.0), palette::css::RED);
+        let node = RenderNode::rect(
+            1,
+            LayoutInfo::new(10.0, 20.0, 100.0, 50.0),
+            palette::css::RED,
+        );
         assert_eq!(node.id, 1);
         assert_eq!(node.layout.width, 100.0);
         assert!(matches!(node.kind, RenderNodeKind::Rect));
@@ -235,10 +266,20 @@ mod tests {
 
     #[test]
     fn test_render_node_text() {
-        let node = RenderNode::text(2, LayoutInfo::new(0.0, 0.0, 200.0, 30.0), "Hello", 16.0, palette::css::WHITE);
+        let node = RenderNode::text(
+            2,
+            LayoutInfo::new(0.0, 0.0, 200.0, 30.0),
+            "Hello",
+            16.0,
+            palette::css::WHITE,
+        );
         assert_eq!(node.id, 2);
         match &node.kind {
-            RenderNodeKind::Text { content, font_size, color: _ } => {
+            RenderNodeKind::Text {
+                content,
+                font_size,
+                color: _,
+            } => {
                 assert_eq!(content, "Hello");
                 assert_eq!(*font_size, 16.0);
             }

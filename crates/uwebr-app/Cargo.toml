@@ -13,8 +13,11 @@ uwebr-render = { workspace = true }
 winit = "0.30"
 wgpu = "29"
 vello = "0.10"
+taffy = "0.14"
+peniko = "0.6"
 pollster = "0.4"
 log = "0.4"
 
 [dev-dependencies]
 tempfile.workspace = true
+taffy = "0.14"

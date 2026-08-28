@@ -1,4 +1,4 @@
-use uwebr_app::{App, AppEvent, FnComponent};
+use uwebr_app::{App, AppEvent, FnComponent, RenderPipeline};
 use uwebr_app::component::Component;
 use uwebr_core::component::{Element, NodeType, PropValue};
 use winit::event::MouseButton;
@@ -69,4 +69,44 @@ fn test_app_with_component() {
         children: vec![],
     });
     let _app = App::new("Test").with_component(comp);
+}
+
+#[test]
+fn test_pipeline_integration() {
+    let mut pipeline = RenderPipeline::new();
+    let el = Element {
+        node_type: NodeType::Element("div".into()),
+        props: vec![
+            ("width".into(), PropValue::Number(400.0)),
+            ("height".into(), PropValue::Number(300.0)),
+            ("bg".into(), PropValue::String("#ff0000".into())),
+        ],
+        children: vec![Element {
+            node_type: NodeType::Text("Hello World".into()),
+            props: vec![],
+            children: vec![],
+        }],
+    };
+    let _scene = pipeline.render(&el, 800, 600);
+}
+
+#[test]
+fn test_pipeline_nested_components() {
+    let mut pipeline = RenderPipeline::new();
+    let el = Element {
+        node_type: NodeType::Element("div".into()),
+        props: vec![("bg".into(), PropValue::String("black".into()))],
+        children: vec![
+            Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("bg".into(), PropValue::String("red".into()))],
+                children: vec![Element {
+                    node_type: NodeType::Text("Nested".into()),
+                    props: vec![],
+                    children: vec![],
+                }],
+            },
+        ],
+    };
+    let _scene = pipeline.render(&el, 800, 600);
 }

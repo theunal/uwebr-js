@@ -23,7 +23,7 @@ uwebr/
     ├── uwebr-css/                  # ✅ CSS parser → Taffy Style (43 test)
     ├── uwebr-core/                 # ✅ Reactive system: Signal, Context, Router, Effects, Lifecycle (48 test)
     ├── uwebr-render/               # ✅ GPU: color, scene, text, layout, scene_builder, renderer (38 test)
-    ├── uwebr-app/                  # ✅ App runner: GpuContext + winit ApplicationHandler + Component trait (8 test)
+    ├── uwebr-app/                  # ✅ App runner: GpuContext + winit ApplicationHandler + Component trait + RenderPipeline (28 test)
     └── uwebr-cli/                  # ✅ CLI binary: init/build/dev + hot reload (7 test)
 ```
 
@@ -284,6 +284,7 @@ Element (uwebr-core)          CSS Rules (uwebr-css)
 - [x] GPU device initialization (wgpu + vello)
 - [x] RedrawRequested → render pipeline (GpuContext::render_scene)
 - [x] Mouse/Keyboard event dispatch
+- [x] RenderPipeline: Element → Layout → Scene → vello Scene (end-to-end)
 - [ ] Multi-window desteği
 - [ ] Timer/animation frame
 
@@ -309,10 +310,10 @@ Element (uwebr-core)          CSS Rules (uwebr-css)
 | uwebr-css | ✅ Tamamlandı | 43/43 | FAZ 2: CSS parser + Taffy Style mapping |
 | uwebr-core | ✅ Tamamlandı | 48/48 | FAZ 3: Signal, Memo, Effect, Diff, Events, Lifecycle, Hooks, Context, Macros |
 | uwebr-render | ✅ Tamamlandı | 38/38 | FAZ 4: color, scene, text, layout, scene_builder, renderer |
-| uwebr-app | ✅ FAZ 5 tamam | 8/8 | GpuContext + winit ApplicationHandler + Component trait |
+| uwebr-app | ✅ FAZ 5+pipeline | 28/28 | GpuContext + ApplicationHandler + Component trait + RenderPipeline |
 | uwebr-cli | ✅ FAZ 6 tamam | 7/7 | init/build/dev + notify file watcher |
 
-**Toplam:** 190/190 test geçti
+**Toplam:** 208/208 test geçti
 
 ---
 

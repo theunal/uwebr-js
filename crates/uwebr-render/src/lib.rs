@@ -7,6 +7,8 @@ pub mod text;
 
 pub use layout::{LayoutEngine, PositionedNode};
 pub use renderer::Renderer;
-pub use scene::{Background, BorderStyle, LayoutInfo, RenderNode, RenderNodeKind, RenderScene, RenderStyle};
+pub use scene::{
+    Background, BorderStyle, LayoutInfo, RenderNode, RenderNodeKind, RenderScene, RenderStyle,
+};
 pub use scene_builder::SceneBuilder;
 pub use text::TextRenderer;

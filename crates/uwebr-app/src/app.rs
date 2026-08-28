@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::sync::Arc;
-use uwebr_render::layout::LayoutEngine;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -9,6 +8,7 @@ use winit::window::{WindowAttributes, WindowId};
 use crate::component::Component;
 use crate::context::GpuContext;
 use crate::event::AppEvent;
+use crate::pipeline::RenderPipeline;
 
 /// Application state
 enum AppState {
@@ -17,7 +17,7 @@ enum AppState {
     /// GPU context is ready
     Running {
         ctx: GpuContext,
-        layout_engine: LayoutEngine,
+        pipeline: RenderPipeline,
     },
 }
 
@@ -85,7 +85,6 @@ impl ApplicationHandler for App {
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if matches!(self.state, AppState::WaitingResume) {
-            // Create window
             let attrs = WindowAttributes::default()
                 .with_title(&self.title)
                 .with_inner_size(winit::dpi::LogicalSize::new(self.width, self.height));
@@ -99,7 +98,6 @@ impl ApplicationHandler for App {
                 }
             };
 
-            // Initialize GPU context
             let ctx = match pollster::block_on(GpuContext::new(window)) {
                 Ok(c) => c,
                 Err(e) => {
@@ -111,7 +109,7 @@ impl ApplicationHandler for App {
 
             self.state = AppState::Running {
                 ctx,
-                layout_engine: LayoutEngine::new(),
+                pipeline: RenderPipeline::new(),
             };
         }
     }
@@ -119,7 +117,7 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match &mut self.state {
             AppState::WaitingResume => {}
-            AppState::Running { ctx, layout_engine } => {
+            AppState::Running { ctx, pipeline } => {
                 match event {
                     WindowEvent::CloseRequested => {
                         event_loop.exit();
@@ -129,16 +127,10 @@ impl ApplicationHandler for App {
                         self.dispatch_event(&AppEvent::Resize(size.width, size.height));
                     }
                     WindowEvent::RedrawRequested => {
-                        // Build element tree from component
                         if let Some(ref component) = self.component {
                             let element = component.render();
-
-                            // Layout
-                            let _ = layout_engine.build_tree(&element);
-                            // (Full pipeline: layout → scene → render — see FAZ 4 integration)
-
-                            // For now, just clear with black
-                            let scene = vello::Scene::new();
+                            let (w, h) = ctx.size();
+                            let scene = pipeline.render(&element, w, h);
                             if let Err(e) = ctx.render_scene(&scene) {
                                 eprintln!("Render error: {e}");
                             }
@@ -151,9 +143,7 @@ impl ApplicationHandler for App {
                     }
                     WindowEvent::MouseInput { state, button, .. } => {
                         if state.is_pressed() {
-                            self.dispatch_event(&AppEvent::MouseClick(
-                                button,
-                            ));
+                            self.dispatch_event(&AppEvent::MouseClick(button));
                         }
                     }
                     _ => {}

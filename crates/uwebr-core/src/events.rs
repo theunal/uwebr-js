@@ -74,11 +74,23 @@ pub struct Event {
 /// Event-specific data
 #[derive(Debug, Clone)]
 pub enum EventData {
-    Mouse { x: f64, y: f64, button: MouseButton },
-    Keyboard { key: String, code: u32, modifiers: Modifiers },
-    Input { value: String },
+    Mouse {
+        x: f64,
+        y: f64,
+        button: MouseButton,
+    },
+    Keyboard {
+        key: String,
+        code: u32,
+        modifiers: Modifiers,
+    },
+    Input {
+        value: String,
+    },
     Focus,
-    Submit { form_data: HashMap<String, String> },
+    Submit {
+        form_data: HashMap<String, String>,
+    },
     None,
 }
 
