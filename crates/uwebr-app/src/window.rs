@@ -1,22 +1,31 @@
-use anyhow::Result;
+use std::sync::Arc;
 
-/// Window wrapper
+/// Window handle — wraps a winit window
 pub struct Window {
-    width: u32,
-    height: u32,
+    inner: Arc<winit::window::Window>,
 }
 
 impl Window {
-    pub fn new(_title: &str, width: u32, height: u32) -> Result<Self> {
-        // TODO: Create winit window
-        Ok(Self { width, height })
+    /// Create from an existing winit window
+    pub fn from_winit(window: Arc<winit::window::Window>) -> Self {
+        Self { inner: window }
     }
 
-    pub fn width(&self) -> u32 {
-        self.width
+    /// Get the underlying winit window
+    pub fn winit(&self) -> &winit::window::Window {
+        &self.inner
     }
 
-    pub fn height(&self) -> u32 {
-        self.height
+    pub fn inner_size(&self) -> (u32, u32) {
+        let size = self.inner.inner_size();
+        (size.width, size.height)
+    }
+
+    pub fn set_title(&self, title: &str) {
+        self.inner.set_title(title);
+    }
+
+    pub fn request_redraw(&self) {
+        self.inner.request_redraw();
     }
 }

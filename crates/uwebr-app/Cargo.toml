@@ -11,6 +11,10 @@ thiserror.workspace = true
 uwebr-core = { workspace = true }
 uwebr-render = { workspace = true }
 winit = "0.30"
+wgpu = "29"
+vello = "0.10"
+pollster = "0.4"
+log = "0.4"
 
 [dev-dependencies]
 tempfile.workspace = true
