@@ -2,7 +2,7 @@
 
 ## Genel Bakış
 
-uwebr, JavaScript/HTML/CSS kodunu alıp GPU ile çizilen masaüstü uygulamalarına çeviren bir Rust frameworküdür. Next.js benzeri bir geliştirici deneyimi sunar ancak tarayıcı yerine wgpu + vello ile doğrudan GPU'ya çizer.
+uwebr, `.uwebr` dosyalarını (HTML + `<script>` + `<style>`) alıp GPU ile çizilen masaüstü uygulamalarına çeviren bir Rust frameworküdür. Next.js benzeri bir geliştirici deneyimi sunar; tarayıcı yerine wgpu + vello ile doğrudan GPU'ya çizer.
 
 ## Temel Prensipler
 
@@ -10,280 +10,234 @@ uwebr, JavaScript/HTML/CSS kodunu alıp GPU ile çizilen masaüstü uygulamalar�
 2. **GPU-First**: Tüm çizimler wgpu + vello ile GPU'da yapılır
 3. **Component-Based**: React/Leptos benzeri component model
 4. **Reactive State**: Fine-grained signals (Leptos benzeri)
-5. **File-Based Routing**: Next.js benzeri dosya tabanlı yönlendirme
-6. **Cross-Platform**: Windows, macOS, Linux (aynı kod tabanı)
+5. **Cross-Platform**: Windows, macOS, Linux (aynı kod tabanı)
+
+## Workspace Yapısı (8 Crate)
+
+```
+uwebr/
+├── uwebr-js/      # JS/TS → Rust transpiler (swc_ecma_parser)
+├── uwebr-html/    # HTML parser (html5ever) + template directives
+├── uwebr-css/     # Custom CSS parser → Taffy Style
+├── uwebr-core/    # Reactive system: Signal, Effect, Memo, Context, Timer
+├── uwebr-macro/   # #[component] + #[derive(Props)] proc macros
+├── uwebr-render/  # Layout (Taffy) + Scene (vello) + Text (Parley) + StyleBook
+├── uwebr-app/     # Winit + wgpu + vello App, Multi-window, RenderPipeline
+└── uwebr-cli/     # CLI: init/build/check/dev + transpiler
+```
 
 ## Katmanlı Mimari
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Uygulama Katmanı                       │
-│  pages/, components/, styles/ — Kullanıcı Kodu          │
+│                    Kullanıcı Kodu                        │
+│  .uwebr dosyaları (HTML + <script> + <style>)           │
 └──────────────────────────────┬──────────────────────────┘
                                │
 ┌──────────────────────────────┴──────────────────────────┐
-│                  Framework Katmanı                        │
-│  uwebr-core: Signals, Components, Lifecycle, Routing    │
+│                  Transpile Katmanı                        │
+│  uwebr-html:  HTML → Element AST (html5ever)            │
+│  uwebr-css:   CSS → Taffy Style (custom parser)         │
+│  uwebr-js:    JS → Rust AST (swc_ecma_parser)           │
+│  uwebr-cli:   .uwebr → Rust .rs codegen                 │
 └──────────────────────────────┬──────────────────────────┘
                                │
 ┌──────────────────────────────┴──────────────────────────┐
-│                 Transform Katmanı                         │
-│  uwebr-html: HTML → rsx! AST                            │
-│  uwebr-css:  CSS → Taffy Style                          │
-│  uwebr-js:   JS → Rust AST (mevcut)                     │
+│                 Framework Katmanı                         │
+│  uwebr-core: Signals, Effects, Lifecycle, Timer          │
+│  uwebr-macro: #[component], #[derive(Props)]             │
 └──────────────────────────────┬──────────────────────────┘
                                │
 ┌──────────────────────────────┴──────────────────────────┐
 │                 Rendering Katmanı                         │
-│  uwebr-render: Vello Scene + Taffy Layout + Parley Text │
+│  uwebr-render:                                           │
+│    StyleBook:  CSS rules → tag/class/id matching         │
+│    Layout:     Element → TaffyTree → PositionedNode      │
+│    Scene:      PositionedNode → vello::Scene              │
+│    Text:       Parley font layout + measure               │
 └──────────────────────────────┬──────────────────────────┘
                                │
 ┌──────────────────────────────┴──────────────────────────┐
 │                 Platform Katmanı                          │
-│  uwebr-app: Winit EventLoop + Wgpu Device + Window      │
+│  uwebr-app:                                              │
+│    GpuContext:  wgpu device + surface + vello renderer    │
+│    App:         Winit ApplicationHandler                  │
+│    Multi-window: HashMap<WindowId, WindowState>           │
+│    Window:      per-window GPU context + pipeline         │
 └─────────────────────────────────────────────────────────┘
 ```
 
-## Veri Akış Diyagramı
+## Veri Akışı (Pipeline)
 
 ```
-1. Girdi: HTML + CSS + JS dosyaları
-   │
-2. Parse: swc_html + lightningcss + swc_ecma_parser
-   │  → HTML AST, CSS AST, JS AST
-   │
-3. Transform:
-   │  uwebr-html:  HTML AST → HtmlNode tree
-   │  uwebr-css:   CSS AST → Vec<(Selector, Style)>
-   │  uwebr-js:    JS AST → RsStmt/RsExpr (mevcut)
-   │
-4. Component Resolution:
-   │  HtmlNode tree + CSS selectors → Component tree
-   │  Event handlers bağlanır
-   │
-5. Render Prep:
-   │  Component tree → Virtual DOM
-   │  Signal dependencies takip edilir
-   │
-6. Runtime Cycle (her frame):
-   │  a. Signal changes → affected components re-render
-   │  b. Virtual DOM diff → minimal patch list
-   │  c. Patch list → updated Render tree
-   │  d. taffy.compute_layout() → pixel positions
-   │  e. vello::Scene building → draw commands
-   │  f. wgpu render → GPU'ya gönder
-   │
-7. Çıktı: Ekranda piksel (60 FPS hedefi)
+.uwebr Dosyası
+  ├── <div class="box">Hello</div>
+  ├── <style>.box { width: 200px; }</style>
+  └── <script>let x = 1;</script>
+        │
+        ▼
+┌──────────────────────────┐
+│ 1. PARSE (uwebr-html)    │  html5ever → Element AST
+│    parse_html(content)    │  {#each}, {#if}, <Component/>
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│ 2. CSS MATCH (StyleBook) │  StyleBook::parse(css)
+│    match_element(el)     │  → (Style, bool) by tag<class<id
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│ 3. LAYOUT (Taffy 0.14)   │  LayoutEngine::build_tree()
+│    compute_layout()      │  → Vec<PositionedNode>
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│ 4. SCENE (vello)         │  SceneBuilder::build_scene()
+│    fill(), stroke()      │  → vello::Scene
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│ 5. RENDER (wgpu+vello)   │  Renderer::render_frame()
+│    GPU submit            │  → Surface texture → Screen
+└──────────────────────────┘
 ```
 
-## Component Lifecycle
+## Reactive System (uwebr-core)
 
 ```
-create_signal() ──→ Signal object (read/write)
+create_signal(value) ──→ Signal<T> (read/write)
        │
-       ├── signal()      → Okunduğunda değeri döndür
-       ├── set_signal()  → Yeni değer ayarla
-       └── signal.update(|v| *v += 1) → Functional update
+       ├── signal()        → değeri oku
+       ├── set_signal(v)   → yeni değer ayarla
+       └── signal.update() → functional update
+
+create_memo(compute) ──→ Memo<T> (derived, lazy)
        │
-create_memo() ──→ Derived signal (sadece read)
+       ├── Input sinyalleri değiştiğinde yeniden hesaplar
+       └── Memoized: aynı input → aynı output
+
+create_effect(closure) ──→ Side effect (deps değiştiğinde çalışır)
        │
-       ├── Depends on input signals
-       ├── Automatically recomputes when deps change
-       └── Memoized (same input → same output, no recompute)
+       ├── Mount'ta bir kez çalışır
+       ├── Read ettiği sinyaller değiştiğinde tekrar çalışır
+       └── Cleanup: re-run/destroy'da temizleme
+
+Timer System (global OnceLock<TimerRegistry>):
        │
-create_effect() ──→ Side effect (runs when deps change)
-       │
-       ├── Runs once on mount
-       ├── Re-runs when any read signal changes
-       └── Cleanup function on re-run/destroy
-       │
-Component Mount:
-       │
-       ├── on_mount(|| { ... })     → Component mounted
-       ├── on_cleanup(|| { ... })   → Component destroyed
-       └── spawn(async { ... })     → Async task
+       ├── set_timeout(closure, duration)     → TimerHandle
+       ├── set_interval(closure, duration)    → TimerHandle
+       ├── request_animation_frame(closure)   → TimerHandle
+       └── cancel_timer(handle)               → bool
 ```
 
-## Virtual DOM Diff Algoritması
+## Component Model
+
+```rust
+// .uwebr dosyasından transpile edilen kod:
+pub fn my_component() -> Element {
+    Element {
+        node_type: NodeType::Element("div".into()),
+        props: vec![("class".into(), PropValue::String("app".into()))],
+        children: vec![
+            Element { node_type: NodeType::Text("Hello".into()), .. },
+        ],
+    }
+}
+
+// Ana uygulama:
+fn main() -> anyhow::Result<()> {
+    App::new("My App")
+        .with_size(800, 600)
+        .with_css(".app { display: flex; }")
+        .with_component(FnComponent::new(|| my_component()))
+        .run()
+}
+```
+
+## Multi-Window
+
+```rust
+App::new("Main")
+    .with_component(MainComponent)
+    .open_window("Settings", 400, 300, SettingsComponent)
+    .run()?;
+
+// App internally:
+// HashMap<WindowId, WindowState> — per-window GPU + pipeline + component
+// pending_windows: Vec<(String, w, h, Box<dyn Component>)> — queue for creation
+```
+
+## Layout Hesaplama (Taffy 0.14)
 
 ```
-1. Eski component tree (önceki render)
-2. Yeni component tree (mevcut render)
-3. Her node için:
-   ├── Aynı tip mi?
-   │   ├── Evet → Props/children diff
-   │   │   ├── Props aynı mı?
-   │   │   │   ├── Evet → children diff (recursive)
-   │   │   │   └── Hayır → Update props + children diff
-   │   │   └── Children aynı mı?
-   │   │       ├── Evet → No-op
-   │   │       └── Hayır → Reconcile children
-   │   └── Hayır → Unmount old + Mount new
-   │
-4. Diff sonucu: Patch list [Insert, Update, Remove]
-5. Patch list'i Render tree'ye uygula
-```
-
-## Layout Hesaplama (Taffy)
-
-```
-Component Tree
-      │
-      ▼
-Render Nodes (with style info)
-      │
-      ▼
-Taffy Node Tree:
-  ├── Root node (window size)
-  │   └── Flex container
-  │       ├── Child 1 (text)
-  │       ├── Child 2 (button)
-  │       └── Child 3 (list)
-      │
-      ▼
+Element tree
+    │
+    ▼
+element_to_style(el, stylebook)  → taffy::Style
+    │
+    ├── Inline props: class="box" → width: 200px
+    ├── StyleBook match: tag < class < id priority
+    └── Defaults: display=block, padding=0, margin=0
+    │
+    ▼
+TaffyTree::insert_leaf() / insert_with_children()
+    │
+    ▼
 taffy.compute_layout(root, available_space)
-      │
-      ▼
-Layout Output: Vec<(NodeId, Rect)>
-  ├── Node 1: Rect { x: 0, y: 0, w: 800, h: 600 }
-  ├── Node 2: Rect { x: 16, y: 16, w: 200, h: 40 }
-  ├── Node 3: Rect { x: 16, y: 64, w: 120, h: 40 }
-  └── ...
+    │
+    ▼
+Vec<PositionedNode> — x, y, width, height per node
 ```
 
-## Rendering Pipeline (Vello)
+## Rendering Pipeline (Vello 0.10)
 
 ```
-Layout Output (pixel positions)
-      │
-      ▼
-Vello Scene Building:
-  for each render node:
-    match node:
-      Rect → scene.fill(Rect::new(x, y, w, h), color)
-      Text → scene.fill_text(text_layout, position)
-      Image → scene.draw_image(image, rect)
-      Clip → scene.push_clip(rect); children; scene.pop_clip()
-      Shadow → scene.fill_shadow(shadow)
-      │
-      ▼
-Vello Render:
-  scene.encode() → GPU compute pipeline
-      │
-      ▼
-wgpu render pass → Surface texture → Screen
+PositionedNode[]
+    │
+    ▼
+SceneBuilder::build_scene():
+  for node in positioned_nodes:
+    match node.kind:
+      Rect     → scene.fill(Rect, solid_brush(color))
+      Text     → scene.fill(Parley text_layout, position)
+      RoundR.  → scene.fill(RoundedRect, brush)
+      Gradient → scene.fill(rect, linear_gradient_brush)
+    │
+    ▼
+Renderer::render_frame():
+  renderer.render_to_surface(
+    &device, &surface, &scene,
+    &RenderParams { width, height, base_color, aa_mode }
+  )
+    │
+    ▼
+Surface texture → Screen (60 FPS)
 ```
 
-## State Management Örneği
-
-```rust
-// Global state
-let (theme, set_theme) = create_signal("dark".to_string());
-provide_context(theme);
-
-// Local state
-#[component]
-fn Counter() -> Element {
-    let (count, set_count) = create_signal(0);
-    let doubled = create_memo(move || *count() * 2);
-    let theme = use_context::<Signal<String>>();
-
-    create_effect(move |_| {
-        println!("Count: {}, Theme: {}", count(), theme());
-    });
-
-    rsx! {
-        div(class: theme().as_str()) {
-            span { "Count: {count}" }
-            span { "Doubled: {doubled}" }
-            button(on:click = move |_| set_count.update(|c| *c += 1)) {
-                "Increment"
-            }
-        }
-    }
-}
-```
-
-## Event Handling
-
-```rust
-// Mouse events
-button(on:click = move |_| { /* handler */ })
-div(on:mouseover = move |_| { /* handler */ })
-div(on:mouseout = move |_| { /* handler */ })
-
-// Keyboard events
-input(on:keydown = move |e| {
-    if e.key == Key::Enter {
-        // submit
-    }
-})
-
-// Input events
-input(on:input = move |e| {
-    let value = e.value.clone();
-    set_name.set(value);
-})
-
-// Custom events
-#[component]
-fn CustomButton(on_action: Callback<i32>) -> Element {
-    rsx! {
-        button(on:click = move |_| on_action.emit(42)) {
-            "Click me"
-        }
-    }
-}
-```
-
-## Routing Sistemi
+## CLI Pipeline
 
 ```
-Dosya Yapısı:              Route:
-src/pages/index.rs         → /
-src/pages/about.rs         → /about
-src/pages/blog/index.rs    → /blog
-src/pages/blog/[slug].rs   → /blog/:slug (dynamic)
-src/pages/dashboard/
-  ├── index.rs             → /dashboard
-  └── settings.rs          → /dashboard/settings
-src/pages/404.rs           → fallback
+uwebr init my-app
+  └── Scaffold: Cargo.toml, src/main.rs, src/app/App.uwebr
 
-Otomatik生成:
-fn routes() -> RouteTree {
-    route("/", index::Index)
-    route("/about", about::About)
-    route("/blog", blog::Index)
-    route("/blog/:slug", blog::Slug)
-    route("/dashboard", dashboard::Index)
-    route("/dashboard/settings", dashboard::Settings)
-    fallback(not_found::NotFound)
-}
-```
+uwebr build [--release]
+  └── .uwebr → transpiler::transpile() → .rs files
+      ├── src/generated/app.rs (Element tree)
+      ├── src/generated/mod.rs
+      └── cargo build [--release]
 
-## Hot Reload Mekanizması
+uwebr check
+  └── Parse all .uwebr files (validate only, no transpile)
 
-```
-cargo uwebr dev
-      │
-      ▼
-File Watcher (notify crate)
-      │
-      ├── .rs dosyası değişti → Incremental compile
-      │   └── src/pages/*.rs → Sadece o sayfayı yeniden compile et
-      │
-      ├── .css dosyası değişti → CSS re-transform
-      │   └── src/styles/*.css → Taffy style güncelle
-      │
-      └── .html dosyası değişti → HTML re-transform
-          └── src/templates/*.html → rsx! AST güncelle
-      │
-      ▼
-Runtime Hot Swap:
-  1. Yeni component tree oluştur
-  2. Virtual DOM diff (sadece değişenler)
-  3. Minimal patch uygula
-  4. Yeniden render (sadece değişen bölgeler)
+uwebr dev
+  └── File watcher (notify 7)
+      ├── Initial: BuildCache::build_all()
+      ├── On change: BuildCache::build_incremental(changed)
+      └── 100ms debounce
 ```
 
 ## Performance Hedefleri
@@ -296,7 +250,6 @@ Runtime Hot Swap:
 | Binary size | < 10MB | Optimized release |
 | Hot reload | < 500ms | File change → screen update |
 | Layout compute | < 1ms | 1000 node tree |
-| Diff compute | < 0.5ms | 1000 node diff |
 
 ## Güvenlik
 
@@ -305,4 +258,7 @@ Runtime Hot Swap:
 - **No data races**: Send + Sync bounds
 - **Sandboxed rendering**: GPU pipeline isolate
 - **Input validation**: XSS-style attacks yok (tarayıcı DOM'u yok)
-- **Secret management**: Environment variables, keyring
+
+---
+
+*Son güncelleme: Ağustos 2026*
