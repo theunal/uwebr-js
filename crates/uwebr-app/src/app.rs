@@ -1,6 +1,8 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
+use uwebr_core::events::dispatch_action;
+use uwebr_core::signal::take_render_dirty;
 use uwebr_core::timer::timer_registry;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
@@ -19,6 +21,8 @@ struct WindowState {
     ctx: GpuContext,
     pipeline: RenderPipeline,
     component: Option<Box<dyn Component>>,
+    /// Latest cursor position in physical pixels, for click hit-testing.
+    cursor: (f32, f32),
 }
 
 impl WindowState {
@@ -27,6 +31,7 @@ impl WindowState {
             ctx,
             pipeline: RenderPipeline::new(),
             component,
+            cursor: (0.0, 0.0),
         }
     }
 
@@ -40,7 +45,30 @@ impl WindowState {
             }
         }
     }
+
+    /// Route a click at the current cursor to the registered action, if any.
+    ///
+    /// Returns true when a handler ran, so the caller can request a redraw.
+    fn handle_click(&mut self) -> bool {
+        let (x, y) = self.cursor;
+        match self.pipeline.hit_test(x, y) {
+            Some(action) => {
+                let action = action.to_string();
+                dispatch_action(&action)
+            }
+            None => false,
+        }
+    }
 }
+
+/// Boxed listener for generic application events.
+type EventListener = Box<dyn Fn(&AppEvent) + Send + 'static>;
+
+/// A window queued for creation on the next `resumed`.
+///
+/// Winit only hands out an `ActiveEventLoop` inside handlers, so windows
+/// requested before `run()` must be parked here.
+type PendingWindow = (String, u32, u32, Option<Box<dyn Component>>);
 
 /// Main application entry point with multi-window support
 pub struct App {
@@ -48,10 +76,10 @@ pub struct App {
     width: u32,
     height: u32,
     component: Option<Box<dyn Component>>,
-    event_handlers: Vec<Box<dyn Fn(&AppEvent) + Send + 'static>>,
+    event_handlers: Vec<EventListener>,
     windows: HashMap<WindowId, WindowState>,
     primary_window: Option<WindowId>,
-    pending_windows: Vec<(String, u32, u32, Option<Box<dyn Component>>)>,
+    pending_windows: Vec<PendingWindow>,
     stylebook: Option<StyleBook>,
 }
 
@@ -101,13 +129,15 @@ impl App {
     }
 
     /// Open a new window (can be called before run())
-    pub fn open_window(mut self, title: &str, width: u32, height: u32, component: impl Component) -> Self {
-        self.pending_windows.push((
-            title.to_string(),
-            width,
-            height,
-            Some(Box::new(component)),
-        ));
+    pub fn open_window(
+        mut self,
+        title: &str,
+        width: u32,
+        height: u32,
+        component: impl Component,
+    ) -> Self {
+        self.pending_windows
+            .push((title.to_string(), width, height, Some(Box::new(component))));
         self
     }
 
@@ -127,7 +157,9 @@ impl App {
 
     /// Get a Window wrapper for a specific window
     fn get_window(&self, id: WindowId) -> Option<Window> {
-        self.windows.get(&id).map(|ws| Window::from_winit(ws.ctx.window.clone()))
+        self.windows
+            .get(&id)
+            .map(|ws| Window::from_winit(ws.ctx.window.clone()))
     }
 
     /// Get the primary window
@@ -192,7 +224,7 @@ impl ApplicationHandler for App {
         }
 
         // Create pending windows
-        let pending: Vec<_> = self.pending_windows.drain(..).collect();
+        let pending = std::mem::take(&mut self.pending_windows);
         for (title, width, height, component) in pending {
             let attrs = WindowAttributes::default()
                 .with_title(&title)
@@ -243,21 +275,37 @@ impl ApplicationHandler for App {
                 timer_registry().fire_animation_frames();
                 state.render();
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                state.cursor = (position.x as f32, position.y as f32);
+                self.dispatch_event(&AppEvent::MouseMove(position.x as f32, position.y as f32));
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 self.dispatch_event(&AppEvent::KeyPress(format!("{:?}", event.logical_key)));
             }
-            WindowEvent::MouseInput { state: input_state, button, .. } => {
-                if input_state.is_pressed() {
-                    self.dispatch_event(&AppEvent::MouseClick(button));
+            WindowEvent::MouseInput {
+                state: input_state,
+                button,
+                ..
+            } if input_state.is_pressed() => {
+                // Route the click to an `on:click` handler before notifying
+                // generic listeners; the handler may mutate state.
+                if button == winit::event::MouseButton::Left && state.handle_click() {
+                    state.ctx.window().request_redraw();
                 }
+                self.dispatch_event(&AppEvent::MouseClick(button));
             }
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Two independent repaint sources:
+        //   1. pending timers (setTimeout/setInterval/requestAnimationFrame)
+        //   2. signal writes — state changed, so the rendered tree is stale
         let registry = timer_registry();
-        if registry.has_pending() {
+        let state_changed = take_render_dirty();
+
+        if registry.has_pending() || state_changed {
             for state in self.windows.values() {
                 state.ctx.window().request_redraw();
             }
@@ -278,12 +326,16 @@ mod tests {
 
     #[test]
     fn test_app_with_pending_window() {
-        let app = App::new("Test")
-            .open_window("Child", 400, 300, crate::FnComponent::new(|| uwebr_core::component::Element {
+        let app = App::new("Test").open_window(
+            "Child",
+            400,
+            300,
+            crate::FnComponent::new(|| uwebr_core::component::Element {
                 node_type: uwebr_core::component::NodeType::Element("div".into()),
                 props: vec![],
                 children: vec![],
-            }));
+            }),
+        );
         assert_eq!(app.pending_window_count(), 1);
     }
 
@@ -293,16 +345,26 @@ mod tests {
         use uwebr_core::component::{Element, NodeType};
 
         let app = App::new("Main")
-            .open_window("Win1", 400, 300, FnComponent::new(|| Element {
-                node_type: NodeType::Element("div".into()),
-                props: vec![],
-                children: vec![],
-            }))
-            .open_window("Win2", 600, 400, FnComponent::new(|| Element {
-                node_type: NodeType::Element("span".into()),
-                props: vec![],
-                children: vec![],
-            }));
+            .open_window(
+                "Win1",
+                400,
+                300,
+                FnComponent::new(|| Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![],
+                    children: vec![],
+                }),
+            )
+            .open_window(
+                "Win2",
+                600,
+                400,
+                FnComponent::new(|| Element {
+                    node_type: NodeType::Element("span".into()),
+                    props: vec![],
+                    children: vec![],
+                }),
+            );
         assert_eq!(app.pending_window_count(), 2);
     }
 

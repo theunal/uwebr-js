@@ -1,6 +1,8 @@
-# uwebr-js Eksik Özellikler — TAMAMLANDI
+# uwebr-js Durumu
 
-## ✅ Tüm maddeler tamamlandı (12/12)
+> Son güncelleme: 28 Ağustos 2026 (FAZ 8)
+
+## FAZ 6–9: JS→Rust dönüşüm boşlukları ✅ TAMAMLANDI (12/12)
 
 | Sıra | FAZ | İşlem | Commit |
 |------|-----|-------|--------|
@@ -17,16 +19,55 @@
 | 11 | 9.2 | Class field type inference | 6769979 |
 | 12 | 9.3 | Try/catch/throw → Result pattern | b52f16d |
 
+## FAZ 8: `<script>` state lowering ✅ TAMAMLANDI
+
+`.uwebr` `<script>` bloğu state'ini top-level'da tanımlar:
+
+```js
+let count = 0;
+function increment() { count++; }
+```
+
+Bunu olduğu gibi yayınlamak modül kapsamında `let` üretir — Rust bunu reddeder, ayrıca `count` `increment` içinde kapsamda değildir. Yeni `script.rs` modülü her top-level binding'i reaktif accessor çiftine indirger:
+
+```rust
+fn __state_count() -> i64 { return uwebr_core::state::get("count".to_string(), 0); }
+fn __set_state_count(value: i64) { uwebr_core::state::set("count".to_string(), value); }
+fn increment() { __set_state_count(__state_count() + 1); }
+```
+
+Okumalar sinyale abone olur, yazmalar repaint tetikler.
+
+### Yeni public API
+
+```rust
+pub fn transpile_script(js_code: &str) -> Result<ScriptResult>;
+
+pub struct ScriptResult {
+    pub code: String,
+    pub warnings: Vec<String>,
+    pub states: Vec<ScriptState>,     // lowered top-level binding'ler
+    pub functions: Vec<String>,       // on:click={fn} bağlaması için
+}
+```
+
+`uwebr-cli::transpiler` bu iki listeyi kullanarak `{count}` interpolasyonunu `__state_count()`'a, `on:click={increment}`'i `register_action`'a bağlar.
+
+**Not:** `transpile()` (eski API) davranışını korur — top-level `let`'i olduğu gibi yayınlar. Yalnız `.uwebr` script blokları için `transpile_script()` kullanılmalı.
+
 ## 📊 İstatistik
 
-- **Tamamlanan:** 12/12 (100%)
-- **Test:** 13/13 ✅
-- **Build:** 0 hata, 1 uyarı
-- **Toplam commit:** 10+
+- **Test:** 30/30 ✅ (17 unit + 13 integration)
+- **Modüller:** analyzer, codegen, context, parser, **script** (yeni), transformer, types, utils
 
-## 🔮 Sonraki Adım
+## Bilinen Sınırlar
 
-uwebr-js tamamlandı. Sıradaki adım: **uwebr** workspace kurulumu.
+- **Shadowing:** `script.rs` rewriting'i identifier tabanlıdır; bir fonksiyon içindeki `let v = ...` aynı adı taşıyan top-level binding ile karışabilir. Script blokları küçük ve shadowing seyrek olduğu için bilinçli bir tercih (`test_shadowed_local_still_rewrites_outer_reads` bunu sabitliyor).
+- **Tip çıkarımı:** literal olmayan başlangıç değerleri `Type::Any` kalır ve `serde_json::Value` olarak yayınlanır — üretilen proje bu bağımlılığa sahip değildir. Sayı/string/bool literal'leri için çıkarım çalışır.
+- **Async script:** `<script>` içindeki `async`/`await` transpile edilir ancak çalışma zamanı bir executor sağlamaz.
 
-Detaylı plan için: `../PLAN.md`
-Mimari rehber için: `../ARCHITECTURE.md`
+## 🔗 İlgili
+
+Genel plan: `../../PLAN.md`
+Mimari rehber: `../../ARCHITECTURE.md`
+Son faz raporu: `../../faz8.plan.md`

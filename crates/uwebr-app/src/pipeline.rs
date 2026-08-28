@@ -1,15 +1,31 @@
 use uwebr_core::component::{Element, NodeType, PropValue};
 use uwebr_render::layout::{LayoutEngine, PositionedNode};
-use uwebr_render::scene::{Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle};
+use uwebr_render::paint::ResolvedPaint;
+use uwebr_render::scene::{
+    Background, LayoutInfo, RenderNode, RenderNodeKind, RenderScene, RenderStyle,
+};
 use uwebr_render::scene_builder::SceneBuilder;
 use uwebr_render::stylebook::StyleBook;
-use vello::peniko;
+
+/// A clickable region discovered during layout.
+///
+/// `on:click={increment}` becomes a `PropValue::Closure("increment")` prop; the
+/// name is resolved against the action registry when a click lands here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HitTarget {
+    pub action: String,
+    pub bounds: LayoutInfo,
+    /// Tree depth — deeper nodes win, matching DOM event targeting.
+    pub depth: usize,
+}
 
 /// Full render pipeline: Element → Layout → Scene → vello Scene
 pub struct RenderPipeline {
     layout_engine: LayoutEngine,
     render_scene: RenderScene,
     stylebook: StyleBook,
+    scene_builder: SceneBuilder,
+    hit_targets: Vec<HitTarget>,
 }
 
 impl RenderPipeline {
@@ -18,6 +34,9 @@ impl RenderPipeline {
             layout_engine: LayoutEngine::new(),
             render_scene: RenderScene::new(),
             stylebook: StyleBook::empty(),
+            // Reused across frames: building one enumerates the system fonts.
+            scene_builder: SceneBuilder::new(),
+            hit_targets: Vec::new(),
         }
     }
 
@@ -37,28 +56,85 @@ impl RenderPipeline {
 
     /// Full pipeline: Element → positioned nodes → RenderScene → vello Scene
     pub fn render(&mut self, element: &Element, width: u32, height: u32) -> vello::Scene {
+        self.build_render_scene(element, width, height);
+        let (w, h) = (width, height);
+        self.scene_builder.build(&self.render_scene, w, h)
+    }
+
+    /// Run layout and populate the intermediate `RenderScene` (without encoding).
+    ///
+    /// Exposed so tests can assert on the node list rather than on opaque
+    /// vello encoding output.
+    pub fn build_render_scene(&mut self, element: &Element, width: u32, height: u32) {
         self.layout_engine.reset();
         self.render_scene.clear();
+        self.hit_targets.clear();
 
-        let root = match self.layout_engine.build_tree(element, &self.stylebook) {
-            Ok(r) => r,
-            Err(_) => return vello::Scene::new(),
+        let Ok(root) = self.layout_engine.build_tree(element, &self.stylebook) else {
+            return;
         };
 
-        if self.layout_engine.compute(root, width as f32, height as f32).is_err() {
-            return vello::Scene::new();
+        if self
+            .layout_engine
+            .compute(root, width as f32, height as f32)
+            .is_err()
+        {
+            return;
         }
 
-        let positioned = self.layout_engine.collect_positioned_nodes(root, element);
+        let positioned =
+            self.layout_engine
+                .collect_positioned_nodes(root, element, &self.stylebook);
 
         for pos_node in &positioned {
+            if let Some(action) = click_action(&pos_node.element.props) {
+                self.hit_targets.push(HitTarget {
+                    action,
+                    bounds: pos_node.layout,
+                    depth: pos_node.depth,
+                });
+            }
             if let Some(render_node) = positioned_to_render_node(pos_node) {
                 self.render_scene.add_node(render_node);
             }
         }
-
-        SceneBuilder::build_scene(&self.render_scene, width, height)
     }
+
+    /// Access the intermediate render scene (post-layout, pre-encoding).
+    pub fn render_scene(&self) -> &RenderScene {
+        &self.render_scene
+    }
+
+    /// Clickable regions from the last layout pass.
+    pub fn hit_targets(&self) -> &[HitTarget] {
+        &self.hit_targets
+    }
+
+    /// Find the action registered at a point, innermost target first.
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<&str> {
+        self.hit_targets
+            .iter()
+            .filter(|t| contains_point(&t.bounds, x, y))
+            .max_by_key(|t| t.depth)
+            .map(|t| t.action.as_str())
+    }
+}
+
+fn contains_point(bounds: &LayoutInfo, x: f32, y: f32) -> bool {
+    x >= bounds.x && y >= bounds.y && x < bounds.x + bounds.width && y < bounds.y + bounds.height
+}
+
+/// Extract the click handler name from an element's props.
+fn click_action(props: &[(String, PropValue)]) -> Option<String> {
+    props.iter().find_map(|(name, value)| {
+        if name != "on:click" {
+            return None;
+        }
+        match value {
+            PropValue::Closure(action) => Some(action.clone()),
+            _ => None,
+        }
+    })
 }
 
 impl Default for RenderPipeline {
@@ -67,154 +143,127 @@ impl Default for RenderPipeline {
     }
 }
 
+/// Convert one positioned node into a drawable render node.
+///
+/// Zero-area nodes are skipped, but text is checked on content rather than on
+/// box size: a text leaf can legitimately report a 0 width when no system font
+/// resolved, and dropping it there is what previously made all text invisible.
 fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
     let layout = pos.layout;
-    if layout.width <= 0.0 || layout.height <= 0.0 {
-        return None;
-    }
     let id = u64::from(pos.taffy_node);
 
     match &pos.element.node_type {
         NodeType::Text(content) => {
-            let (font_size, color) = extract_text_style(&pos.element.props);
-            Some(RenderNode::text(id, layout, content, font_size, color))
+            if content.trim().is_empty() {
+                return None;
+            }
+            Some(RenderNode::text_with_family(
+                id,
+                layout,
+                content,
+                pos.paint.font_size,
+                pos.paint.color,
+                pos.paint.font_family.clone(),
+            ))
         }
         NodeType::Element(_tag) => {
-            let style = extract_render_style(&pos.element.props);
-            let kind = RenderNodeKind::Container;
-            Some(RenderNode { id, kind, layout, style })
+            if layout.width <= 0.0 || layout.height <= 0.0 {
+                return None;
+            }
+            Some(RenderNode {
+                id,
+                kind: RenderNodeKind::Container,
+                layout,
+                style: paint_to_render_style(&pos.paint),
+            })
         }
-        NodeType::Component(_) => Some(RenderNode::container(id, layout)),
+        NodeType::Component(_) => {
+            if layout.width <= 0.0 || layout.height <= 0.0 {
+                return None;
+            }
+            Some(RenderNode {
+                id,
+                kind: RenderNodeKind::Container,
+                layout,
+                style: paint_to_render_style(&pos.paint),
+            })
+        }
         NodeType::Raw(_) => None,
     }
 }
 
-fn extract_render_style(props: &[(String, PropValue)]) -> RenderStyle {
-    let mut style = RenderStyle::default();
-    for (name, value) in props {
-        match name.as_str() {
-            "background" | "bg" => {
-                if let PropValue::String(s) = value {
-                    style.background = Some(Background::Solid(parse_simple_color(s)));
-                }
-            }
-            "opacity" => {
-                if let PropValue::Number(n) = value {
-                    style.opacity = (*n as f32).clamp(0.0, 1.0);
-                }
-            }
-            "border_width" | "border" => {
-                if let PropValue::Number(n) = value {
-                    let color = extract_prop_color(props, "border_color");
-                    style.border = Some(uwebr_render::scene::BorderStyle {
-                        width: *n as f32,
-                        color,
-                    });
-                }
-            }
-            "border_radius" | "rounded" => {
-                if let PropValue::Number(n) = value {
-                    style.border_radius = *n as f32;
-                }
-            }
-            _ => {}
-        }
-    }
-    style
-}
-
-fn extract_text_style(props: &[(String, PropValue)]) -> (f32, peniko::Color) {
-    let mut font_size = 16.0;
-    let mut color = peniko::color::palette::css::WHITE;
-    for (name, value) in props {
-        match name.as_str() {
-            "font_size" | "font-size" => {
-                if let PropValue::Number(n) = value { font_size = *n as f32; }
-            }
-            "color" | "text_color" => {
-                if let PropValue::String(s) = value { color = parse_simple_color(s); }
-            }
-            _ => {}
-        }
-    }
-    (font_size, color)
-}
-
-#[allow(dead_code)]
-fn extract_border_radius(props: &[(String, PropValue)]) -> f32 {
-    for (name, value) in props {
-        if name == "border_radius" || name == "rounded" {
-            if let PropValue::Number(n) = value { return *n as f32; }
-        }
-    }
-    0.0
-}
-
-fn extract_prop_color(props: &[(String, PropValue)], key: &str) -> peniko::Color {
-    for (name, value) in props {
-        if name == key {
-            if let PropValue::String(s) = value { return parse_simple_color(s); }
-        }
-    }
-    peniko::color::palette::css::WHITE
-}
-
-fn parse_simple_color(s: &str) -> peniko::Color {
-    use peniko::color::palette::css;
-    match s.to_lowercase().as_str() {
-        "red" => css::RED,
-        "blue" => css::BLUE,
-        "green" => css::GREEN,
-        "white" => css::WHITE,
-        "black" => css::BLACK,
-        "yellow" => css::YELLOW,
-        "orange" => css::ORANGE,
-        "purple" => css::PURPLE,
-        "transparent" => css::TRANSPARENT,
-        _ => parse_hex_color(s).unwrap_or(css::WHITE),
-    }
-}
-
-fn parse_hex_color(s: &str) -> Option<peniko::Color> {
-    let hex = s.trim_start_matches('#');
-    match hex.len() {
-        3 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
-            Some(peniko::Color::from_rgb8(r * 17, g * 17, b * 17))
-        }
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            Some(peniko::Color::from_rgb8(r, g, b))
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-            Some(peniko::Color::from_rgba8(r, g, b, a))
-        }
-        _ => None,
+/// Translate resolved paint into the scene's style representation.
+fn paint_to_render_style(paint: &ResolvedPaint) -> RenderStyle {
+    RenderStyle {
+        background: paint.background.map(Background::Solid),
+        border: if paint.border_width > 0.0 {
+            Some(uwebr_render::scene::BorderStyle {
+                width: paint.border_width,
+                color: paint.border_color,
+            })
+        } else {
+            None
+        },
+        border_radius: paint.border_radius,
+        opacity: paint.opacity,
+        overflow_hidden: false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uwebr_core::component::PropValue;
+    use vello::peniko;
 
     fn make_text(content: &str) -> Element {
-        Element { node_type: NodeType::Text(content.to_string()), props: vec![], children: vec![] }
+        Element {
+            node_type: NodeType::Text(content.to_string()),
+            props: vec![],
+            children: vec![],
+        }
     }
 
     fn make_div(children: Vec<Element>) -> Element {
-        Element { node_type: NodeType::Element("div".to_string()), props: vec![], children }
+        Element {
+            node_type: NodeType::Element("div".to_string()),
+            props: vec![],
+            children,
+        }
     }
 
     fn make_div_with_props(props: Vec<(String, PropValue)>, children: Vec<Element>) -> Element {
-        Element { node_type: NodeType::Element("div".to_string()), props, children }
+        Element {
+            node_type: NodeType::Element("div".to_string()),
+            props,
+            children,
+        }
+    }
+
+    fn make_el(tag: &str, props: Vec<(String, PropValue)>, children: Vec<Element>) -> Element {
+        Element {
+            node_type: NodeType::Element(tag.to_string()),
+            props,
+            children,
+        }
+    }
+
+    /// Number of glyphs encoded into a vello scene.
+    fn glyph_count(scene: &vello::Scene) -> usize {
+        scene.encoding().resources.glyphs.len()
+    }
+
+    /// Number of filled/stroked paths encoded into a vello scene.
+    fn path_count(scene: &vello::Scene) -> usize {
+        scene.encoding().n_paths as usize
+    }
+
+    fn text_nodes(scene: &RenderScene) -> Vec<&RenderNode> {
+        scene
+            .nodes()
+            .iter()
+            .filter(|n| matches!(n.kind, RenderNodeKind::Text { .. }))
+            .collect()
     }
 
     #[test]
@@ -270,7 +319,10 @@ mod tests {
     fn test_pipeline_with_size() {
         let mut pipeline = RenderPipeline::new();
         let el = make_div_with_props(
-            vec![("width".into(), PropValue::Number(200.0)), ("height".into(), PropValue::Number(100.0))],
+            vec![
+                ("width".into(), PropValue::Number(200.0)),
+                ("height".into(), PropValue::Number(100.0)),
+            ],
             vec![],
         );
         let _scene = pipeline.render(&el, 800, 600);
@@ -290,6 +342,7 @@ mod tests {
             element: make_text("Hi"),
             layout: uwebr_render::scene::LayoutInfo::new(10.0, 20.0, 100.0, 30.0),
             depth: 0,
+            paint: ResolvedPaint::default(),
         };
         let node = positioned_to_render_node(&pos).unwrap();
         assert!(matches!(node.kind, RenderNodeKind::Text { .. }));
@@ -302,6 +355,7 @@ mod tests {
             element: make_div(vec![]),
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 800.0, 600.0),
             depth: 0,
+            paint: ResolvedPaint::default(),
         };
         let node = positioned_to_render_node(&pos).unwrap();
         assert!(matches!(node.kind, RenderNodeKind::Container));
@@ -314,49 +368,35 @@ mod tests {
             element: make_div(vec![]),
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 0.0, 0.0),
             depth: 0,
+            paint: ResolvedPaint::default(),
         };
         assert!(positioned_to_render_node(&pos).is_none());
     }
 
     #[test]
-    fn test_parse_hex_color_3() {
-        let c = parse_hex_color("#f00").unwrap();
-        assert_eq!(c, peniko::color::palette::css::RED);
+    fn test_zero_size_text_is_kept() {
+        // Text must survive a 0x0 box: when no system font resolves, the leaf
+        // measures zero and the old early-return dropped it, so nothing showed.
+        let pos = PositionedNode {
+            taffy_node: taffy::NodeId::new(0),
+            element: make_text("Hello"),
+            layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 0.0, 0.0),
+            depth: 0,
+            paint: ResolvedPaint::default(),
+        };
+        assert!(positioned_to_render_node(&pos).is_some());
     }
 
     #[test]
-    fn test_parse_hex_color_6() {
-        let c = parse_hex_color("#00ff00").unwrap();
-        assert_eq!(c, peniko::Color::from_rgb8(0, 255, 0));
-    }
-
-    #[test]
-    fn test_parse_hex_color_8() {
-        let c = parse_hex_color("#0000ff80").unwrap();
-        assert_eq!(c, peniko::Color::from_rgba8(0, 0, 255, 128));
-    }
-
-    #[test]
-    fn test_parse_hex_color_invalid() {
-        assert!(parse_hex_color("not_a_color").is_none());
-    }
-
-    #[test]
-    fn test_parse_simple_color_named() {
-        assert_eq!(parse_simple_color("red"), peniko::color::palette::css::RED);
-        assert_eq!(parse_simple_color("BLUE"), peniko::color::palette::css::BLUE);
-    }
-
-    #[test]
-    fn test_parse_simple_color_hex() {
-        let c = parse_simple_color("#ff00ff");
-        assert_eq!(c, peniko::Color::from_rgb8(255, 0, 255));
-    }
-
-    #[test]
-    fn test_parse_simple_color_unknown() {
-        let c = parse_simple_color("mauve");
-        assert_eq!(c, peniko::color::palette::css::WHITE);
+    fn test_blank_text_is_dropped() {
+        let pos = PositionedNode {
+            taffy_node: taffy::NodeId::new(0),
+            element: make_text("   \n  "),
+            layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 100.0, 20.0),
+            depth: 0,
+            paint: ResolvedPaint::default(),
+        };
+        assert!(positioned_to_render_node(&pos).is_none());
     }
 
     // ── CSS integration tests ─────────────────────────────────
@@ -390,7 +430,8 @@ mod tests {
 
     #[test]
     fn test_pipeline_css_override_tag_default() {
-        let mut pipeline = RenderPipeline::new().with_css("div { display: flex; flex-direction: row; }");
+        let mut pipeline =
+            RenderPipeline::new().with_css("div { display: flex; flex-direction: row; }");
         let inner = make_div(vec![make_text("Child")]);
         let el = make_div(vec![inner]);
         let _scene = pipeline.render(&el, 800, 600);
@@ -440,5 +481,344 @@ mod tests {
             ),
         ]);
         let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    // ── End-to-end assertions (M1 + M2) ───────────────────────
+
+    /// The scaffold that `uwebr init` generates, verified end to end.
+    fn scaffold_app() -> (String, Element) {
+        let css = r#"
+            .app {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                background-color: #1a1a2e;
+                color: #e0e0e0;
+            }
+            h1 { font-size: 2rem; }
+        "#;
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("app".into()))],
+            vec![make_el("h1", vec![], vec![make_text("Hello from uwebr!")])],
+        );
+        (css.to_string(), el)
+    }
+
+    #[test]
+    fn test_scaffold_produces_text_node_in_scene() {
+        let (css, el) = scaffold_app();
+        let mut pipeline = RenderPipeline::new().with_css(&css);
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        assert_eq!(texts.len(), 1, "expected exactly one text node");
+        match &texts[0].kind {
+            RenderNodeKind::Text { content, .. } => {
+                assert_eq!(content, "Hello from uwebr!");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_scaffold_text_uses_css_font_size_and_color() {
+        let (css, el) = scaffold_app();
+        let mut pipeline = RenderPipeline::new().with_css(&css);
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        match &texts[0].kind {
+            RenderNodeKind::Text {
+                font_size, color, ..
+            } => {
+                // h1 { font-size: 2rem } → 32px, inherited .app color #e0e0e0.
+                assert_eq!(*font_size, 32.0, "2rem should resolve to 32px");
+                assert_eq!(
+                    *color,
+                    peniko::Color::from_rgba8(0xe0, 0xe0, 0xe0, 255),
+                    "text colour must be inherited from .app"
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_scaffold_background_reaches_scene() {
+        let (css, el) = scaffold_app();
+        let mut pipeline = RenderPipeline::new().with_css(&css);
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let root = &pipeline.render_scene().nodes()[0];
+        match &root.style.background {
+            Some(Background::Solid(c)) => {
+                assert_eq!(*c, peniko::Color::from_rgba8(0x1a, 0x1a, 0x2e, 255));
+            }
+            other => panic!("expected solid #1a1a2e background, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_scaffold_text_node_has_nonzero_box() {
+        let (css, el) = scaffold_app();
+        let mut pipeline = RenderPipeline::new().with_css(&css);
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        assert!(
+            texts[0].layout.width > 0.0 && texts[0].layout.height > 0.0,
+            "text box was {}x{}",
+            texts[0].layout.width,
+            texts[0].layout.height
+        );
+    }
+
+    #[test]
+    fn test_scaffold_encodes_glyphs_and_background_fill() {
+        let (css, el) = scaffold_app();
+        let mut pipeline = RenderPipeline::new().with_css(&css);
+        let scene = pipeline.render(&el, 800, 600);
+
+        assert!(
+            path_count(&scene) >= 2,
+            "surface background + .app background expected, got {}",
+            path_count(&scene)
+        );
+        assert!(
+            glyph_count(&scene) >= 5,
+            "expected glyphs for 'Hello from uwebr!', got {}",
+            glyph_count(&scene)
+        );
+    }
+
+    #[test]
+    fn test_text_centred_inside_app_container() {
+        // justify-content/align-items: center means the text must not sit at 0,0.
+        let (css, el) = scaffold_app();
+        let mut pipeline = RenderPipeline::new().with_css(&css);
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        assert!(
+            texts[0].layout.x > 0.0,
+            "centred text should be offset from the left edge, x={}",
+            texts[0].layout.x
+        );
+    }
+
+    #[test]
+    fn test_inline_prop_overrides_css_color() {
+        let mut pipeline = RenderPipeline::new().with_css(".app { color: #ff0000; }");
+        let el = make_div_with_props(
+            vec![
+                ("class".into(), PropValue::String("app".into())),
+                ("color".into(), PropValue::String("#00ff00".into())),
+            ],
+            vec![make_text("Hi")],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        match &texts[0].kind {
+            RenderNodeKind::Text { color, .. } => {
+                assert_eq!(*color, peniko::Color::from_rgb8(0, 255, 0));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_font_size_from_string_prop_reaches_scene() {
+        // The transpiler emits every literal HTML attribute as a String, so a
+        // Number-only read would silently fall back to the 16px default.
+        let mut pipeline = RenderPipeline::new();
+        let el = make_el(
+            "h1",
+            vec![("font-size".into(), PropValue::String("40".into()))],
+            vec![make_text("Big")],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        match &texts[0].kind {
+            RenderNodeKind::Text { font_size, .. } => assert_eq!(*font_size, 40.0),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_multiple_text_nodes_all_present() {
+        let mut pipeline = RenderPipeline::new();
+        let el = make_div(vec![
+            make_el("h1", vec![], vec![make_text("Title")]),
+            make_el("p", vec![], vec![make_text("Body")]),
+            make_el("span", vec![], vec![make_text("Footer")]),
+        ]);
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        assert_eq!(texts.len(), 3);
+    }
+
+    #[test]
+    fn test_nested_text_uses_absolute_position() {
+        let mut pipeline = RenderPipeline::new().with_css(".pad { padding: 25px; }");
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("pad".into()))],
+            vec![make_el("h1", vec![], vec![make_text("Indented")])],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        assert!(
+            texts[0].layout.x >= 25.0,
+            "text should be pushed in by the container padding, x={}",
+            texts[0].layout.x
+        );
+    }
+
+    #[test]
+    fn test_render_is_idempotent_across_frames() {
+        let (css, el) = scaffold_app();
+        let mut pipeline = RenderPipeline::new().with_css(&css);
+        let first = pipeline.render(&el, 800, 600);
+        let second = pipeline.render(&el, 800, 600);
+        assert_eq!(glyph_count(&first), glyph_count(&second));
+        assert_eq!(path_count(&first), path_count(&second));
+    }
+
+    #[test]
+    fn test_border_from_css_reaches_scene() {
+        let mut pipeline =
+            RenderPipeline::new().with_css(".b { border-width: 3px; border-color: red; }");
+        let el = make_div_with_props(
+            vec![
+                ("class".into(), PropValue::String("b".into())),
+                ("width".into(), PropValue::Number(50.0)),
+                ("height".into(), PropValue::Number(50.0)),
+            ],
+            vec![],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let border = pipeline.render_scene().nodes()[0]
+            .style
+            .border
+            .as_ref()
+            .expect("border present");
+        assert_eq!(border.width, 3.0);
+        assert_eq!(border.color, peniko::Color::from_rgba8(255, 0, 0, 255));
+    }
+
+    // ── Hit testing for on:click (M6) ─────────────────────────
+
+    fn clickable_button(action: &str) -> Element {
+        make_el(
+            "button",
+            vec![
+                ("on:click".into(), PropValue::Closure(action.into())),
+                ("width".into(), PropValue::Number(100.0)),
+                ("height".into(), PropValue::Number(40.0)),
+            ],
+            vec![make_text("+")],
+        )
+    }
+
+    #[test]
+    fn test_click_prop_registers_hit_target() {
+        let mut pipeline = RenderPipeline::new();
+        pipeline.build_render_scene(&clickable_button("increment"), 800, 600);
+
+        let targets = pipeline.hit_targets();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].action, "increment");
+    }
+
+    #[test]
+    fn test_hit_test_inside_bounds() {
+        let mut pipeline = RenderPipeline::new();
+        pipeline.build_render_scene(&clickable_button("increment"), 800, 600);
+        assert_eq!(pipeline.hit_test(10.0, 10.0), Some("increment"));
+    }
+
+    #[test]
+    fn test_hit_test_outside_bounds() {
+        let mut pipeline = RenderPipeline::new();
+        pipeline.build_render_scene(&clickable_button("increment"), 800, 600);
+        assert_eq!(pipeline.hit_test(700.0, 500.0), None);
+    }
+
+    #[test]
+    fn test_hit_test_prefers_innermost_target() {
+        // Nested clickables: the deeper one should win, as in the DOM.
+        let inner = make_el(
+            "button",
+            vec![
+                ("on:click".into(), PropValue::Closure("inner".into())),
+                ("width".into(), PropValue::Number(50.0)),
+                ("height".into(), PropValue::Number(20.0)),
+            ],
+            vec![],
+        );
+        let outer = make_el(
+            "div",
+            vec![
+                ("on:click".into(), PropValue::Closure("outer".into())),
+                ("width".into(), PropValue::Number(200.0)),
+                ("height".into(), PropValue::Number(100.0)),
+            ],
+            vec![inner],
+        );
+
+        let mut pipeline = RenderPipeline::new();
+        pipeline.build_render_scene(&outer, 800, 600);
+        assert_eq!(pipeline.hit_test(5.0, 5.0), Some("inner"));
+        assert_eq!(
+            pipeline.hit_test(5.0, 60.0),
+            Some("outer"),
+            "below the inner button, still inside the outer div"
+        );
+    }
+
+    #[test]
+    fn test_non_closure_click_prop_ignored() {
+        // A literal string is not a resolvable action name.
+        let el = make_el(
+            "button",
+            vec![
+                ("on:click".into(), PropValue::String("increment".into())),
+                ("width".into(), PropValue::Number(10.0)),
+                ("height".into(), PropValue::Number(10.0)),
+            ],
+            vec![],
+        );
+        let mut pipeline = RenderPipeline::new();
+        pipeline.build_render_scene(&el, 800, 600);
+        assert!(pipeline.hit_targets().is_empty());
+    }
+
+    #[test]
+    fn test_hit_targets_cleared_between_frames() {
+        let mut pipeline = RenderPipeline::new();
+        pipeline.build_render_scene(&clickable_button("a"), 800, 600);
+        pipeline.build_render_scene(&make_div(vec![]), 800, 600);
+        assert!(pipeline.hit_targets().is_empty());
+    }
+
+    #[test]
+    fn test_hit_test_uses_absolute_coordinates() {
+        // The clickable sits inside a padded container, so its hit box must be
+        // offset — a parent-relative box would mis-target clicks.
+        let mut pipeline = RenderPipeline::new().with_css(".pad { padding: 30px; }");
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("pad".into()))],
+            vec![clickable_button("go")],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        assert_eq!(pipeline.hit_test(5.0, 5.0), None, "inside the padding");
+        assert_eq!(pipeline.hit_test(40.0, 40.0), Some("go"));
     }
 }

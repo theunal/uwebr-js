@@ -11,6 +11,8 @@ thiserror.workspace = true
 uwebr-core = { workspace = true }
 uwebr-render = { workspace = true }
 winit = "0.30"
+# Must match the wgpu that vello 0.10 links against, otherwise the Device/Queue
+# types handed to vello come from a different crate version.
 wgpu = "29"
 vello = "0.10"
 taffy = "0.14"
@@ -21,3 +23,5 @@ log = "0.4"
 [dev-dependencies]
 tempfile.workspace = true
 taffy = "0.14"
+pollster = "0.4"
+uwebr-render = { workspace = true }
