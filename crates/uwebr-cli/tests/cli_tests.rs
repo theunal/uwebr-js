@@ -93,3 +93,107 @@ fn test_find_uwebr_files() {
     // Just verify build_project finds the files
     commands::build_project(tmp.path().to_str().unwrap()).unwrap();
 }
+
+// ── Incremental build tests ──────────────────────────────────
+
+#[test]
+fn test_build_cache_new() {
+    let tmp = TempDir::new().unwrap();
+    let cache = commands::BuildCache::new(tmp.path().to_path_buf());
+    assert_eq!(cache.cached_count(), 0);
+}
+
+#[test]
+fn test_build_cache_full() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src/app");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("Page.uwebr"), "<div>Hello</div>").unwrap();
+    fs::write(src.join("Button.uwebr"), "<button>Click</button>").unwrap();
+
+    let mut cache = commands::BuildCache::new(tmp.path().to_path_buf());
+    let results = cache.build_all().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(cache.cached_count(), 2);
+}
+
+#[test]
+fn test_build_cache_incremental() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src/app");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("Page.uwebr"), "<div>Hello</div>").unwrap();
+    fs::write(src.join("Button.uwebr"), "<button>Click</button>").unwrap();
+
+    let mut cache = commands::BuildCache::new(tmp.path().to_path_buf());
+    cache.build_all().unwrap();
+
+    // Incremental: change one file
+    let changed = vec![tmp.path().join("src/app/Page.uwebr")];
+    let results = cache.build_incremental(&changed).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(cache.cached_count(), 2); // still 2 cached
+}
+
+#[test]
+fn test_build_cache_parse_result() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src/app");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("Page.uwebr"), "<div class=\"page\"><h1>Hello</h1></div>").unwrap();
+
+    let cache = commands::BuildCache::new(tmp.path().to_path_buf());
+    let result = cache.parse_file(&tmp.path().join("src/app/Page.uwebr")).unwrap();
+    assert!(result.error.is_none());
+    assert!(result.html.contains("Hello"));
+    assert!(result.parse_time_us > 0);
+}
+
+#[test]
+fn test_build_cache_get_cached() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src/app");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("Page.uwebr"), "<div>Hello</div>").unwrap();
+
+    let mut cache = commands::BuildCache::new(tmp.path().to_path_buf());
+    cache.build_all().unwrap();
+
+    let cached = cache.get_cached(&tmp.path().join("src/app/Page.uwebr"));
+    assert!(cached.is_some());
+    assert!(cached.unwrap().html.contains("Hello"));
+}
+
+#[test]
+fn test_build_cache_no_files() {
+    let tmp = TempDir::new().unwrap();
+    let mut cache = commands::BuildCache::new(tmp.path().to_path_buf());
+    let results = cache.build_all().unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_build_cache_incremental_nonexistent() {
+    let tmp = TempDir::new().unwrap();
+    let mut cache = commands::BuildCache::new(tmp.path().to_path_buf());
+    let changed = vec![tmp.path().join("nonexistent.uwebr")];
+    let results = cache.build_incremental(&changed).unwrap();
+    // File doesn't exist, so nothing to rebuild
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_build_cache_detects_script_and_style() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src/app");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("Page.uwebr"),
+        "<div>\n<script>let x = 1;</script>\n<style>.a { color: red; }</style>\n</div>",
+    ).unwrap();
+
+    let cache = commands::BuildCache::new(tmp.path().to_path_buf());
+    let result = cache.parse_file(&tmp.path().join("src/app/Page.uwebr")).unwrap();
+    assert!(result.has_script);
+    assert!(result.has_style);
+}

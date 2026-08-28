@@ -1,8 +1,7 @@
 use uwebr_app::{App, AppEvent, FnComponent, RenderPipeline};
 use uwebr_app::component::Component;
 use uwebr_core::component::{Element, NodeType, PropValue};
-use uwebr_core::timer::{TimerHandle, TimerRegistry, set_timeout, set_interval, cancel_timer, request_animation_frame};
-use uwebr_render::stylebook::StyleBook;
+use uwebr_core::timer::{TimerRegistry, set_timeout, set_interval, cancel_timer, request_animation_frame};
 use winit::event::MouseButton;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

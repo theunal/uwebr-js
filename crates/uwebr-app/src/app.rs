@@ -3,7 +3,7 @@ use std::sync::Arc;
 use uwebr_core::timer::timer_registry;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::component::Component;
