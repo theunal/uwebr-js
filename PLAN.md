@@ -138,21 +138,21 @@ HTML/CSS/JS Dosyaları
 - [x] uwebr-cli iskeleti: CLI binary (init/build/dev)
 - [x] Workspace build + test (33/33 geçti)
 
-### FAZ 1 — uwebr-html (Gerçek Parser) 🔄 DEVAM EDİYOR
+### FAZ 1 — uwebr-html (Gerçek Parser) ✅ TAMAMLANDI
 **Süre:** 1-2 hafta
 **Hedef:** markup5ever ile gerçek HTML parsing
 
 - [x] Iskelet: AST tanımları, basit hand-written parser, rsx! codegen
-- [ ] markup5ever entegrasyonu (html5ever wrapper)
-- [ ] Gerçek HTML5 parsing (self-closing, nesting, attributes)
-- [ ] `{expression}` interpolasyon desteği
-- [ ] `{#each items as item}...{/each}` loop
-- [ ] `{#if condition}...{:else}...{/if}` conditional
-- [ ] `<Component props />` component composition
-- [ ] `{@html raw_html}` raw HTML insertion
-- [ ] `on:click={handler}` event handler attribute
-- [ ] Fragment desteği (`<>...</>`)
-- [ ] Integration tests (10+ test)
+- [x] markup5ever + html5ever entegrasyonu (gerçek HTML5 parsing)
+- [x] Namespace prefix handling (on:click, xmlns)
+- [x] `{expression}` interpolasyon desteği
+- [x] `{#each items as item}...{/each}` loop
+- [x] `{#if condition}...{:else}...{/if}` conditional
+- [x] `<Component />` component composition (PascalCase)
+- [x] `{@html raw_html}` raw HTML insertion
+- [x] `on:click={handler}` event handler attribute
+- [x] Fragment desteği (`<>...</>`)
+- [x] Integration tests (20 test)
 
 ### FAZ 2 — uwebr-css (lightningcss)
 **Süre:** 1-2 hafta
@@ -226,14 +226,14 @@ HTML/CSS/JS Dosyaları
 | Component | Durum | Test | Not |
 |-----------|-------|------|-----|
 | uwebr-js | ✅ Tamamlandı | 13/13 | JS→Rust transpiler, tüm FAZ'lar tamam |
-| uwebr-html | 🔄 Geliyor | 5/5 iskelet | FAZ 1: markup5ever entegrasyonu bekliyor |
+| uwebr-html | ✅ Tamamlandı | 20/20 | FAZ 1: markup5ever, template directives, components |
 | uwebr-css | 🔄 Geliyor | 4/4 iskelet | FAZ 2: lightningcss entegrasyonu bekliyor |
 | uwebr-core | 🔄 Geliyor | 5/5 iskelet | FAZ 3: proc-macro bekliyor |
 | uwebr-render | 🔄 Geliyor | 3/3 iskelet | FAZ 4: vello entegrasyonu bekliyor |
 | uwebr-app | 🔄 Geliyor | 2/2 iskelet | FAZ 5: winit ApplicationHandler bekliyor |
 | uwebr-cli | 🔄 Geliyor | - | FAZ 6: scaffolding + hot reload bekliyor |
 
-**Toplam:** 33/33 test geçti (iskelet)
+**Toplam:** 47/47 test geçti
 
 ---
 
