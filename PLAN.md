@@ -24,7 +24,7 @@ uwebr/
     ├── uwebr-core/                 # ✅ Reactive system: Signal, Context, Router, Effects, Lifecycle (48 test)
     ├── uwebr-render/               # ✅ GPU: color, scene, text, layout, scene_builder, renderer (38 test)
     ├── uwebr-app/                  # ✅ App runner: GpuContext + winit ApplicationHandler + Component trait (8 test)
-    └── uwebr-cli/                  # 🔄 Iskelet: CLI binary (uwebr init/build/dev)
+    └── uwebr-cli/                  # ✅ CLI binary: init/build/dev + hot reload (7 test)
 ```
 
 ---
@@ -287,16 +287,16 @@ Element (uwebr-core)          CSS Rules (uwebr-css)
 - [ ] Multi-window desteği
 - [ ] Timer/animation frame
 
-### FAZ 6 — uwebr-cli (Developer Experience)
+### FAZ 6 — uwebr-cli (Developer Experience) ✅ TAMAMLANDI
 **Süre:** 1 hafta
 **Hedef:** Developer experience
 
 - [x] Iskelet: init/build/dev komutları
-- [ ] `create` komutu (scaffolding, template)
-- [ ] `dev` komutu (hot reload, notify)
-- [ ] `build` komutu (production binary)
-- [ ] Dosya değişikliği algılama
-- [ ] Incremental rebuild
+- [x] `init` komutu (scaffolding, template: Cargo.toml, src/main.rs, .uwebr)
+- [x] `dev` komutu (file watching via notify 7, auto-rebuild)
+- [x] `build` komutu (parse .uwebr files, validate HTML)
+- [x] Dosya değişikliği algılama (notify + RecursiveMode)
+- [ ] Incremental rebuild (ileri FAZ)
 
 ---
 
@@ -310,9 +310,9 @@ Element (uwebr-core)          CSS Rules (uwebr-css)
 | uwebr-core | ✅ Tamamlandı | 48/48 | FAZ 3: Signal, Memo, Effect, Diff, Events, Lifecycle, Hooks, Context, Macros |
 | uwebr-render | ✅ Tamamlandı | 38/38 | FAZ 4: color, scene, text, layout, scene_builder, renderer |
 | uwebr-app | ✅ FAZ 5 tamam | 8/8 | GpuContext + winit ApplicationHandler + Component trait |
-| uwebr-cli | 🔄 Geliyor | - | FAZ 6: scaffolding + hot reload bekliyor |
+| uwebr-cli | ✅ FAZ 6 tamam | 7/7 | init/build/dev + notify file watcher |
 
-**Toplam:** 183/183 test geçti
+**Toplam:** 190/190 test geçti
 
 ---
 
