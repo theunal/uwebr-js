@@ -23,6 +23,8 @@ struct WindowState {
     component: Option<Box<dyn Component>>,
     /// Latest cursor position in physical pixels, for click hit-testing.
     cursor: (f32, f32),
+    /// Layout node currently under the cursor, driving `:hover`.
+    hovered_element: Option<usize>,
 }
 
 impl WindowState {
@@ -32,6 +34,7 @@ impl WindowState {
             pipeline: RenderPipeline::new(),
             component,
             cursor: (0.0, 0.0),
+            hovered_element: None,
         }
     }
 
@@ -58,6 +61,26 @@ impl WindowState {
             }
             None => false,
         }
+    }
+
+    /// Update `:hover` state from the current cursor position.
+    ///
+    /// Returns true when the hovered element changed, so the caller can request
+    /// a redraw to reflect any `:hover` rules.
+    fn update_hover(&mut self) -> bool {
+        let (x, y) = self.cursor;
+        let new_hovered = self.pipeline.hit_test_hover(x, y);
+        if new_hovered == self.hovered_element {
+            return false;
+        }
+        if let Some(old) = self.hovered_element {
+            uwebr_core::state::set_hovered(old, false);
+        }
+        if let Some(new) = new_hovered {
+            uwebr_core::state::set_hovered(new, true);
+        }
+        self.hovered_element = new_hovered;
+        true
     }
 }
 
@@ -287,6 +310,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 state.cursor = (position.x as f32, position.y as f32);
+                // Recompute `:hover`; a change requires a repaint to apply any
+                // hover rules to the newly (un)hovered element.
+                if state.update_hover() {
+                    state.ctx.window().request_redraw();
+                }
                 self.dispatch_event(&AppEvent::MouseMove(position.x as f32, position.y as f32));
             }
             WindowEvent::KeyboardInput { event, .. } => {

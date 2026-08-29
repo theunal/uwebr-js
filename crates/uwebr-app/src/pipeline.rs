@@ -17,6 +17,15 @@ pub struct HitTarget {
     pub depth: usize,
 }
 
+/// An element's screen box, kept so hover hit-testing can map a cursor position
+/// back to the layout node id that drives `:hover`.
+#[derive(Debug, Clone, PartialEq)]
+struct ElementBox {
+    node_id: usize,
+    bounds: LayoutInfo,
+    depth: usize,
+}
+
 /// Full render pipeline: Element → Layout → Scene → vello Scene
 pub struct RenderPipeline {
     layout_engine: LayoutEngine,
@@ -24,6 +33,8 @@ pub struct RenderPipeline {
     stylebook: StyleBook,
     scene_builder: SceneBuilder,
     hit_targets: Vec<HitTarget>,
+    /// Element boxes from the last layout pass, for hover hit-testing.
+    element_boxes: Vec<ElementBox>,
     /// Raw CSS kept so `vw`/`vh` can be re-resolved when the viewport changes.
     css_string: Option<String>,
 }
@@ -37,6 +48,7 @@ impl RenderPipeline {
             // Reused across frames: building one enumerates the system fonts.
             scene_builder: SceneBuilder::new(),
             hit_targets: Vec::new(),
+            element_boxes: Vec::new(),
             css_string: None,
         }
     }
@@ -77,6 +89,7 @@ impl RenderPipeline {
         self.layout_engine.reset();
         self.render_scene.clear();
         self.hit_targets.clear();
+        self.element_boxes.clear();
 
         // Re-resolve `vw`/`vh` against the current viewport before layout.
         if let Some(ref css) = self.css_string {
@@ -100,6 +113,11 @@ impl RenderPipeline {
                 .collect_positioned_nodes(root, element, &self.stylebook);
 
         for pos_node in &positioned {
+            self.element_boxes.push(ElementBox {
+                node_id: pos_node.node_id,
+                bounds: pos_node.layout,
+                depth: pos_node.depth,
+            });
             if let Some(action) = click_action(&pos_node.element.props) {
                 self.hit_targets.push(HitTarget {
                     action,
@@ -130,6 +148,18 @@ impl RenderPipeline {
             .filter(|t| contains_point(&t.bounds, x, y))
             .max_by_key(|t| t.depth)
             .map(|t| t.action.as_str())
+    }
+
+    /// Find the layout node id under a point, innermost (deepest) first.
+    ///
+    /// Used to drive `:hover`: the returned id is the same pre-order index the
+    /// stylebook keys hover state against.
+    pub fn hit_test_hover(&self, x: f32, y: f32) -> Option<usize> {
+        self.element_boxes
+            .iter()
+            .filter(|b| contains_point(&b.bounds, x, y))
+            .max_by_key(|b| b.depth)
+            .map(|b| b.node_id)
     }
 
     /// Reload CSS without rebuilding the entire pipeline.
@@ -480,6 +510,7 @@ mod tests {
             element: make_text("Hi"),
             layout: uwebr_render::scene::LayoutInfo::new(10.0, 20.0, 100.0, 30.0),
             depth: 0,
+            node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
         };
@@ -494,6 +525,7 @@ mod tests {
             element: make_div(vec![]),
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 800.0, 600.0),
             depth: 0,
+            node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
         };
@@ -508,6 +540,7 @@ mod tests {
             element: make_div(vec![]),
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 0.0, 0.0),
             depth: 0,
+            node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
         };
@@ -523,6 +556,7 @@ mod tests {
             element: make_text("Hello"),
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 0.0, 0.0),
             depth: 0,
+            node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
         };
@@ -536,6 +570,7 @@ mod tests {
             element: make_text("   \n  "),
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 100.0, 20.0),
             depth: 0,
+            node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
         };
@@ -1151,5 +1186,70 @@ mod tests {
             RenderNodeKind::Text { content, .. } => assert_eq!(content, "not markup"),
             _ => unreachable!(),
         }
+    }
+
+    // ── Hover hit-testing (FAZ 14) ─────────────────────────────
+
+    #[test]
+    fn test_hit_test_hover_returns_node_id() {
+        // A sized box should be reported under the cursor by its layout node id.
+        let mut pipeline = RenderPipeline::new().with_css(".box { width: 100px; height: 40px; }");
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("box".into()))],
+            vec![],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        // Root box is node 0 and covers the origin.
+        assert_eq!(pipeline.hit_test_hover(5.0, 5.0), Some(0));
+        // Far outside the laid-out content.
+        assert_eq!(pipeline.hit_test_hover(5000.0, 5000.0), None);
+    }
+
+    #[test]
+    fn test_hit_test_hover_prefers_innermost() {
+        let mut pipeline = RenderPipeline::new().with_css(".pad { padding: 30px; }");
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("pad".into()))],
+            vec![make_div_with_props(
+                vec![
+                    ("width".into(), PropValue::Number(50.0)),
+                    ("height".into(), PropValue::Number(50.0)),
+                ],
+                vec![],
+            )],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        // Inside the inner box (offset by 30px padding): deeper node wins.
+        assert_eq!(pipeline.hit_test_hover(40.0, 40.0), Some(1));
+    }
+
+    #[test]
+    fn test_hover_pseudo_changes_scene_after_state_set() {
+        // A :hover rule must reach the scene once the hovered node id is set.
+        uwebr_core::state::clear_element_state();
+        let mut pipeline = RenderPipeline::new().with_css(
+            ".btn { width: 100px; height: 40px; } .btn:hover { background-color: blue; }",
+        );
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("btn".into()))],
+            vec![],
+        );
+
+        pipeline.build_render_scene(&el, 800, 600);
+        assert!(
+            pipeline.render_scene().nodes()[0].style.background.is_none(),
+            "no hover state yet, background should be unset"
+        );
+
+        // Node 0 is the root .btn box; mark it hovered and re-render.
+        uwebr_core::state::set_hovered(0, true);
+        pipeline.build_render_scene(&el, 800, 600);
+        assert!(
+            pipeline.render_scene().nodes()[0].style.background.is_some(),
+            ":hover background must reach the scene once hovered"
+        );
+        uwebr_core::state::clear_element_state();
     }
 }

@@ -92,8 +92,8 @@ uwebr/
              ▼
 ┌──────────────────────────┐
 │ 2. CSS MATCH (StyleBook) │  StyleBook::parse(css)
-│    match_full(el)        │  → MatchedStyle { style, mask, paint }
-│                          │  tag < class < id, yalnız set edilmiş alanlar
+│    match_full(el, chain,  │  → MatchedStyle { style, mask, paint }
+│              node_id)     │  !important < tag < class < id, parent chain + :hover/:focus
 └────────────┬─────────────┘
              │
              ▼
@@ -259,7 +259,7 @@ App::new("Main")
 Element tree
     │
     ▼
-StyleBook::match_full(el) → MatchedStyle { style, mask, paint }
+StyleBook::match_full(el, parent_chain, node_id) → MatchedStyle { style, mask, paint }
     │
     ├── mask: kuralda gerçekten belirtilmiş property'ler
     │         (yalnız bunlar yazılır — cascade doğru çalışsın)
@@ -398,14 +398,18 @@ cargo run -p uwebr-cli --example scaffold_output   # scaffold'ın ürettiği Rus
 
 ## Bilinen Sınırlar
 
-- **Pseudo-class / attribute selector'lar** parse ediliyor ama eşleşmede yok sayılıyor (`:hover`, `[disabled]`, `:first-child` vb.).
 - **Hot reload ~7s** — `cargo build` süresi baskın; in-process reload (dosya watching + dynamic library hot-swap) ile <500ms hedefi mümkün olur.
 - **Bellek ölçümü** — platform bağımsız gerçek bellek ölçümü henüz yok (Windows `GetProcessMemoryInfo` / Linux `/proc/self/statm` desteği FAZ 13'te planlanıyor).
+- **Yapısal pseudo-class'lar** (`:first-child`, `:last-child`, `:nth-child`) hâlâ basitleştirilmiş — her zaman eşleşiyor (parent'ın çocuk listesi gerekiyor).
+- **`:active` / `:visited`** desktop render döngüsünde izlenmiyor (mousedown anı / tarama geçmişi yok).
 
-### Düzeltilen sınırlar (FAZ 9-12)
+### Düzeltilen sınırlar (FAZ 9-14)
 
-Aşağıdaki maddeler FAZ 9-12 arasında düzeltilmiştir:
+Aşağıdaki maddeler FAZ 9-14 arasında düzeltilmiştir:
 
+- ~~Pseudo-class / attribute selector'lar eşleşmede yok sayılıyor~~ → FAZ 13: `[disabled]`, `:disabled`, attribute op'ları eşleşiyor; FAZ 14: `:hover`/`:focus` runtime state ile eşleşiyor.
+- ~~Descendant/child combinator'lar sadece son selector'a bakıyor~~ → FAZ 14: `build_node`/`collect_recursive` gerçek parent chain'i `match_full`'a geçiriyor; `.parent .child` ve `div > .btn` doğru eşleşiyor.
+- ~~`!important` cascade'de yok sayılıyor~~ → FAZ 14: `StyleEntry.important` + `(important, specificity, source order)` sıralaması; `!important` düşük specificity'yi yeniyor.
 - ~~Component props callee'ye geçirilmiyor~~ → FAZ 9: props forwarding eklendi.
 - ~~`{@html expr}` sahneye çıkmıyor~~ → FAZ 11: `html_parse.rs` ile runtime HTML parsing.
 - ~~`RenderStyle::overflow_hidden` CSS'ten doldurulmuyor~~ → FAZ 10: `PositionedNode.overflow_hidden` + `paint_to_render_style` güncellendi.

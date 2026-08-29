@@ -148,6 +148,9 @@ pub struct StyleEntry {
     pub style: Style,
     pub mask: StyleMask,
     pub paint: PaintProps,
+    /// Whether any declaration in this rule carried `!important`. Used by the
+    /// cascade so an important rule beats a higher-specificity normal rule.
+    pub important: bool,
 }
 
 /// Convert CssRule list to Vec<(String, Style)> for runtime use
@@ -189,6 +192,7 @@ pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Resul
             style,
             mask,
             paint: extract_paint(&rule.properties),
+            important: rule.properties.iter().any(|p| p.important),
         });
     }
 

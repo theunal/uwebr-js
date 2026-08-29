@@ -14,7 +14,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::signal::{create_signal, Signal, SignalSetter};
 
@@ -25,6 +25,77 @@ thread_local! {
     /// functions are re-invoked on every render and must observe the same
     /// state each time.
     static SCRIPT_STATE: RefCell<HashMap<String, Box<dyn Any>>> = RefCell::new(HashMap::new());
+
+    /// Runtime interaction state (`:hover`, `:focus`) keyed by the layout tree's
+    /// pre-order node index. Separate from `SCRIPT_STATE` because it is driven by
+    /// input events (cursor/focus) rather than by reactive signals, and must not
+    /// be cleared when script state is reset.
+    static ELEMENT_STATE: RefCell<ElementStateStore> = RefCell::new(ElementStateStore::new());
+}
+
+/// Interaction state for the element tree, used by stateful pseudo-classes.
+///
+/// Nodes are identified by their pre-order index in the layout tree, which is
+/// stable across re-renders as long as the tree shape does not change.
+#[derive(Debug, Default)]
+pub struct ElementStateStore {
+    /// Node indices currently under the cursor.
+    hovered: HashSet<usize>,
+    /// The focused node, if any.
+    focused: Option<usize>,
+}
+
+impl ElementStateStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Mark (or unmark) a node as hovered. Called as the cursor moves.
+pub fn set_hovered(node_id: usize, hovered: bool) {
+    ELEMENT_STATE.with(|s| {
+        let mut store = s.borrow_mut();
+        if hovered {
+            store.hovered.insert(node_id);
+        } else {
+            store.hovered.remove(&node_id);
+        }
+    });
+}
+
+/// Set (or clear) the focused node. Called on focus/blur.
+pub fn set_focused(node_id: Option<usize>) {
+    ELEMENT_STATE.with(|s| s.borrow_mut().focused = node_id);
+}
+
+/// Whether a node is currently hovered.
+pub fn is_hovered(node_id: usize) -> bool {
+    ELEMENT_STATE.with(|s| s.borrow().hovered.contains(&node_id))
+}
+
+/// Whether a node is currently focused.
+pub fn is_focused(node_id: usize) -> bool {
+    ELEMENT_STATE.with(|s| s.borrow().focused == Some(node_id))
+}
+
+/// Whether any node is focused (used by `:focus-within` on ancestors).
+pub fn any_focused() -> bool {
+    ELEMENT_STATE.with(|s| s.borrow().focused.is_some())
+}
+
+/// Drop all hover state (called at the start of a hover recomputation). Focus
+/// is intentionally preserved: it survives cursor movement.
+pub fn clear_hover() {
+    ELEMENT_STATE.with(|s| s.borrow_mut().hovered.clear());
+}
+
+/// Drop all interaction state (used by tests).
+pub fn clear_element_state() {
+    ELEMENT_STATE.with(|s| {
+        let mut store = s.borrow_mut();
+        store.hovered.clear();
+        store.focused = None;
+    });
 }
 
 /// Get (or lazily create) the signal pair behind a script binding.
@@ -172,5 +243,41 @@ mod tests {
         set(&key, 3i64);
         assert_eq!(get(&key, 0i64), 3);
         assert!(contains("count"));
+    }
+
+    // ── Element interaction state (FAZ 14) ──────────────────────
+
+    #[test]
+    fn test_element_state_hover() {
+        clear_element_state();
+        assert!(!is_hovered(3));
+        set_hovered(3, true);
+        assert!(is_hovered(3));
+        set_hovered(3, false);
+        assert!(!is_hovered(3));
+    }
+
+    #[test]
+    fn test_element_state_focus() {
+        clear_element_state();
+        assert!(!is_focused(5));
+        assert!(!any_focused());
+        set_focused(Some(5));
+        assert!(is_focused(5));
+        assert!(any_focused());
+        assert!(!is_focused(6));
+        set_focused(None);
+        assert!(!is_focused(5));
+        assert!(!any_focused());
+    }
+
+    #[test]
+    fn test_clear_hover_keeps_focus() {
+        clear_element_state();
+        set_hovered(1, true);
+        set_focused(Some(2));
+        clear_hover();
+        assert!(!is_hovered(1), "hover cleared");
+        assert!(is_focused(2), "focus preserved across hover clear");
     }
 }

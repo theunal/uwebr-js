@@ -65,6 +65,7 @@ impl StyleBook {
                     // as specified so behaviour matches the old merge_style().
                     mask: ALL_FIELDS_MASK,
                     paint: PaintProps::default(),
+                    important: false,
                 })
                 .collect(),
         }
@@ -82,9 +83,10 @@ impl StyleBook {
 
     /// Match an element and return the merged layout Style plus a "matched" flag.
     ///
-    /// Kept for callers that only care about layout.
+    /// Kept for callers that only care about layout. Uses an empty parent chain
+    /// and node id 0 (stateful pseudo-classes will not match).
     pub fn match_element(&self, element: &Element) -> (Style, bool) {
-        let m = self.match_full(element);
+        let m = self.match_full(element, &[], 0);
         (m.style, m.matched)
     }
 
@@ -93,7 +95,16 @@ impl StyleBook {
     /// Priority: tag < class < id. Only properties a rule actually declared are
     /// written, so a class rule setting just `width` no longer resets `display`
     /// or `padding` inherited from the tag rule.
-    pub fn match_full(&self, element: &Element) -> MatchedStyle {
+    ///
+    /// `parent_chain[0]` is the immediate parent, `[1]` the grandparent, etc.,
+    /// used to resolve descendant/child combinators. `node_id` is the layout
+    /// tree's pre-order index, used to look up runtime hover/focus state.
+    pub fn match_full(
+        &self,
+        element: &Element,
+        parent_chain: &[&Element],
+        node_id: usize,
+    ) -> MatchedStyle {
         let mut out = MatchedStyle::default();
 
         let tag = match &element.node_type {
@@ -103,13 +114,14 @@ impl StyleBook {
             NodeType::Text(_) | NodeType::Component(_) | NodeType::Raw(_) => return out,
         };
 
-        // Apply matching rules in ascending specificity order so higher-priority
-        // rules (id > class/attr/pseudo > tag) overwrite lower ones. Rules that
-        // predate AST tracking fall back to the old string-key matching.
-        let mut matches: Vec<(u32, usize, &StyleEntry)> = Vec::new();
+        // Apply matching rules in ascending priority order so higher-priority
+        // rules overwrite lower ones. Priority key is (important, specificity,
+        // source order): an `!important` rule beats any normal rule regardless
+        // of specificity, matching the CSS cascade.
+        let mut matches: Vec<(u8, u32, usize, &StyleEntry)> = Vec::new();
         for (idx, entry) in self.rules.iter().enumerate() {
             let matched = match &entry.selector_ast {
-                Some(ast) => selector_matches(ast, element, tag),
+                Some(ast) => selector_matches(ast, element, tag, parent_chain, node_id),
                 None => self.string_selector_matches(&entry.selector, element, tag),
             };
             if matched {
@@ -118,15 +130,19 @@ impl StyleBook {
                     .as_ref()
                     .map(selector_specificity)
                     .unwrap_or(0);
-                matches.push((spec, idx, entry));
+                matches.push((entry.important as u8, spec, idx, entry));
             }
         }
 
-        // Stable sort by (specificity, source order): equal specificity keeps
+        // Stable sort by (important, specificity, source order): equal keys keep
         // declaration order, matching the CSS cascade.
-        matches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        matches.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+        });
 
-        for (_, _, entry) in matches {
+        for (_, _, _, entry) in matches {
             self.absorb(&mut out, entry);
         }
 
@@ -190,17 +206,25 @@ fn element_has_id(element: &Element, id_name: &str) -> bool {
 
 /// Recursively test whether a selector matches an element.
 ///
-/// Descendant/child combinators are simplified: only the rightmost (subject)
-/// selector is tested against the element, since the pipeline does not yet pass
-/// a parent chain. This is documented as a FAZ 13 limitation.
-fn selector_matches(sel: &CssSelector, element: &Element, tag: &str) -> bool {
+/// Descendant/child combinators walk the real `parent_chain`: `parent_chain[0]`
+/// is the immediate parent, `[1]` the grandparent, and so on. `node_id` is the
+/// layout tree's pre-order index, used by stateful pseudo-classes to look up
+/// hover/focus state.
+fn selector_matches(
+    sel: &CssSelector,
+    element: &Element,
+    tag: &str,
+    parent_chain: &[&Element],
+    node_id: usize,
+) -> bool {
     match sel {
         CssSelector::Tag(t) => t == tag,
         CssSelector::Class(c) => element_has_class(element, c),
         CssSelector::Id(id) => element_has_id(element, id),
         CssSelector::Universal => true,
         CssSelector::PseudoClass(inner, pseudo) => {
-            selector_matches(inner, element, tag) && pseudo_class_matches(pseudo, element)
+            selector_matches(inner, element, tag, parent_chain, node_id)
+                && pseudo_class_matches(pseudo, element, parent_chain, node_id)
         }
         CssSelector::Attribute {
             selector: inner,
@@ -208,15 +232,82 @@ fn selector_matches(sel: &CssSelector, element: &Element, tag: &str) -> bool {
             op,
             value,
         } => {
-            selector_matches(inner, element, tag)
+            selector_matches(inner, element, tag, parent_chain, node_id)
                 && attribute_matches(element, attr, op, value.as_deref())
         }
-        // Simplified: match on the rightmost selector only (no parent chain yet).
-        CssSelector::Descendant(selectors) | CssSelector::Child(selectors) => selectors
-            .last()
-            .is_some_and(|last| selector_matches(last, element, tag)),
-        CssSelector::List(sels) => sels.iter().any(|s| selector_matches(s, element, tag)),
+        // `.a .b`: the subject (rightmost) must match this element, and each
+        // ancestor selector must match *some* ancestor further up the chain,
+        // in order.
+        CssSelector::Descendant(selectors) => {
+            let Some(subject) = selectors.last() else {
+                return false;
+            };
+            if !selector_matches(subject, element, tag, parent_chain, node_id) {
+                return false;
+            }
+            let ancestors = &selectors[..selectors.len() - 1];
+            ancestors_match(ancestors, parent_chain, false)
+        }
+        // `.a > .b`: the subject must match this element and each ancestor
+        // selector must match the *immediately* preceding parent.
+        CssSelector::Child(selectors) => {
+            let Some(subject) = selectors.last() else {
+                return false;
+            };
+            if !selector_matches(subject, element, tag, parent_chain, node_id) {
+                return false;
+            }
+            let ancestors = &selectors[..selectors.len() - 1];
+            ancestors_match(ancestors, parent_chain, true)
+        }
+        CssSelector::List(sels) => sels
+            .iter()
+            .any(|s| selector_matches(s, element, tag, parent_chain, node_id)),
     }
+}
+
+/// Test the ancestor part of a combinator against the parent chain.
+///
+/// `ancestors` are in document order (outermost … innermost parent); they are
+/// walked from the innermost outward. When `direct` is true (child combinator)
+/// each step must match the very next parent; otherwise (descendant combinator)
+/// a matching ancestor may be found anywhere further up.
+fn ancestors_match(ancestors: &[CssSelector], parent_chain: &[&Element], direct: bool) -> bool {
+    let mut depth = 0usize;
+    // Walk ancestor selectors from innermost (last) to outermost (first).
+    for ancestor_sel in ancestors.iter().rev() {
+        let mut matched = false;
+        while depth < parent_chain.len() {
+            let ancestor = parent_chain[depth];
+            let a_tag = match &ancestor.node_type {
+                NodeType::Element(t) => t.as_str(),
+                _ => {
+                    depth += 1;
+                    if direct {
+                        return false;
+                    }
+                    continue;
+                }
+            };
+            // Ancestors carry no node_id of interest here (stateful pseudo on an
+            // ancestor selector is uncommon); pass 0 and its own remaining chain.
+            let rest = &parent_chain[depth + 1..];
+            if selector_matches(ancestor_sel, ancestor, a_tag, rest, usize::MAX) {
+                depth += 1;
+                matched = true;
+                break;
+            }
+            if direct {
+                // Child combinator: the immediate parent must match.
+                return false;
+            }
+            depth += 1;
+        }
+        if !matched {
+            return false;
+        }
+    }
+    true
 }
 
 /// CSS specificity as a single sortable integer: (id, class/attr/pseudo, tag).
@@ -264,16 +355,32 @@ fn selector_specificity(sel: &CssSelector) -> u32 {
 
 /// Match a pseudo-class name against an element.
 ///
-/// Stateless structural pseudo-classes that need a parent chain
+/// Stateless structural pseudo-classes that need a parent's child list
 /// (`:first-child`, …) are simplified to always match. Stateful ones
-/// (`:hover`, …) return false until runtime state tracking lands in a later
-/// phase. `:disabled` / `:enabled` are checked against the element's props.
-fn pseudo_class_matches(pseudo: &str, element: &Element) -> bool {
+/// (`:hover`, `:focus`) consult the runtime [`ElementStateStore`] via `node_id`.
+/// `:disabled` / `:enabled` are checked against the element's props.
+fn pseudo_class_matches(
+    pseudo: &str,
+    element: &Element,
+    parent_chain: &[&Element],
+    node_id: usize,
+) -> bool {
     match pseudo {
         // Structural — real matching needs the parent's child list (future phase).
         "first-child" | "last-child" | "only-child" | "nth-child" | "nth-of-type" => true,
-        // Stateful — needs runtime hover/focus tracking (future phase).
-        "hover" | "focus" | "active" | "visited" | "focus-within" | "focus-visible" => false,
+        // Stateful — resolved against runtime interaction state.
+        "hover" => uwebr_core::state::is_hovered(node_id),
+        "focus" | "focus-visible" => uwebr_core::state::is_focused(node_id),
+        // A tabbed-into ancestor: any element focused counts (approximation —
+        // we lack per-subtree focus tracking, so a focused element anywhere
+        // satisfies :focus-within only when there is an ancestor at all).
+        "focus-within" => {
+            uwebr_core::state::is_focused(node_id)
+                || (!parent_chain.is_empty() && uwebr_core::state::any_focused())
+        }
+        // `:active` = mouse-down instant; `:visited` = browsing history. Neither
+        // is tracked in a desktop render loop.
+        "active" | "visited" => false,
         "disabled" => is_disabled(element),
         "enabled" => !is_disabled(element),
         "checked" => element
@@ -614,7 +721,7 @@ mod tests {
             "div",
             vec![("class".into(), PropValue::String("app".into()))],
         );
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         assert!(m.matched);
         let bg = m.paint.background.clone().unwrap();
         match bg {
@@ -633,7 +740,7 @@ mod tests {
         // be treated as matched so the paint is not dropped.
         let sb = StyleBook::parse("h1 { color: red; }").unwrap();
         let el = make_element("h1", vec![]);
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         assert!(m.matched);
         assert!(m.paint.color.is_some());
         assert!(m.mask.is_empty(), "no layout property was declared");
@@ -643,7 +750,7 @@ mod tests {
     fn test_paint_font_size_from_css() {
         let sb = StyleBook::parse("h1 { font-size: 2rem; }").unwrap();
         let el = make_element("h1", vec![]);
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         assert_eq!(m.paint.font_size, Some(32.0));
     }
 
@@ -657,7 +764,7 @@ mod tests {
                 ("id".into(), PropValue::String("b".into())),
             ],
         );
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         let c = m.paint.color.unwrap();
         assert_eq!((c.r, c.g, c.b), (0, 0, 255));
     }
@@ -672,7 +779,7 @@ mod tests {
             "div",
             vec![("class".into(), PropValue::String("base over".into()))],
         );
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         let bg = m.paint.background.unwrap();
         match bg {
             uwebr_css::codegen::BackgroundValue::Solid(c) => {
@@ -692,7 +799,7 @@ mod tests {
             props: vec![],
             children: vec![],
         };
-        let m = sb.match_full(&text);
+        let m = sb.match_full(&text, &[], 0);
         assert!(!m.matched);
     }
 
@@ -735,7 +842,7 @@ mod tests {
             "button",
             vec![("class".into(), PropValue::String("btn".into()))],
         );
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         assert!(
             m.paint.background.is_none(),
             ":hover must not apply without hover state"
@@ -746,7 +853,7 @@ mod tests {
     fn test_pseudo_disabled_applies_to_disabled_element() {
         let sb = StyleBook::parse("button:disabled { opacity: 0.5; }").unwrap();
         let el = make_element("button", vec![("disabled".into(), PropValue::Bool(true))]);
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         assert_eq!(m.paint.opacity, Some(0.5), "disabled element must match");
     }
 
@@ -754,7 +861,7 @@ mod tests {
     fn test_pseudo_disabled_skips_enabled_element() {
         let sb = StyleBook::parse("button:disabled { opacity: 0.5; }").unwrap();
         let el = make_element("button", vec![]);
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         assert!(
             m.paint.opacity.is_none(),
             "enabled element must not match :disabled"
@@ -765,7 +872,7 @@ mod tests {
     fn test_attribute_exists_matches() {
         let sb = StyleBook::parse("[disabled] { opacity: 0.5; }").unwrap();
         let el = make_element("input", vec![("disabled".into(), PropValue::Bool(true))]);
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         assert_eq!(m.paint.opacity, Some(0.5));
     }
 
@@ -782,11 +889,11 @@ mod tests {
         );
 
         assert!(
-            sb.match_full(&text_input).paint.border_width.is_some(),
+            sb.match_full(&text_input, &[], 0).paint.border_width.is_some(),
             "type=text must match"
         );
         assert!(
-            sb.match_full(&checkbox).paint.border_width.is_none(),
+            sb.match_full(&checkbox, &[], 0).paint.border_width.is_none(),
             "type=checkbox must not match"
         );
     }
@@ -798,7 +905,7 @@ mod tests {
             "div",
             vec![("class".into(), PropValue::String("my-btn-primary".into()))],
         );
-        let m = sb.match_full(&el);
+        let m = sb.match_full(&el, &[], 0);
         assert_eq!(m.paint.opacity, Some(0.9));
     }
 
@@ -813,8 +920,8 @@ mod tests {
             "a",
             vec![("href".into(), PropValue::String("http://x.com".into()))],
         );
-        assert!(prefix.match_full(&secure).paint.opacity.is_some());
-        assert!(prefix.match_full(&insecure).paint.opacity.is_none());
+        assert!(prefix.match_full(&secure, &[], 0).paint.opacity.is_some());
+        assert!(prefix.match_full(&insecure, &[], 0).paint.opacity.is_none());
 
         let suffix = StyleBook::parse(r#"[src$=".png"] { opacity: 0.7; }"#).unwrap();
         let png = make_element(
@@ -825,8 +932,8 @@ mod tests {
             "img",
             vec![("src".into(), PropValue::String("a.jpg".into()))],
         );
-        assert!(suffix.match_full(&png).paint.opacity.is_some());
-        assert!(suffix.match_full(&jpg).paint.opacity.is_none());
+        assert!(suffix.match_full(&png, &[], 0).paint.opacity.is_some());
+        assert!(suffix.match_full(&jpg, &[], 0).paint.opacity.is_none());
     }
 
     #[test]
@@ -841,7 +948,159 @@ mod tests {
                 ("id".into(), PropValue::String("hero".into())),
             ],
         );
-        let c = sb.match_full(&el).paint.color.unwrap();
+        let c = sb.match_full(&el, &[], 0).paint.color.unwrap();
         assert_eq!((c.r, c.g, c.b), (0, 0, 255), "id rule must win");
+    }
+
+    // ── Stateful pseudo-classes (FAZ 14) ────────────────────────
+
+    #[test]
+    fn test_pseudo_class_hover_matches() {
+        uwebr_core::state::clear_element_state();
+        let sb = StyleBook::parse(".btn:hover { background-color: blue; }").unwrap();
+        let el = make_element(
+            "button",
+            vec![("class".into(), PropValue::String("btn".into()))],
+        );
+
+        // Not hovered → no match.
+        assert!(sb.match_full(&el, &[], 7).paint.background.is_none());
+
+        // Mark node 7 hovered → :hover applies.
+        uwebr_core::state::set_hovered(7, true);
+        assert!(
+            sb.match_full(&el, &[], 7).paint.background.is_some(),
+            ":hover must apply when the node is hovered"
+        );
+        // A different node id is unaffected.
+        assert!(sb.match_full(&el, &[], 8).paint.background.is_none());
+        uwebr_core::state::clear_element_state();
+    }
+
+    #[test]
+    fn test_pseudo_class_focus_matches() {
+        uwebr_core::state::clear_element_state();
+        let sb = StyleBook::parse("input:focus { border-width: 2px; }").unwrap();
+        let el = make_element("input", vec![]);
+
+        assert!(sb.match_full(&el, &[], 3).paint.border_width.is_none());
+        uwebr_core::state::set_focused(Some(3));
+        assert_eq!(sb.match_full(&el, &[], 3).paint.border_width, Some(2.0));
+        assert!(sb.match_full(&el, &[], 4).paint.border_width.is_none());
+        uwebr_core::state::clear_element_state();
+    }
+
+    // ── Descendant / child combinators (FAZ 14) ─────────────────
+
+    #[test]
+    fn test_descendant_selector_real_match() {
+        let sb = StyleBook::parse(".parent .child { color: red; }").unwrap();
+        let child = make_element(
+            "span",
+            vec![("class".into(), PropValue::String("child".into()))],
+        );
+        let parent = make_element(
+            "div",
+            vec![("class".into(), PropValue::String("parent".into()))],
+        );
+
+        // With .parent as an ancestor → match.
+        assert!(sb.match_full(&child, &[&parent], 1).paint.color.is_some());
+        // No ancestor → no match.
+        assert!(sb.match_full(&child, &[], 1).paint.color.is_none());
+    }
+
+    #[test]
+    fn test_descendant_matches_deep_ancestor() {
+        let sb = StyleBook::parse(".parent .child { color: red; }").unwrap();
+        let child = make_element(
+            "span",
+            vec![("class".into(), PropValue::String("child".into()))],
+        );
+        let mid = make_element("div", vec![]);
+        let parent = make_element(
+            "div",
+            vec![("class".into(), PropValue::String("parent".into()))],
+        );
+
+        // .parent is the grandparent — descendant combinator still matches.
+        assert!(sb
+            .match_full(&child, &[&mid, &parent], 2)
+            .paint
+            .color
+            .is_some());
+    }
+
+    #[test]
+    fn test_child_selector_direct_only() {
+        let sb = StyleBook::parse("div > .btn { color: red; }").unwrap();
+        let btn = make_element(
+            "span",
+            vec![("class".into(), PropValue::String("btn".into()))],
+        );
+        let direct_parent = make_element("div", vec![]);
+        let grandparent = make_element("div", vec![]);
+        let intermediate = make_element("section", vec![]);
+
+        // Direct div parent → match.
+        assert!(sb
+            .match_full(&btn, &[&direct_parent], 1)
+            .paint
+            .color
+            .is_some());
+        // div only as grandparent (immediate parent is <section>) → no match.
+        assert!(sb
+            .match_full(&btn, &[&intermediate, &grandparent], 2)
+            .paint
+            .color
+            .is_none());
+    }
+
+    #[test]
+    fn test_descendant_no_match_nested_wrong() {
+        let sb = StyleBook::parse(".unrelated .child { color: red; }").unwrap();
+        let child = make_element(
+            "span",
+            vec![("class".into(), PropValue::String("child".into()))],
+        );
+        let parent = make_element(
+            "div",
+            vec![("class".into(), PropValue::String("parent".into()))],
+        );
+        // Ancestor class does not match the selector → no match.
+        assert!(sb.match_full(&child, &[&parent], 1).paint.color.is_none());
+    }
+
+    // ── !important cascade (FAZ 14) ─────────────────────────────
+
+    #[test]
+    fn test_important_wins_over_higher_specificity() {
+        // `.a` is important, `#id` has higher specificity but is normal.
+        let sb =
+            StyleBook::parse(".a { color: red !important; } #id { color: blue; }").unwrap();
+        let el = make_element(
+            "div",
+            vec![
+                ("class".into(), PropValue::String("a".into())),
+                ("id".into(), PropValue::String("id".into())),
+            ],
+        );
+        let c = sb.match_full(&el, &[], 0).paint.color.unwrap();
+        assert_eq!((c.r, c.g, c.b), (255, 0, 0), "!important must win");
+    }
+
+    #[test]
+    fn test_important_equal_specificity_last_wins() {
+        // Two important rules, same specificity → later source order wins.
+        let sb = StyleBook::parse(
+            ".a { color: red !important; } .b { color: green !important; }",
+        )
+        .unwrap();
+        let el = make_element(
+            "div",
+            vec![("class".into(), PropValue::String("a b".into()))],
+        );
+        let c = sb.match_full(&el, &[], 0).paint.color.unwrap();
+        assert_eq!((c.r, c.g, c.b), (0, 128, 0), "later !important wins");
     }
 }

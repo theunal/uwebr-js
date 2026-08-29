@@ -66,6 +66,9 @@ pub struct PositionedNode {
     pub element: Element,
     pub layout: LayoutInfo,
     pub depth: usize,
+    /// Pre-order index in the layout tree, used to key runtime hover/focus
+    /// state and for hover hit-testing.
+    pub node_id: usize,
     /// Fully resolved paint (CSS + inline props + inherited text style).
     pub paint: ResolvedPaint,
     /// `overflow: hidden` (or `clip`) on either axis — the scene clips children.
@@ -87,7 +90,8 @@ impl LayoutEngine {
         stylebook: &StyleBook,
     ) -> anyhow::Result<taffy::NodeId> {
         let inherited = ResolvedPaint::default();
-        let node = self.build_node(root, stylebook, &inherited)?;
+        let mut node_counter = 0usize;
+        let node = self.build_node(root, stylebook, &inherited, &[], &mut node_counter)?;
 
         // The root element stands in for the document body: give it the whole
         // viewport unless CSS sized it explicitly. Without this the root is
@@ -111,8 +115,14 @@ impl LayoutEngine {
         element: &Element,
         stylebook: &StyleBook,
         inherited: &ResolvedPaint,
+        parent_chain: &[&Element],
+        node_counter: &mut usize,
     ) -> anyhow::Result<taffy::NodeId> {
-        let matched = stylebook.match_full(element);
+        // Assign this node's pre-order index, matching collect_recursive's walk.
+        let node_id = *node_counter;
+        *node_counter += 1;
+
+        let matched = stylebook.match_full(element, parent_chain, node_id);
         let paint = ResolvedPaint::resolve(inherited, &matched.paint, element);
         let style = self.element_to_style(element, &matched);
 
@@ -130,10 +140,17 @@ impl LayoutEngine {
                 Ok(node)
             }
             NodeType::Element(_) | NodeType::Component(_) => {
+                // Extend the parent chain with this element for its children.
+                let mut child_chain = Vec::with_capacity(parent_chain.len() + 1);
+                child_chain.push(element);
+                child_chain.extend_from_slice(parent_chain);
+
                 let child_ids: Vec<taffy::NodeId> = element
                     .children
                     .iter()
-                    .map(|child| self.build_node(child, stylebook, &paint))
+                    .map(|child| {
+                        self.build_node(child, stylebook, &paint, &child_chain, node_counter)
+                    })
                     .collect::<anyhow::Result<_>>()?;
 
                 let node = self.taffy.new_with_children(style, &child_ids)?;
@@ -303,6 +320,7 @@ impl LayoutEngine {
     ) -> Vec<PositionedNode> {
         let mut nodes = vec![];
         let inherited = ResolvedPaint::default();
+        let mut node_counter = 0usize;
         self.collect_recursive(
             root,
             root_element,
@@ -311,6 +329,8 @@ impl LayoutEngine {
             0.0,
             stylebook,
             &inherited,
+            &[],
+            &mut node_counter,
             &mut nodes,
         );
         nodes
@@ -326,8 +346,15 @@ impl LayoutEngine {
         parent_y: f32,
         stylebook: &StyleBook,
         inherited: &ResolvedPaint,
+        parent_chain: &[&Element],
+        node_counter: &mut usize,
         out: &mut Vec<PositionedNode>,
     ) {
+        // Pre-order index, matching build_node's assignment so hover/focus
+        // state keyed during build lines up with the positioned node.
+        let node_id = *node_counter;
+        *node_counter += 1;
+
         let Ok(layout) = self.taffy.layout(taffy_node) else {
             return;
         };
@@ -342,7 +369,7 @@ impl LayoutEngine {
             height: layout.size.height,
         };
 
-        let matched = stylebook.match_full(element);
+        let matched = stylebook.match_full(element, parent_chain, node_id);
         let paint = ResolvedPaint::resolve(inherited, &matched.paint, element);
 
         // Clip children when the element sets `overflow: hidden`/`clip` on either
@@ -361,11 +388,16 @@ impl LayoutEngine {
             element: element.clone(),
             layout: info,
             depth,
+            node_id,
             paint: paint.clone(),
             overflow_hidden,
         });
 
         if let Ok(children) = self.taffy.children(taffy_node) {
+            let mut child_chain = Vec::with_capacity(parent_chain.len() + 1);
+            child_chain.push(element);
+            child_chain.extend_from_slice(parent_chain);
+
             for (child_taffy, child_element) in children.iter().zip(element.children.iter()) {
                 self.collect_recursive(
                     *child_taffy,
@@ -375,6 +407,8 @@ impl LayoutEngine {
                     abs_y,
                     stylebook,
                     &paint,
+                    &child_chain,
+                    node_counter,
                     out,
                 );
             }
@@ -733,5 +767,61 @@ mod tests {
         engine.compute(root, 800.0, 600.0).unwrap();
         let nodes = engine.collect_positioned_nodes(root, &el, &StyleBook::empty());
         assert!(!nodes[0].overflow_hidden);
+    }
+
+    // ── Parent chain threading (FAZ 14) ─────────────────────────
+
+    #[test]
+    fn test_parent_chain_passed_to_match() {
+        // A descendant selector only applies when build_tree threads the real
+        // parent chain into match_full: `.parent .child` must colour the child.
+        let sb = StyleBook::parse(".parent .child { color: #ff0000; }").unwrap();
+        let child = Element {
+            node_type: NodeType::Element("span".into()),
+            props: vec![("class".into(), PropValue::String("child".into()))],
+            children: vec![make_text_element("Hi")],
+        };
+        let parent = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("parent".into()))],
+            children: vec![child],
+        };
+
+        let mut engine = LayoutEngine::new();
+        let root = engine.build_tree(&parent, &sb).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &parent, &sb);
+
+        // node[0] = .parent, node[1] = .child span → must be red via descendant.
+        let child_node = nodes
+            .iter()
+            .find(|n| matches!(&n.element.node_type, NodeType::Element(t) if t == "span"))
+            .expect("child span present");
+        assert_eq!(
+            child_node.paint.color,
+            vello::peniko::Color::from_rgba8(255, 0, 0, 255),
+            "descendant selector must match through the threaded parent chain"
+        );
+    }
+
+    #[test]
+    fn test_node_ids_are_preorder_unique() {
+        // build_tree and collect_positioned_nodes must agree on pre-order ids.
+        let sb = StyleBook::empty();
+        let el = make_div_element(vec![
+            make_div_element(vec![make_text_element("a")]),
+            make_text_element("b"),
+        ]);
+        let mut engine = LayoutEngine::new();
+        let root = engine.build_tree(&el, &sb).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &el, &sb);
+
+        let ids: Vec<usize> = nodes.iter().map(|n| n.node_id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(ids.len(), sorted.len(), "node ids must be unique");
+        assert_eq!(nodes[0].node_id, 0, "root is pre-order index 0");
     }
 }
