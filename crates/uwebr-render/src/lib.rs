@@ -1,4 +1,5 @@
 pub mod color;
+pub mod html_parse;
 pub mod layout;
 pub mod paint;
 pub mod renderer;
@@ -13,6 +14,7 @@ pub use paint::ResolvedPaint;
 pub use renderer::Renderer;
 pub use scene::{
     Background, BorderStyle, LayoutInfo, RenderNode, RenderNodeKind, RenderScene, RenderStyle,
+    TextOverflow,
 };
 pub use scene_builder::SceneBuilder;
 pub use stylebook::{MatchedStyle, StyleBook};

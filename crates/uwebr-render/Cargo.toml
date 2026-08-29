@@ -15,6 +15,7 @@ vello.workspace = true
 taffy.workspace = true
 parley.workspace = true
 kurbo.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 uwebr-core.workspace = true
 uwebr-css.workspace = true
 

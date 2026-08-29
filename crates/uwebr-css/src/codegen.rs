@@ -97,6 +97,7 @@ pub struct PaintProps {
     pub border_width: Option<f32>,
     pub border_radius: Option<f32>,
     pub opacity: Option<f32>,
+    pub text_overflow: Option<String>,
 }
 
 impl PaintProps {
@@ -130,6 +131,9 @@ impl PaintProps {
         }
         if other.opacity.is_some() {
             self.opacity = other.opacity;
+        }
+        if other.text_overflow.is_some() {
+            self.text_overflow = other.text_overflow.clone();
         }
     }
 }
@@ -243,6 +247,11 @@ pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
             "opacity" => {
                 if let CssValue::Length(n, _) = &prop.value {
                     paint.opacity = Some(n.clamp(0.0, 1.0));
+                }
+            }
+            "text-overflow" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.text_overflow = Some(k.clone());
                 }
             }
             _ => {}
@@ -1175,6 +1184,22 @@ mod tests {
         assert_eq!(paint.border_radius, Some(6.0));
         assert_eq!(paint.opacity, Some(0.5));
         assert!(paint.border_color.is_some());
+    }
+
+    #[test]
+    fn test_paint_text_overflow_ellipsis() {
+        let css = ".t { text-overflow: ellipsis; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.text_overflow.as_deref(), Some("ellipsis"));
+    }
+
+    #[test]
+    fn test_paint_text_overflow_clip() {
+        let css = ".t { text-overflow: clip; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.text_overflow.as_deref(), Some("clip"));
     }
 
     #[test]

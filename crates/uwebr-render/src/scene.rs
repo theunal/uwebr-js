@@ -56,6 +56,20 @@ pub struct BorderStyle {
     pub color: peniko::Color,
 }
 
+// ── Text Overflow ──────────────────────────────────────────────────────
+
+/// How overflowing inline text is treated inside its box.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum TextOverflow {
+    /// Clip at the box edge with no marker (CSS default).
+    #[default]
+    Clip,
+    /// Clip and append an ellipsis ("…") to the last visible run.
+    Ellipsis,
+    /// Do not clip; let text spill out of the box.
+    Visible,
+}
+
 // ── Render Style ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -65,6 +79,7 @@ pub struct RenderStyle {
     pub border_radius: f32,
     pub opacity: f32,
     pub overflow_hidden: bool,
+    pub text_overflow: TextOverflow,
 }
 
 impl Default for RenderStyle {
@@ -75,6 +90,7 @@ impl Default for RenderStyle {
             border_radius: 0.0,
             opacity: 1.0,
             overflow_hidden: false,
+            text_overflow: TextOverflow::default(),
         }
     }
 }
@@ -177,6 +193,19 @@ impl RenderNode {
             style: RenderStyle::default(),
         }
     }
+
+    pub fn image(id: u64, layout: LayoutInfo, data: Vec<u8>, width: u32, height: u32) -> Self {
+        Self {
+            id,
+            kind: RenderNodeKind::Image {
+                data,
+                width,
+                height,
+            },
+            layout,
+            style: RenderStyle::default(),
+        }
+    }
 }
 
 // ── Render Scene ──────────────────────────────────────────────────────
@@ -240,6 +269,7 @@ mod tests {
         assert_eq!(style.border_radius, 0.0);
         assert_eq!(style.opacity, 1.0);
         assert!(!style.overflow_hidden);
+        assert_eq!(style.text_overflow, TextOverflow::Clip);
     }
 
     #[test]
@@ -329,5 +359,33 @@ mod tests {
         assert_eq!(scene.node_count(), 2);
         scene.clear();
         assert_eq!(scene.node_count(), 0);
+    }
+
+    #[test]
+    fn test_text_overflow_default_is_clip() {
+        assert_eq!(TextOverflow::default(), TextOverflow::Clip);
+    }
+
+    #[test]
+    fn test_render_node_image_helper() {
+        let node = RenderNode::image(
+            9,
+            LayoutInfo::new(0.0, 0.0, 64.0, 64.0),
+            vec![1, 2, 3],
+            32,
+            32,
+        );
+        match &node.kind {
+            RenderNodeKind::Image {
+                data,
+                width,
+                height,
+            } => {
+                assert_eq!(data, &vec![1, 2, 3]);
+                assert_eq!(*width, 32);
+                assert_eq!(*height, 32);
+            }
+            _ => panic!("Expected Image"),
+        }
     }
 }

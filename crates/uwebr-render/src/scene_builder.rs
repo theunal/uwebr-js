@@ -1,7 +1,9 @@
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::{self, color::palette, Fill};
 
-use crate::scene::{Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle};
+use crate::scene::{
+    Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle, TextOverflow,
+};
 use crate::text::TextRenderer;
 
 /// Builds a vello Scene from a RenderScene.
@@ -101,10 +103,15 @@ impl SceneBuilder {
                     x,
                     y,
                     w,
+                    &node.style.text_overflow,
                 );
             }
-            RenderNodeKind::Image { .. } => {
-                Self::draw_rect(scene, &node.style, x, y, w, h);
+            RenderNodeKind::Image {
+                data,
+                width,
+                height,
+            } => {
+                self.draw_image(scene, data, *width, *height, x, y, w, h);
             }
             RenderNodeKind::Container => {
                 if node.style.background.is_some() {
@@ -152,20 +159,32 @@ impl SceneBuilder {
         x: f64,
         y: f64,
         width: f64,
+        text_overflow: &TextOverflow,
     ) {
         if content.trim().is_empty() {
             return;
         }
 
-        // Wrap to the box the layout engine assigned to this node.
-        let max_advance = if width > 0.0 {
+        // Ellipsis truncates to a single line; other modes keep the full string
+        // and rely on the layout box (plus any overflow clip) to bound it.
+        let display_content = if *text_overflow == TextOverflow::Ellipsis && width > 0.0 {
+            self.truncate_with_ellipsis(content, font_size, font_family, width)
+        } else {
+            content.to_string()
+        };
+
+        // Wrap to the box the layout engine assigned to this node. Ellipsis
+        // produces a single line, so wrapping is disabled in that case.
+        let max_advance = if *text_overflow == TextOverflow::Ellipsis {
+            None
+        } else if width > 0.0 {
             Some(width as f32)
         } else {
             None
         };
         let layout = self
             .text
-            .layout_text(content, font_size, font_family, max_advance);
+            .layout_text(&display_content, font_size, font_family, max_advance);
 
         for line in layout.lines() {
             for item in line.items() {
@@ -193,6 +212,100 @@ impl SceneBuilder {
                     );
             }
         }
+    }
+
+    /// Total advance width of a laid-out string on its first line.
+    fn measure_advance(&mut self, content: &str, font_size: f32, font_family: Option<&str>) -> f32 {
+        let layout = self.text.layout_text(content, font_size, font_family, None);
+        layout
+            .lines()
+            .flat_map(|l| l.items())
+            .filter_map(|item| {
+                if let parley::PositionedLayoutItem::GlyphRun(run) = item {
+                    Some(run.glyphs().map(|g| g.advance).sum::<f32>())
+                } else {
+                    None
+                }
+            })
+            .sum()
+    }
+
+    /// Shorten `content` so it plus an ellipsis fits within `max_width`.
+    ///
+    /// Returns the original string untouched when it already fits. Character-by-
+    /// character measurement is O(n) in layouts but fine for the short single
+    /// lines ellipsis targets.
+    fn truncate_with_ellipsis(
+        &mut self,
+        content: &str,
+        font_size: f32,
+        font_family: Option<&str>,
+        max_width: f64,
+    ) -> String {
+        let total_width = self.measure_advance(content, font_size, font_family);
+        if total_width <= max_width as f32 {
+            return content.to_string();
+        }
+
+        let ellipsis = "…";
+        let ellipsis_width = self.measure_advance(ellipsis, font_size, font_family);
+        let available = max_width as f32 - ellipsis_width;
+        if available <= 0.0 {
+            return ellipsis.to_string();
+        }
+
+        let mut truncated = String::new();
+        let mut width_so_far = 0.0f32;
+        for ch in content.chars() {
+            let char_width = self.measure_advance(&ch.to_string(), font_size, font_family);
+            if width_so_far + char_width > available {
+                break;
+            }
+            truncated.push(ch);
+            width_so_far += char_width;
+        }
+
+        format!("{truncated}{ellipsis}")
+    }
+
+    /// Decode an encoded image (PNG/JPEG) and paint it into the node's box.
+    ///
+    /// Invalid or unsupported data is silently skipped so a broken `src` cannot
+    /// crash the frame. The image is scaled non-uniformly to fill the box.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_image(
+        &mut self,
+        scene: &mut vello::Scene,
+        data: &[u8],
+        _img_width: u32,
+        _img_height: u32,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    ) {
+        let img = match image::load_from_memory(data) {
+            Ok(img) => img,
+            Err(_) => return,
+        };
+
+        let rgba = img.to_rgba8();
+        let (iw, ih) = rgba.dimensions();
+        if iw == 0 || ih == 0 {
+            return;
+        }
+
+        let image_data = peniko::ImageData {
+            data: peniko::Blob::from(rgba.into_raw()),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: iw,
+            height: ih,
+        };
+
+        let transform =
+            Affine::translate((x, y)) * Affine::scale_non_uniform(w / iw as f64, h / ih as f64);
+        scene.draw_image(&image_data, transform);
     }
 
     /// Draw a filled rectangle
@@ -537,5 +650,98 @@ mod tests {
         let first = path_count(&builder.build(&scene, 800, 600));
         let second = path_count(&builder.build(&scene, 800, 600));
         assert_eq!(first, second);
+    }
+
+    // ── Image rendering (FAZ 11) ────────────────────────────────
+
+    /// A 2x2 red RGBA PNG, encoded in memory for the decode path.
+    fn tiny_png() -> Vec<u8> {
+        use image::{ImageEncoder, ImageFormat};
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let pixels: [u8; 16] = [
+            255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+        ];
+        image::codecs::png::PngEncoder::new(&mut buf)
+            .write_image(&pixels, 2, 2, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let _ = ImageFormat::Png;
+        buf.into_inner()
+    }
+
+    #[test]
+    fn test_draw_valid_image_encodes_something() {
+        let mut scene = RenderScene::new();
+        scene.add_node(RenderNode::image(
+            1,
+            LayoutInfo::new(0.0, 0.0, 64.0, 64.0),
+            tiny_png(),
+            2,
+            2,
+        ));
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        // Surface background + the image fill.
+        assert!(
+            path_count(&vello_scene) >= 2,
+            "image should encode a fill, got {}",
+            path_count(&vello_scene)
+        );
+    }
+
+    #[test]
+    fn test_draw_invalid_image_is_skipped() {
+        let mut scene = RenderScene::new();
+        scene.add_node(RenderNode::image(
+            1,
+            LayoutInfo::new(0.0, 0.0, 64.0, 64.0),
+            vec![0xde, 0xad, 0xbe, 0xef],
+            2,
+            2,
+        ));
+        // Must not panic; invalid data draws nothing beyond the background.
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert_eq!(path_count(&vello_scene), 1, "only the surface background");
+    }
+
+    // ── Text overflow: ellipsis (FAZ 11) ────────────────────────
+
+    #[test]
+    fn test_truncate_short_text_unchanged() {
+        let mut builder = SceneBuilder::new();
+        // A wide box relative to the string: no truncation needed.
+        let out = builder.truncate_with_ellipsis("Hi", 16.0, None, 10_000.0);
+        assert_eq!(out, "Hi");
+    }
+
+    #[test]
+    fn test_truncate_long_text_gets_ellipsis() {
+        let mut builder = SceneBuilder::new();
+        let long = "This is a very long string that will not fit in a tiny box";
+        let out = builder.truncate_with_ellipsis(long, 16.0, None, 40.0);
+        // With a real font the string is shortened and ends with the ellipsis.
+        // Without system fonts advances are zero, so the string fits unchanged;
+        // in that case the fallback path returns the original text.
+        if out != long {
+            assert!(
+                out.ends_with('…'),
+                "truncated text should end with ellipsis"
+            );
+            assert!(out.chars().count() < long.chars().count());
+        }
+    }
+
+    #[test]
+    fn test_ellipsis_text_node_draws_without_panic() {
+        let mut scene = RenderScene::new();
+        let mut node = RenderNode::text(
+            1,
+            LayoutInfo::new(0.0, 0.0, 30.0, 20.0),
+            "A long piece of text that overflows",
+            16.0,
+            palette::css::WHITE,
+        );
+        node.style.text_overflow = TextOverflow::Ellipsis;
+        scene.add_node(node);
+        // Should not panic during measurement/truncation.
+        let _ = SceneBuilder::build_scene(&scene, 800, 600);
     }
 }

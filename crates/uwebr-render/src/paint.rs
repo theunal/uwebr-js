@@ -3,7 +3,7 @@ use uwebr_css::codegen::{BackgroundValue, PaintProps};
 use vello::peniko;
 
 use crate::color::{css_color_to_peniko, parse_color_to_peniko};
-use crate::scene::Background;
+use crate::scene::{Background, TextOverflow};
 
 /// Default text colour when neither CSS nor props specify one.
 pub const DEFAULT_TEXT_COLOR: peniko::Color = peniko::color::palette::css::WHITE;
@@ -29,6 +29,8 @@ pub struct ResolvedPaint {
     pub border_width: f32,
     pub border_radius: f32,
     pub opacity: f32,
+    /// How overflowing text is treated (`clip`, `ellipsis`).
+    pub text_overflow: TextOverflow,
 }
 
 impl Default for ResolvedPaint {
@@ -42,6 +44,7 @@ impl Default for ResolvedPaint {
             border_width: 0.0,
             border_radius: 0.0,
             opacity: 1.0,
+            text_overflow: TextOverflow::default(),
         }
     }
 }
@@ -59,6 +62,7 @@ impl ResolvedPaint {
             border_width: 0.0,
             border_radius: 0.0,
             opacity: 1.0,
+            text_overflow: self.text_overflow.clone(),
         }
     }
 
@@ -87,6 +91,13 @@ impl ResolvedPaint {
         }
         if let Some(o) = paint.opacity {
             self.opacity = o;
+        }
+        if let Some(ref to) = paint.text_overflow {
+            self.text_overflow = match to.as_str() {
+                "ellipsis" => TextOverflow::Ellipsis,
+                "visible" => TextOverflow::Visible,
+                _ => TextOverflow::Clip,
+            };
         }
     }
 

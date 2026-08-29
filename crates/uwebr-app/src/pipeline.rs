@@ -179,7 +179,10 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 pos.paint.font_family.clone(),
             ))
         }
-        NodeType::Element(_tag) => {
+        NodeType::Element(tag) => {
+            if tag == "img" {
+                return img_to_render_node(pos, id);
+            }
             if layout.width <= 0.0 || layout.height <= 0.0 {
                 return None;
             }
@@ -201,8 +204,117 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
             })
         }
-        NodeType::Raw(_) => None,
+        NodeType::Raw(html) => {
+            if let Some(el) = uwebr_render::html_parse::parse_runtime_html(html) {
+                return raw_element_to_render_node(&el, id, layout, &pos.paint);
+            }
+            // Fallback: show the raw markup as literal text rather than dropping it.
+            if html.trim().is_empty() {
+                return None;
+            }
+            Some(RenderNode::text_with_family(
+                id,
+                layout,
+                html,
+                pos.paint.font_size,
+                pos.paint.color,
+                pos.paint.font_family.clone(),
+            ))
+        }
     }
+}
+
+/// Build an image render node from an `<img>` element's props.
+///
+/// FAZ 11 accepts the raw image bytes through the `src` string prop; `width`
+/// and `height` props are advisory hints carried alongside the decoded data.
+fn img_to_render_node(pos: &PositionedNode, id: u64) -> Option<RenderNode> {
+    if pos.layout.width <= 0.0 || pos.layout.height <= 0.0 {
+        return None;
+    }
+
+    let data = pos
+        .element
+        .props
+        .iter()
+        .find(|(k, _)| k == "src")
+        .and_then(|(_, v)| match v {
+            PropValue::String(s) => Some(s.as_bytes().to_vec()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let dim = |key: &str| -> u32 {
+        pos.element
+            .props
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| match v {
+                PropValue::Number(n) => Some(*n as u32),
+                PropValue::String(s) => s.trim().parse::<u32>().ok(),
+                _ => None,
+            })
+            .unwrap_or(0)
+    };
+
+    Some(RenderNode {
+        id,
+        kind: RenderNodeKind::Image {
+            data,
+            width: dim("width"),
+            height: dim("height"),
+        },
+        layout: pos.layout,
+        style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
+    })
+}
+
+/// Convert a parsed `{@html}` element subtree into a single render node.
+///
+/// The runtime parser produces a lightweight tree; here we surface its first
+/// meaningful content (text) into the box laid out for the `Raw` node.
+fn raw_element_to_render_node(
+    element: &uwebr_core::component::Element,
+    id: u64,
+    layout: LayoutInfo,
+    paint: &ResolvedPaint,
+) -> Option<RenderNode> {
+    if let Some(text) = first_text(element) {
+        if text.trim().is_empty() {
+            return None;
+        }
+        return Some(RenderNode::text_with_family(
+            id,
+            layout,
+            &text,
+            paint.font_size,
+            paint.color,
+            paint.font_family.clone(),
+        ));
+    }
+
+    if layout.width <= 0.0 || layout.height <= 0.0 {
+        return None;
+    }
+    Some(RenderNode {
+        id,
+        kind: RenderNodeKind::Container,
+        layout,
+        style: paint_to_render_style(paint, false),
+    })
+}
+
+/// Depth-first search for the first text content in a parsed element tree.
+fn first_text(element: &uwebr_core::component::Element) -> Option<String> {
+    if let NodeType::Text(t) = &element.node_type {
+        return Some(t.clone());
+    }
+    for child in &element.children {
+        if let Some(t) = first_text(child) {
+            return Some(t);
+        }
+    }
+    None
 }
 
 /// Translate resolved paint into the scene's style representation.
@@ -220,6 +332,7 @@ fn paint_to_render_style(paint: &ResolvedPaint, overflow_hidden: bool) -> Render
         border_radius: paint.border_radius,
         opacity: paint.opacity,
         overflow_hidden,
+        text_overflow: paint.text_overflow.clone(),
     }
 }
 
@@ -900,5 +1013,111 @@ mod tests {
             "50vw must resolve to 400px against the 800px viewport, got {}",
             inner.layout.width
         );
+    }
+
+    // ── FAZ 11: image, ellipsis, {@html} ───────────────────────
+
+    #[test]
+    fn test_img_element_produces_image_node() {
+        let mut pipeline = RenderPipeline::new();
+        let el = make_el(
+            "img",
+            vec![
+                ("src".into(), PropValue::String("fake-bytes".into())),
+                ("width".into(), PropValue::Number(100.0)),
+                ("height".into(), PropValue::Number(80.0)),
+            ],
+            vec![],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let node = &pipeline.render_scene().nodes()[0];
+        match &node.kind {
+            RenderNodeKind::Image {
+                data,
+                width,
+                height,
+            } => {
+                assert_eq!(data, b"fake-bytes");
+                assert_eq!(*width, 100);
+                assert_eq!(*height, 80);
+            }
+            other => panic!("expected an image node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_img_width_height_from_string_props() {
+        let mut pipeline = RenderPipeline::new();
+        let el = make_el(
+            "img",
+            vec![
+                ("src".into(), PropValue::String("x".into())),
+                ("width".into(), PropValue::String("64".into())),
+                ("height".into(), PropValue::String("48".into())),
+            ],
+            vec![],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        match &pipeline.render_scene().nodes()[0].kind {
+            RenderNodeKind::Image { width, height, .. } => {
+                assert_eq!(*width, 64);
+                assert_eq!(*height, 48);
+            }
+            other => panic!("expected an image node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_text_overflow_reaches_render_style() {
+        let mut pipeline = RenderPipeline::new()
+            .with_css(".t { text-overflow: ellipsis; width: 100px; height: 20px; }");
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("t".into()))],
+            vec![make_text("Some overflowing text")],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        assert_eq!(
+            pipeline.render_scene().nodes()[0].style.text_overflow,
+            uwebr_render::scene::TextOverflow::Ellipsis
+        );
+    }
+
+    #[test]
+    fn test_raw_html_produces_render_node() {
+        let mut pipeline = RenderPipeline::new();
+        let el = Element {
+            node_type: NodeType::Raw("<div>Hi</div>".to_string()),
+            props: vec![],
+            children: vec![],
+        };
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        assert_eq!(texts.len(), 1, "runtime HTML text should reach the scene");
+        match &texts[0].kind {
+            RenderNodeKind::Text { content, .. } => assert_eq!(content, "Hi"),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_raw_invalid_html_falls_back_to_text() {
+        let mut pipeline = RenderPipeline::new();
+        let el = Element {
+            node_type: NodeType::Raw("not markup".to_string()),
+            props: vec![],
+            children: vec![],
+        };
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let texts = text_nodes(pipeline.render_scene());
+        assert_eq!(texts.len(), 1);
+        match &texts[0].kind {
+            RenderNodeKind::Text { content, .. } => assert_eq!(content, "not markup"),
+            _ => unreachable!(),
+        }
     }
 }
