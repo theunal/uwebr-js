@@ -844,8 +844,6 @@ pub fn compile_library(input_path: &str, output_dir: &str) -> Result<()> {
 
     fs::create_dir_all(&output)?;
 
-    // Workspace root'u bul: CARGO_MANIFEST_DIR env var'ından türet
-    // (CLI her zaman workspace içinde compile edilir)
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or(Path::new("."))
@@ -869,6 +867,295 @@ pub fn compile_library(input_path: &str, output_dir: &str) -> Result<()> {
 
     if let Some(ref css) = result.css {
         println!("  CSS: {} bytes", css.len());
+    }
+
+    Ok(())
+}
+
+/// Start dev server with a specific reload mode.
+///
+/// - `"hot-swap"`: compile shared lib + in-process swap (default)
+/// - `"restart"`: full cargo build + process restart
+pub fn dev_server_with_mode(path: &str, mode: &str) -> Result<()> {
+    match mode {
+        "restart" | "full" => dev_server(path),
+        _ => dev_server_hot_swap(path),
+    }
+}
+
+/// Hot-swap dev server: compile shared library + in-process swap on file change.
+fn dev_server_hot_swap(path: &str) -> Result<()> {
+    let root = PathBuf::from(path);
+
+    // Determine component name from the first .uwebr file
+    let uwebr_files = find_uwebr_files(&root)?;
+    if uwebr_files.is_empty() {
+        anyhow::bail!("No .uwebr files found in {path}");
+    }
+    let first = uwebr_files.first().unwrap();
+    let component_name = first
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("App")
+        .to_string();
+
+    let dynlib_dir = root.join("target/dynlib");
+    fs::create_dir_all(&dynlib_dir)?;
+
+    // Initial compile to shared library
+    println!("uwebr dev (hot-swap mode)");
+    println!("  Component: {component_name}");
+
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+
+    let start = Instant::now();
+    let content = fs::read_to_string(first)?;
+    let compile_opts = uwebr_dynlib::CompileOptions {
+        root: workspace_root.clone(),
+        target_dir: dynlib_dir.clone(),
+        profile: uwebr_dynlib::CompileProfile::Debug,
+    };
+
+    println!("  Compiling shared library...");
+    let result = uwebr_dynlib::compile_shared_library(&content, &component_name, &compile_opts)?;
+    println!("  compiled in {}ms", result.compile_time_ms);
+
+    // Load and test render
+    println!("  Loading library...");
+    let load_start = Instant::now();
+    let lib = uwebr_dynlib::LoadedLibrary::load(&result.library_path)?;
+    println!("  loaded in {:?}", load_start.elapsed());
+
+    if let Some(css) = lib.css() {
+        println!("  CSS: {} bytes", css.len());
+    }
+
+    let elem = lib.render();
+    match elem {
+        Some(_e) => println!("  render() OK"),
+        None => println!("  render() returned None"),
+    }
+    drop(lib);
+
+    println!("  Total init: {:?}", start.elapsed());
+
+    // Set up file watcher
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| {
+        if let Ok(event) = res {
+            if matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            ) {
+                let _ = tx.send(event);
+            }
+        }
+    })?;
+
+    watcher.watch(root.join("src").as_path(), RecursiveMode::Recursive)?;
+
+    println!("Watching for changes in src/...");
+    println!("Press Ctrl+C to stop.");
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(event) => {
+                let mut changed = event.paths.clone();
+                while let Ok(more) = rx.recv_timeout(Duration::from_millis(100)) {
+                    for p in more.paths {
+                        if !changed.contains(&p) {
+                            changed.push(p);
+                        }
+                    }
+                }
+
+                let change_kind = classify_changes(&changed);
+                if change_kind == ChangeKind::None {
+                    continue;
+                }
+
+                let relevant: Vec<_> = changed
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            p.extension().and_then(|e| e.to_str()),
+                            Some("uwebr") | Some("rs") | Some("css")
+                        )
+                    })
+                    .cloned()
+                    .collect();
+
+                let paths_display: Vec<_> = relevant
+                    .iter()
+                    .filter_map(|p| p.strip_prefix(&root).ok())
+                    .map(|p| p.display().to_string())
+                    .collect();
+
+                println!(
+                    "[reload] {} file(s): {}",
+                    relevant.len(),
+                    paths_display.join(", ")
+                );
+
+                let reload_start = Instant::now();
+
+                if change_kind == ChangeKind::CssOnly {
+                    println!("  CSS-only change — skipping shared library recompile");
+                    continue;
+                }
+
+                // Re-read and recompile
+                let uwebr_changed: Vec<_> = relevant
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "uwebr"))
+                    .cloned()
+                    .collect();
+
+                for file in &uwebr_changed {
+                    let content = match fs::read_to_string(file) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("  failed to read {}: {e}", file.display());
+                            continue;
+                        }
+                    };
+
+                    let opts = uwebr_dynlib::CompileOptions {
+                        root: workspace_root.clone(),
+                        target_dir: dynlib_dir.clone(),
+                        profile: uwebr_dynlib::CompileProfile::Debug,
+                    };
+
+                    match uwebr_dynlib::compile_shared_library(&content, &component_name, &opts) {
+                        Ok(result) => {
+                            // Load and test render
+                            match uwebr_dynlib::LoadedLibrary::load(&result.library_path) {
+                                Ok(lib) => {
+                                    if let Some(_elem) = lib.render() {
+                                        println!("  hot-reloaded in {:?}", reload_start.elapsed());
+                                    } else {
+                                        eprintln!("  render() returned None after swap");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("  failed to load new library: {e}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("  compile failed: {e} — keeping current version");
+                        }
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                println!("File watcher disconnected.");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Benchmark hot reload: compile + load + render N times, report timings.
+pub fn bench_reload(input_path: &str, iterations: u32) -> Result<()> {
+    let input = PathBuf::from(input_path);
+    if !input.exists() {
+        anyhow::bail!("file not found: {}", input.display());
+    }
+
+    let content = fs::read_to_string(&input)
+        .with_context(|| format!("failed to read {}", input.display()))?;
+
+    let component_name = input
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Component");
+
+    let tmp_dir = tempfile::tempdir()?;
+    let dynlib_dir = tmp_dir.path().join("dynlib");
+    fs::create_dir_all(&dynlib_dir)?;
+
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+
+    println!(
+        "bench-reload: {iterations} iterations on {}",
+        input.display()
+    );
+    println!("  component: {component_name}");
+
+    let mut times = Vec::new();
+    let mut compile_times = Vec::new();
+    let mut load_times = Vec::new();
+    let mut render_times = Vec::new();
+
+    for i in 0..iterations {
+        let iter_start = Instant::now();
+
+        // Compile
+        let opts = uwebr_dynlib::CompileOptions {
+            root: workspace_root.clone(),
+            target_dir: dynlib_dir.clone(),
+            profile: uwebr_dynlib::CompileProfile::Debug,
+        };
+
+        let compile_start = Instant::now();
+        let result = uwebr_dynlib::compile_shared_library(&content, component_name, &opts)?;
+        let compile_ms = compile_start.elapsed();
+        compile_times.push(compile_ms);
+
+        // Load
+        let load_start = Instant::now();
+        let lib = uwebr_dynlib::LoadedLibrary::load(&result.library_path)?;
+        let load_ms = load_start.elapsed();
+        load_times.push(load_ms);
+
+        // Render
+        let render_start = Instant::now();
+        let elem = lib.render();
+        let render_ms = render_start.elapsed();
+        render_times.push(render_ms);
+
+        let total = iter_start.elapsed();
+        times.push(total);
+
+        println!(
+            "  #{i:>2}: compile={compile_ms:>8.1?}  load={load_ms:>6.2?}  render={render_ms:>6.2?}  total={total:>8.1?}  elem={}",
+            if elem.is_some() { "OK" } else { "NULL" }
+        );
+    }
+
+    let avg = times.iter().map(|d| d.as_millis()).sum::<u128>() / times.len() as u128;
+    let min = times.iter().min().unwrap();
+    let max = times.iter().max().unwrap();
+
+    let avg_compile =
+        compile_times.iter().map(|d| d.as_millis()).sum::<u128>() / compile_times.len() as u128;
+    let avg_load =
+        load_times.iter().map(|d| d.as_millis()).sum::<u128>() / load_times.len() as u128;
+    let avg_render =
+        render_times.iter().map(|d| d.as_millis()).sum::<u128>() / render_times.len() as u128;
+
+    println!();
+    println!("--- Results ---");
+    println!("  Compile:  avg={avg_compile}ms");
+    println!("  Load:     avg={avg_load}ms");
+    println!("  Render:   avg={avg_render}ms");
+    println!("  Total:    avg={avg}ms  min={min:?}  max={max:?}");
+    println!("  Target:   <500ms (total without compile)");
+    let load_render = avg_load + avg_render;
+    if load_render < 500 {
+        println!("  Status:   PASS (load+render={load_render}ms < 500ms)");
+    } else {
+        println!("  Status:   compile is bottleneck (load+render={load_render}ms)");
     }
 
     Ok(())

@@ -35,6 +35,9 @@ enum Commands {
         /// Project path
         #[arg(default_value = ".")]
         path: String,
+        /// Reload mode: hot-swap (shared lib) or restart (full rebuild)
+        #[arg(long, default_value = "hot-swap")]
+        mode: String,
     },
     /// Print performance metrics (cold start, layout, binary size)
     Metrics,
@@ -46,6 +49,15 @@ enum Commands {
         /// Output directory for .dll/.so
         #[arg(long, default_value = "target/dynlib")]
         output: String,
+    },
+    /// Benchmark hot reload: compile + load + render N times
+    BenchReload {
+        /// .uwebr file path
+        #[arg(long)]
+        input: String,
+        /// Number of iterations (default: 10)
+        #[arg(long, default_value_t = 10)]
+        iterations: u32,
     },
 }
 
@@ -62,14 +74,17 @@ fn main() -> Result<()> {
         Commands::Check { path } => {
             uwebr_cli::commands::validate_project(&path)?;
         }
-        Commands::Dev { path } => {
-            uwebr_cli::commands::dev_server(&path)?;
+        Commands::Dev { path, mode } => {
+            uwebr_cli::commands::dev_server_with_mode(&path, &mode)?;
         }
         Commands::Metrics => {
             uwebr_cli::commands::metrics_command();
         }
         Commands::Compile { input, output } => {
             uwebr_cli::commands::compile_library(&input, &output)?;
+        }
+        Commands::BenchReload { input, iterations } => {
+            uwebr_cli::commands::bench_reload(&input, iterations)?;
         }
     }
 
