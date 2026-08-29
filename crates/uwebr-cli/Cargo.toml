@@ -15,11 +15,15 @@ clap = { version = "4", features = ["derive"] }
 uwebr-js = { workspace = true }
 uwebr-html = { workspace = true }
 uwebr-css = { workspace = true }
+uwebr-core = { workspace = true }
 uwebr-render = { workspace = true }
 uwebr-dynlib = { workspace = true }
+uwebr-app = { workspace = true }
 tempfile.workspace = true
 notify = "7"
 walkdir = "2"
+pollster = "0.4"
+winit = "0.30"
 
 [dev-dependencies]
 uwebr-core = { workspace = true }

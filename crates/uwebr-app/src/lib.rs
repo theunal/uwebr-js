@@ -7,6 +7,7 @@ pub mod window;
 
 pub use app::App;
 pub use component::{Component, FnComponent};
+pub use context::GpuContext;
 pub use event::AppEvent;
 pub use pipeline::{HitTarget, RenderPipeline};
 pub use uwebr_render::stylebook::StyleBook;

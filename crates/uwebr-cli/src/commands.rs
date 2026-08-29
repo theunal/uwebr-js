@@ -6,7 +6,48 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use uwebr_app::Component;
+use uwebr_core::component::Element;
+
+/// Hot-swap capable component that wraps a dynamically loaded shared library.
+///
+/// Each render call invokes the shared library's `render()` function,
+/// returning the latest Element tree. On hot-swap, the inner library is
+/// replaced atomically.
+struct HotSwapComponent {
+    library: Arc<Mutex<uwebr_dynlib::LoadedLibrary>>,
+}
+
+impl HotSwapComponent {
+    fn new(library: uwebr_dynlib::LoadedLibrary) -> Self {
+        Self {
+            library: Arc::new(Mutex::new(library)),
+        }
+    }
+
+    /// Replace the inner library (hot-swap).
+    fn swap(&self, new_lib: uwebr_dynlib::LoadedLibrary) {
+        let mut lib = self.library.lock().unwrap();
+        *lib = new_lib;
+    }
+
+    /// Get a clone of the Arc for the file watcher thread.
+    fn shared(&self) -> Arc<Mutex<uwebr_dynlib::LoadedLibrary>> {
+        self.library.clone()
+    }
+}
+
+impl Component for HotSwapComponent {
+    fn render(&self) -> Element {
+        let lib = self.library.lock().unwrap();
+        match lib.render() {
+            Some(elem) => *elem,
+            None => Element::text("render failed"),
+        }
+    }
+}
 
 /// The `.uwebr` template written by `uwebr init`.
 const SCAFFOLD_TEMPLATE: &str = r#"<div class="app">
@@ -884,11 +925,10 @@ pub fn dev_server_with_mode(path: &str, mode: &str) -> Result<()> {
     }
 }
 
-/// Hot-swap dev server: compile shared library + in-process swap on file change.
+/// Hot-swap dev server: compile shared library + window rendering + file watcher.
 fn dev_server_hot_swap(path: &str) -> Result<()> {
     let root = PathBuf::from(path);
 
-    // Determine component name from the first .uwebr file
     let uwebr_files = find_uwebr_files(&root)?;
     if uwebr_files.is_empty() {
         anyhow::bail!("No .uwebr files found in {path}");
@@ -903,14 +943,13 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
     let dynlib_dir = root.join("target/dynlib");
     fs::create_dir_all(&dynlib_dir)?;
 
-    // Initial compile to shared library
-    println!("uwebr dev (hot-swap mode)");
-    println!("  Component: {component_name}");
-
     let crate_level_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or(Path::new("."))
         .to_path_buf();
+
+    println!("uwebr dev (hot-swap mode)");
+    println!("  Component: {component_name}");
 
     let start = Instant::now();
     let content = fs::read_to_string(first)?;
@@ -925,28 +964,226 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
     let result = uwebr_dynlib::compile_shared_library(&content, &component_name, &compile_opts)?;
     println!("  compiled in {}ms", result.compile_time_ms);
 
-    // Load and test render
-    println!("  Loading library...");
-    let load_start = Instant::now();
     let lib = uwebr_dynlib::LoadedLibrary::load(&result.library_path)?;
-    println!("  loaded in {:?}", load_start.elapsed());
+    println!("  loaded in {:?}", start.elapsed());
 
-    if let Some(css) = lib.css() {
-        println!("  CSS: {} bytes", css.len());
-    }
-
-    let elem = lib.render();
-    match elem {
-        Some(_e) => println!("  render() OK"),
-        None => println!("  render() returned None"),
-    }
-    drop(lib);
+    let css = lib.css().map(|s| s.to_string());
+    let component = HotSwapComponent::new(lib);
+    let lib_ref = component.shared();
 
     println!("  Total init: {:?}", start.elapsed());
 
-    // Set up file watcher
+    // File watcher → compile → swap channel
+    let (reload_tx, reload_rx) = mpsc::channel::<()>();
+    let root_w = root.clone();
+    let name_w = component_name.clone();
+    let root_w2 = root.clone();
+    let crate_w = crate_level_root.clone();
+    let dynlib_w = dynlib_dir.clone();
+
+    std::thread::Builder::new()
+        .name("file-watcher".into())
+        .spawn(move || {
+            run_file_watcher(&root_w, &name_w, &crate_w, &dynlib_w, &lib_ref, &reload_tx);
+        })?;
+
+    // Build stylebook from CSS
+    let stylebook = css
+        .as_ref()
+        .and_then(|c| uwebr_render::stylebook::StyleBook::parse(c).ok());
+
+    println!("  Opening window...");
+    println!("  Watching for changes in src/...");
+
+    // ── Standalone winit event loop ──
+    let event_loop = winit::event_loop::EventLoop::new()?;
+    let mut state = HotSwapState {
+        component,
+        pipeline: {
+            let mut p = uwebr_app::RenderPipeline::new();
+            if let Some(sb) = stylebook {
+                p = p.with_stylebook(sb);
+            }
+            if let Some(ref css_str) = css {
+                p = p.with_css_source(css_str);
+            }
+            p
+        },
+        ctx: None,
+        reload_rx,
+        crate_level_root,
+        dynlib_dir,
+        component_name,
+        root: root_w2,
+    };
+
+    event_loop.run_app(&mut state)?;
+    Ok(())
+}
+
+/// State for the hot-swap event loop.
+struct HotSwapState {
+    component: HotSwapComponent,
+    pipeline: uwebr_app::RenderPipeline,
+    ctx: Option<uwebr_app::context::GpuContext>,
+    reload_rx: mpsc::Receiver<()>,
+    crate_level_root: PathBuf,
+    dynlib_dir: PathBuf,
+    component_name: String,
+    root: PathBuf,
+}
+
+impl winit::application::ApplicationHandler for HotSwapState {
+    fn new_events(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _cause: winit::event::StartCause,
+    ) {
+        // Non-blocking poll: check if file watcher sent a reload signal
+        while self.reload_rx.try_recv().is_ok() {
+            self.do_hot_swap();
+        }
+    }
+
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        if self.ctx.is_some() {
+            return;
+        }
+        let attrs = winit::window::WindowAttributes::default()
+            .with_title(format!("uwebr — {}", self.component_name))
+            .with_inner_size(winit::dpi::LogicalSize::new(800u32, 600u32));
+
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => std::sync::Arc::new(w),
+            Err(e) => {
+                eprintln!("Failed to create window: {e}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        match pollster::block_on(uwebr_app::context::GpuContext::new(window)) {
+            Ok(ctx) => self.ctx = Some(ctx),
+            Err(e) => {
+                eprintln!("Failed to initialize GPU: {e}");
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        _id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        match event {
+            winit::event::WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            winit::event::WindowEvent::Resized(size) => {
+                if let Some(ref mut ctx) = self.ctx {
+                    ctx.resize(size.width, size.height);
+                }
+            }
+            winit::event::WindowEvent::RedrawRequested => {
+                self.render_frame();
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        // Check for reloads and request redraw
+        while self.reload_rx.try_recv().is_ok() {
+            self.do_hot_swap();
+        }
+        if let Some(ref ctx) = self.ctx {
+            ctx.window().request_redraw();
+        }
+    }
+}
+
+impl HotSwapState {
+    fn render_frame(&mut self) {
+        let Some(ref mut ctx) = self.ctx else {
+            return;
+        };
+        let elem = self.component.render();
+        let (w, h) = ctx.size();
+        let scene = self.pipeline.render(&elem, w, h);
+        if let Err(e) = ctx.render_scene(&scene) {
+            eprintln!("Render error: {e}");
+        }
+    }
+
+    fn do_hot_swap(&mut self) {
+        let uwebr_path = self.root.join(format!("{}.uwebr", self.component_name));
+        if !uwebr_path.exists() {
+            return;
+        }
+        let content = match fs::read_to_string(&uwebr_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("  read failed: {e}");
+                return;
+            }
+        };
+
+        let opts = uwebr_dynlib::CompileOptions {
+            root: self.crate_level_root.clone(),
+            target_dir: self.dynlib_dir.clone(),
+            profile: uwebr_dynlib::CompileProfile::Debug,
+            project_dir: Some(self.root.join("target/dynlib-project")),
+        };
+
+        let reload_start = Instant::now();
+        match uwebr_dynlib::compile_shared_library(&content, &self.component_name, &opts) {
+            Ok(result) => {
+                match uwebr_dynlib::LoadedLibrary::load(&result.library_path) {
+                    Ok(new_lib) => {
+                        // Update CSS
+                        if let Some(new_css) = new_lib.css() {
+                            let css_str = new_css.to_string();
+                            let old = std::mem::take(&mut self.pipeline);
+                            if let Ok(sb) = uwebr_render::stylebook::StyleBook::parse(&css_str) {
+                                self.pipeline = old.with_stylebook(sb);
+                            } else {
+                                self.pipeline = old;
+                            }
+                            let old = std::mem::take(&mut self.pipeline);
+                            self.pipeline = old.with_css_source(&css_str);
+                        }
+                        // Swap library
+                        self.component.swap(new_lib);
+                        println!("  hot-reloaded in {:?}", reload_start.elapsed());
+                    }
+                    Err(e) => {
+                        eprintln!("  load failed: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("  compile failed: {e} — keeping current version");
+            }
+        }
+    }
+}
+
+/// File watcher thread: monitors .uwebr/.css files and signals reload.
+///
+/// On file change, recompiles the shared library, loads it, and swaps
+/// the library inside the `HotSwapComponent` via `Arc<Mutex<LoadedLibrary>>`.
+fn run_file_watcher(
+    root: &Path,
+    component_name: &str,
+    crate_level_root: &Path,
+    dynlib_dir: &Path,
+    lib_ref: &Arc<Mutex<uwebr_dynlib::LoadedLibrary>>,
+    reload_tx: &mpsc::Sender<()>,
+) {
     let (tx, rx) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| {
+    let mut watcher = match notify::recommended_watcher(move |res: Result<Event, _>| {
         if let Ok(event) = res {
             if matches!(
                 event.kind,
@@ -955,12 +1192,18 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
                 let _ = tx.send(event);
             }
         }
-    })?;
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to create file watcher: {e}");
+            return;
+        }
+    };
 
-    watcher.watch(root.join("src").as_path(), RecursiveMode::Recursive)?;
-
-    println!("Watching for changes in src/...");
-    println!("Press Ctrl+C to stop.");
+    if let Err(e) = watcher.watch(root.join("src").as_path(), RecursiveMode::Recursive) {
+        eprintln!("Failed to watch src/: {e}");
+        return;
+    }
 
     loop {
         match rx.recv_timeout(Duration::from_millis(500)) {
@@ -990,79 +1233,61 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
                     .cloned()
                     .collect();
 
-                let paths_display: Vec<_> = relevant
-                    .iter()
-                    .filter_map(|p| p.strip_prefix(&root).ok())
-                    .map(|p| p.display().to_string())
-                    .collect();
-
-                println!(
-                    "[reload] {} file(s): {}",
-                    relevant.len(),
-                    paths_display.join(", ")
-                );
-
-                let reload_start = Instant::now();
-
                 if change_kind == ChangeKind::CssOnly {
-                    println!("  CSS-only change — skipping shared library recompile");
+                    // CSS-only: just signal reload (no recompile needed)
+                    let _ = reload_tx.send(());
                     continue;
                 }
 
-                // Re-read and recompile
-                let uwebr_changed: Vec<_> = relevant
-                    .iter()
-                    .filter(|p| p.extension().is_some_and(|ext| ext == "uwebr"))
-                    .cloned()
-                    .collect();
+                // Recompile
+                let uwebr_path = root.join(format!("{component_name}.uwebr"));
+                if !uwebr_path.exists() {
+                    continue;
+                }
+                let content = match fs::read_to_string(&uwebr_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("  read failed: {e}");
+                        continue;
+                    }
+                };
 
-                for file in &uwebr_changed {
-                    let content = match fs::read_to_string(file) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            eprintln!("  failed to read {}: {e}", file.display());
-                            continue;
-                        }
-                    };
+                let opts = uwebr_dynlib::CompileOptions {
+                    root: crate_level_root.to_path_buf(),
+                    target_dir: dynlib_dir.to_path_buf(),
+                    profile: uwebr_dynlib::CompileProfile::Debug,
+                    project_dir: Some(root.join("target/dynlib-project")),
+                };
 
-                    let opts = uwebr_dynlib::CompileOptions {
-                        root: crate_level_root.clone(),
-                        target_dir: dynlib_dir.clone(),
-                        profile: uwebr_dynlib::CompileProfile::Debug,
-                        project_dir: Some(root.join("target/dynlib-project")),
-                    };
-
-                    match uwebr_dynlib::compile_shared_library(&content, &component_name, &opts) {
-                        Ok(result) => {
-                            // Load and test render
-                            match uwebr_dynlib::LoadedLibrary::load(&result.library_path) {
-                                Ok(lib) => {
-                                    if let Some(_elem) = lib.render() {
-                                        println!("  hot-reloaded in {:?}", reload_start.elapsed());
-                                    } else {
-                                        eprintln!("  render() returned None after swap");
-                                    }
+                match uwebr_dynlib::compile_shared_library(&content, component_name, &opts) {
+                    Ok(result) => {
+                        match uwebr_dynlib::LoadedLibrary::load(&result.library_path) {
+                            Ok(new_lib) => {
+                                // Swap library in the component
+                                {
+                                    let mut lib = lib_ref.lock().unwrap();
+                                    *lib = new_lib;
                                 }
-                                Err(e) => {
-                                    eprintln!("  failed to load new library: {e}");
-                                }
+                                // Signal main thread to update CSS + redraw
+                                let _ = reload_tx.send(());
+                                println!("  [watcher] hot-reloaded");
+                            }
+                            Err(e) => {
+                                eprintln!("  load failed: {e}");
                             }
                         }
-                        Err(e) => {
-                            eprintln!("  compile failed: {e} — keeping current version");
-                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  compile failed: {e} — keeping current version");
                     }
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                println!("File watcher disconnected.");
                 break;
             }
         }
     }
-
-    Ok(())
 }
 
 /// Benchmark hot reload: compile + load + render N times, report timings.

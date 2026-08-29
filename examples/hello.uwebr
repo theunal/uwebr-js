@@ -1,0 +1,10 @@
+<div class="app">
+  <h1>Hello from uwebr!</h1>
+  <p>Hot-swap: edit this file and save.</p>
+</div>
+
+<style>
+.app { background: #1a1a2e; color: #e0e0e0; padding: 2rem; }
+h1 { color: #00d4ff; font-size: 2rem; }
+p { color: #888; }
+</style>
