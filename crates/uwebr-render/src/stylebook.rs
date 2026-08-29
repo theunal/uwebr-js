@@ -1,6 +1,6 @@
 use taffy::Style;
 use uwebr_core::component::{Element, NodeType, PropValue};
-use uwebr_css::ast::{AttributeOp, CssSelector};
+use uwebr_css::ast::{AttributeOp, CssSelector, NthKind};
 use uwebr_css::codegen::{
     convert_to_style_entries, convert_to_style_entries_vp, PaintProps, StyleEntry, StyleMask,
 };
@@ -136,11 +136,7 @@ impl StyleBook {
 
         // Stable sort by (important, specificity, source order): equal keys keep
         // declaration order, matching the CSS cascade.
-        matches.sort_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then(a.1.cmp(&b.1))
-                .then(a.2.cmp(&b.2))
-        });
+        matches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
 
         for (_, _, _, entry) in matches {
             self.absorb(&mut out, entry);
@@ -225,6 +221,21 @@ fn selector_matches(
         CssSelector::PseudoClass(inner, pseudo) => {
             selector_matches(inner, element, tag, parent_chain, node_id)
                 && pseudo_class_matches(pseudo, element, parent_chain, node_id)
+        }
+        CssSelector::Nth {
+            selector: inner,
+            kind,
+            argument,
+        } => {
+            selector_matches(inner, element, tag, parent_chain, node_id)
+                && nth_matches(kind, argument, element, parent_chain)
+        }
+        CssSelector::Not {
+            selector: outer,
+            inner,
+        } => {
+            selector_matches(outer, element, tag, parent_chain, node_id)
+                && !selector_matches(inner, element, tag, parent_chain, node_id)
         }
         CssSelector::Attribute {
             selector: inner,
@@ -329,6 +340,13 @@ fn selector_specificity(sel: &CssSelector) -> u32 {
                 *classes += 1;
                 count(selector, ids, classes, tags);
             }
+            CssSelector::Nth { selector, .. } | CssSelector::Not { selector, .. } => {
+                *classes += 1;
+                count(selector, ids, classes, tags);
+                if let CssSelector::Not { inner, .. } = sel {
+                    count(inner, ids, classes, tags);
+                }
+            }
             CssSelector::Descendant(sels) | CssSelector::Child(sels) => {
                 for s in sels {
                     count(s, ids, classes, tags);
@@ -355,31 +373,23 @@ fn selector_specificity(sel: &CssSelector) -> u32 {
 
 /// Match a pseudo-class name against an element.
 ///
-/// Stateless structural pseudo-classes that need a parent's child list
-/// (`:first-child`, …) are simplified to always match. Stateful ones
-/// (`:hover`, `:focus`) consult the runtime [`ElementStateStore`] via `node_id`.
-/// `:disabled` / `:enabled` are checked against the element's props.
+/// Structural pseudo-classes (`:first-child`, `:nth-child`, etc.) are now
+/// handled by `nth_matches` via the `CssSelector::Nth` AST variant.
+/// This function only handles stateful pseudo-classes (`:hover`, `:focus`)
+/// and attribute-based ones (`:disabled`, `:checked`).
 fn pseudo_class_matches(
     pseudo: &str,
     element: &Element,
-    parent_chain: &[&Element],
+    _parent_chain: &[&Element],
     node_id: usize,
 ) -> bool {
     match pseudo {
-        // Structural — real matching needs the parent's child list (future phase).
-        "first-child" | "last-child" | "only-child" | "nth-child" | "nth-of-type" => true,
-        // Stateful — resolved against runtime interaction state.
         "hover" => uwebr_core::state::is_hovered(node_id),
         "focus" | "focus-visible" => uwebr_core::state::is_focused(node_id),
-        // A tabbed-into ancestor: any element focused counts (approximation —
-        // we lack per-subtree focus tracking, so a focused element anywhere
-        // satisfies :focus-within only when there is an ancestor at all).
         "focus-within" => {
             uwebr_core::state::is_focused(node_id)
-                || (!parent_chain.is_empty() && uwebr_core::state::any_focused())
+                || (!_parent_chain.is_empty() && uwebr_core::state::any_focused())
         }
-        // `:active` = mouse-down instant; `:visited` = browsing history. Neither
-        // is tracked in a desktop render loop.
         "active" | "visited" => false,
         "disabled" => is_disabled(element),
         "enabled" => !is_disabled(element),
@@ -388,6 +398,146 @@ fn pseudo_class_matches(
             .iter()
             .any(|(k, v)| k == "checked" && matches!(v, PropValue::Bool(true))),
         _ => false,
+    }
+}
+
+/// Match a structural `:nth-*` pseudo-class against an element.
+fn nth_matches(
+    kind: &NthKind,
+    argument: &Option<String>,
+    element: &Element,
+    parent_chain: &[&Element],
+) -> bool {
+    let parent = match parent_chain.first() {
+        Some(p) => p,
+        None => return kind == &NthKind::Empty,
+    };
+    let tag = match &element.node_type {
+        NodeType::Element(t) => t.as_str(),
+        _ => return false,
+    };
+    match kind {
+        NthKind::Empty => element.children.is_empty(),
+        NthKind::FirstChild => {
+            if argument.is_some() {
+                // :nth-child(An+B) — compute position among all children.
+                let index = parent
+                    .children
+                    .iter()
+                    .take_while(|c| !std::ptr::eq(*c as *const _, element as *const _))
+                    .count()
+                    + 1;
+                matches_an_plus_b(argument, index)
+            } else {
+                // :first-child — simply check if first.
+                parent
+                    .children
+                    .first()
+                    .is_some_and(|f| std::ptr::eq(f as *const _, element as *const _))
+            }
+        }
+        NthKind::LastChild => {
+            if argument.is_some() {
+                // :nth-last-child(An+B) — compute reverse position.
+                let index = parent
+                    .children
+                    .iter()
+                    .rev()
+                    .take_while(|c| !std::ptr::eq(*c as *const _, element as *const _))
+                    .count()
+                    + 1;
+                matches_an_plus_b(argument, index)
+            } else {
+                // :last-child — simply check if last.
+                parent
+                    .children
+                    .last()
+                    .is_some_and(|l| std::ptr::eq(l as *const _, element as *const _))
+            }
+        }
+        NthKind::FirstOfType => {
+            if argument.is_some() {
+                // :nth-first-of-type(An+B) — compute position among same-type.
+                let index = parent
+                    .children
+                    .iter()
+                    .filter(|c| matches!(&c.node_type, NodeType::Element(t) if t == tag))
+                    .take_while(|c| !std::ptr::eq(*c as *const _, element as *const _))
+                    .count()
+                    + 1;
+                matches_an_plus_b(argument, index)
+            } else {
+                // :first-of-type — simply check if first of same type.
+                parent
+                    .children
+                    .iter()
+                    .find(|c| matches!(&c.node_type, NodeType::Element(t) if t == tag))
+                    .is_some_and(|f| std::ptr::eq(f as *const _, element as *const _))
+            }
+        }
+        NthKind::LastOfType => {
+            if argument.is_some() {
+                // :nth-last-of-type(An+B) — compute reverse position among same-type.
+                let index = parent
+                    .children
+                    .iter()
+                    .rev()
+                    .filter(|c| matches!(&c.node_type, NodeType::Element(t) if t == tag))
+                    .take_while(|c| !std::ptr::eq(*c as *const _, element as *const _))
+                    .count()
+                    + 1;
+                matches_an_plus_b(argument, index)
+            } else {
+                parent
+                    .children
+                    .iter()
+                    .rfind(|c| matches!(&c.node_type, NodeType::Element(t) if t == tag))
+                    .is_some_and(|l| std::ptr::eq(l as *const _, element as *const _))
+            }
+        }
+        NthKind::OfType => {
+            let arg = match argument {
+                Some(a) => a,
+                None => return false,
+            };
+            let index = parent
+                .children
+                .iter()
+                .filter(|c| matches!(&c.node_type, NodeType::Element(t) if t == tag))
+                .take_while(|c| !std::ptr::eq(*c as *const _, element as *const _))
+                .count()
+                + 1;
+            match uwebr_css::parser::parse_nth(arg) {
+                Some((a, b)) => {
+                    if a == 0 {
+                        index as i32 == b
+                    } else {
+                        let diff = index as i32 - b;
+                        diff % a == 0 && diff / a >= 0
+                    }
+                }
+                None => true,
+            }
+        }
+    }
+}
+
+/// Check if `index` matches the An+B formula from `argument`.
+fn matches_an_plus_b(argument: &Option<String>, index: usize) -> bool {
+    let arg = match argument {
+        Some(a) => a,
+        None => return true,
+    };
+    match uwebr_css::parser::parse_nth(arg) {
+        Some((a, b)) => {
+            if a == 0 {
+                index as i32 == b
+            } else {
+                let diff = index as i32 - b;
+                diff % a == 0 && diff / a >= 0
+            }
+        }
+        None => true,
     }
 }
 
@@ -889,11 +1039,17 @@ mod tests {
         );
 
         assert!(
-            sb.match_full(&text_input, &[], 0).paint.border_width.is_some(),
+            sb.match_full(&text_input, &[], 0)
+                .paint
+                .border_width
+                .is_some(),
             "type=text must match"
         );
         assert!(
-            sb.match_full(&checkbox, &[], 0).paint.border_width.is_none(),
+            sb.match_full(&checkbox, &[], 0)
+                .paint
+                .border_width
+                .is_none(),
             "type=checkbox must not match"
         );
     }
@@ -1076,8 +1232,7 @@ mod tests {
     #[test]
     fn test_important_wins_over_higher_specificity() {
         // `.a` is important, `#id` has higher specificity but is normal.
-        let sb =
-            StyleBook::parse(".a { color: red !important; } #id { color: blue; }").unwrap();
+        let sb = StyleBook::parse(".a { color: red !important; } #id { color: blue; }").unwrap();
         let el = make_element(
             "div",
             vec![
@@ -1092,15 +1247,367 @@ mod tests {
     #[test]
     fn test_important_equal_specificity_last_wins() {
         // Two important rules, same specificity → later source order wins.
-        let sb = StyleBook::parse(
-            ".a { color: red !important; } .b { color: green !important; }",
-        )
-        .unwrap();
+        let sb = StyleBook::parse(".a { color: red !important; } .b { color: green !important; }")
+            .unwrap();
         let el = make_element(
             "div",
             vec![("class".into(), PropValue::String("a b".into()))],
         );
         let c = sb.match_full(&el, &[], 0).paint.color.unwrap();
         assert_eq!((c.r, c.g, c.b), (0, 128, 0), "later !important wins");
+    }
+
+    // ── Structural pseudo-classes (FAZ 15) ──────────────────────
+
+    fn make_el(tag: &str, props: Vec<(String, PropValue)>, children: Vec<Element>) -> Element {
+        Element {
+            node_type: NodeType::Element(tag.to_string()),
+            props,
+            children,
+        }
+    }
+
+    #[test]
+    fn test_first_child_matches() {
+        let sb = StyleBook::parse("li:first-child { color: red; }").unwrap();
+        let first = make_el("li", vec![], vec![]);
+        let second = make_el("li", vec![], vec![]);
+        let parent = make_el("ul", vec![], vec![first, second]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        // First child matches.
+        assert!(
+            sb.match_full(children[0], &[&parent], 0)
+                .paint
+                .color
+                .is_some(),
+            "first-child must match first element"
+        );
+        // Second child does not.
+        assert!(
+            sb.match_full(children[1], &[&parent], 1)
+                .paint
+                .color
+                .is_none(),
+            "first-child must not match second element"
+        );
+    }
+
+    #[test]
+    fn test_last_child_matches() {
+        let sb = StyleBook::parse("li:last-child { color: blue; }").unwrap();
+        let first = make_el("li", vec![], vec![]);
+        let last = make_el("li", vec![], vec![]);
+        let parent = make_el("ul", vec![], vec![first, last]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(
+            sb.match_full(children[0], &[&parent], 0)
+                .paint
+                .color
+                .is_none(),
+            "last-child must not match first element"
+        );
+        assert!(
+            sb.match_full(children[1], &[&parent], 1)
+                .paint
+                .color
+                .is_some(),
+            "last-child must match last element"
+        );
+    }
+
+    #[test]
+    fn test_first_of_type_matches() {
+        let sb = StyleBook::parse("span:first-of-type { color: green; }").unwrap();
+        let div_child = make_el("div", vec![], vec![]);
+        let span1 = make_el("span", vec![], vec![]);
+        let span2 = make_el("span", vec![], vec![]);
+        let parent = make_el("div", vec![], vec![div_child, span1, span2]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        // div is not a span → no match.
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_none());
+        // First span matches.
+        assert!(
+            sb.match_full(children[1], &[&parent], 1)
+                .paint
+                .color
+                .is_some(),
+            "first-of-type must match first span"
+        );
+        // Second span does not.
+        assert!(
+            sb.match_full(children[2], &[&parent], 2)
+                .paint
+                .color
+                .is_none(),
+            "first-of-type must not match second span"
+        );
+    }
+
+    #[test]
+    fn test_last_of_type_matches() {
+        let sb = StyleBook::parse("span:last-of-type { color: orange; }").unwrap();
+        let span1 = make_el("span", vec![], vec![]);
+        let span2 = make_el("span", vec![], vec![]);
+        let div_child = make_el("div", vec![], vec![]);
+        let parent = make_el("div", vec![], vec![span1, span2, div_child]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_none());
+        assert!(
+            sb.match_full(children[1], &[&parent], 1)
+                .paint
+                .color
+                .is_some(),
+            "last-of-type must match second span"
+        );
+        assert!(sb
+            .match_full(children[2], &[&parent], 2)
+            .paint
+            .color
+            .is_none());
+    }
+
+    #[test]
+    fn test_nth_child_formula() {
+        // li:nth-child(2n) — matches even-positioned children (1-indexed: 2, 4, 6…)
+        let sb = StyleBook::parse("li:nth-child(2n) { color: red; }").unwrap();
+        let c0 = make_el("li", vec![], vec![]);
+        let c1 = make_el("li", vec![], vec![]);
+        let c2 = make_el("li", vec![], vec![]);
+        let c3 = make_el("li", vec![], vec![]);
+        let parent = make_el("ul", vec![], vec![c0, c1, c2, c3]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        // Position 1 (odd) → no match.
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_none());
+        // Position 2 (even) → match.
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_some());
+        // Position 3 (odd) → no match.
+        assert!(sb
+            .match_full(children[2], &[&parent], 2)
+            .paint
+            .color
+            .is_none());
+        // Position 4 (even) → match.
+        assert!(sb
+            .match_full(children[3], &[&parent], 3)
+            .paint
+            .color
+            .is_some());
+    }
+
+    #[test]
+    fn test_nth_child_offset() {
+        // li:nth-child(2n+1) — matches odd-positioned children (1, 3, 5…)
+        let sb = StyleBook::parse("li:nth-child(2n+1) { color: red; }").unwrap();
+        let c0 = make_el("li", vec![], vec![]);
+        let c1 = make_el("li", vec![], vec![]);
+        let c2 = make_el("li", vec![], vec![]);
+        let parent = make_el("ul", vec![], vec![c0, c1, c2]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_some()); // pos 1
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_none()); // pos 2
+        assert!(sb
+            .match_full(children[2], &[&parent], 2)
+            .paint
+            .color
+            .is_some()); // pos 3
+    }
+
+    #[test]
+    fn test_nth_of_type_formula() {
+        // span:nth-of-type(3n) — every 3rd span (positions 3, 6, 9…)
+        let sb = StyleBook::parse("span:nth-of-type(3n) { color: red; }").unwrap();
+        let s1 = make_el("span", vec![], vec![]);
+        let s2 = make_el("span", vec![], vec![]);
+        let s3 = make_el("span", vec![], vec![]);
+        let parent = make_el("div", vec![], vec![s1, s2, s3]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_none()); // 1st span
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_none()); // 2nd span
+        assert!(sb
+            .match_full(children[2], &[&parent], 2)
+            .paint
+            .color
+            .is_some()); // 3rd span
+    }
+
+    #[test]
+    fn test_empty_matches_leaf() {
+        let sb = StyleBook::parse(":empty { color: red; }").unwrap();
+        let empty = make_el("div", vec![], vec![]);
+        let nonempty = make_el("div", vec![], vec![make_el("span", vec![], vec![])]);
+        let parent = make_el("div", vec![], vec![empty, nonempty]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(
+            sb.match_full(children[0], &[&parent], 0)
+                .paint
+                .color
+                .is_some(),
+            ":empty must match childless element"
+        );
+        assert!(
+            sb.match_full(children[1], &[&parent], 1)
+                .paint
+                .color
+                .is_none(),
+            ":empty must not match element with children"
+        );
+    }
+
+    #[test]
+    fn test_not_excludes_match() {
+        // li:not(.special) should match li without class=special.
+        let sb = StyleBook::parse("li:not(.special) { color: red; }").unwrap();
+        let normal = make_el("li", vec![], vec![]);
+        let special = make_el(
+            "li",
+            vec![("class".into(), PropValue::String("special".into()))],
+            vec![],
+        );
+        let parent = make_el("ul", vec![], vec![normal, special]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(
+            sb.match_full(children[0], &[&parent], 0)
+                .paint
+                .color
+                .is_some(),
+            ":not(.special) must match plain li"
+        );
+        assert!(
+            sb.match_full(children[1], &[&parent], 1)
+                .paint
+                .color
+                .is_none(),
+            ":not(.special) must not match .special li"
+        );
+    }
+
+    #[test]
+    fn test_not_with_tag_inner() {
+        // div:not(p) should match div but not p.
+        let sb = StyleBook::parse("div:not(p) { color: red; }").unwrap();
+        let div = make_el("div", vec![], vec![]);
+        let p = make_el("p", vec![], vec![]);
+        let parent = make_el("div", vec![], vec![div, p]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_some());
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_none());
+    }
+
+    #[test]
+    fn test_first_child_no_parent_does_not_match() {
+        let sb = StyleBook::parse("li:first-child { color: red; }").unwrap();
+        let el = make_el("li", vec![], vec![]);
+        // Empty parent_chain → no parent → cannot determine first-child.
+        assert!(
+            sb.match_full(&el, &[], 0).paint.color.is_none(),
+            "first-child with no parent must not match"
+        );
+    }
+
+    #[test]
+    fn test_nth_child_with_non_element_siblings() {
+        // Mixed element and text children — nth-child counts all children.
+        let sb = StyleBook::parse("li:nth-child(2) { color: red; }").unwrap();
+        let text_child = Element {
+            node_type: NodeType::Text("text".into()),
+            props: vec![],
+            children: vec![],
+        };
+        let li = make_el("li", vec![], vec![]);
+        let parent = make_el("ul", vec![], vec![text_child, li]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        // li is at position 2 among all children → match.
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_some());
+    }
+
+    #[test]
+    fn test_first_of_type_ignores_non_type_siblings() {
+        // first-of-type counts only siblings of the same tag.
+        let sb = StyleBook::parse("span:first-of-type { color: red; }").unwrap();
+        let div1 = make_el("div", vec![], vec![]);
+        let div2 = make_el("div", vec![], vec![]);
+        let span = make_el("span", vec![], vec![]);
+        let parent = make_el("div", vec![], vec![div1, div2, span]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        // span is the first span (divs are ignored) → match.
+        assert!(
+            sb.match_full(children[2], &[&parent], 2)
+                .paint
+                .color
+                .is_some(),
+            "first-of-type must be first among same-type siblings"
+        );
+    }
+
+    #[test]
+    fn test_specificity_of_nth() {
+        let rules = uwebr_css::parser::parse_css("li:nth-child(2n) { color: red; }").unwrap();
+        let spec = super::selector_specificity(&rules[0].selector);
+        // class=1 (nth pseudo), tag=1 → 0*10000 + 1*100 + 1 = 101
+        assert_eq!(spec, 101, "nth-child specificity should be (0,1,1)");
+    }
+
+    #[test]
+    fn test_specificity_of_not() {
+        let rules = uwebr_css::parser::parse_css("div:not(.foo) { color: red; }").unwrap();
+        let spec = super::selector_specificity(&rules[0].selector);
+        // class=1 (not) + class=1 (.foo) + tag=1 (div) = (0,2,1) → 0*10000 + 2*100 + 1 = 201
+        assert_eq!(spec, 201, "not(.foo) specificity should be (0,2,1)");
     }
 }

@@ -383,7 +383,7 @@ Hot reload ölçümü: dosya kaydından yeni sürecin ayağa kalkmasına kadar 6
 | Tıklama → state → yeniden render | `cargo test -p uwebr-app --test interaction_tests` (8 test) |
 | Clippy temiz | `cargo clippy --workspace` → 0 uyarı (FAZ 12) |
 | Performans metrikleri | `uwebr metrics` komutu + criterion benchmark (FAZ 12) |
-| Test sayısı | `cargo test --workspace` → **501 test**, 0 başarısız (FAZ 12)
+| Test sayısı | `cargo test --workspace` → **561 test**, 0 başarısız (FAZ 15)
 
 ### Tanılama örnekleri
 
@@ -400,16 +400,16 @@ cargo run -p uwebr-cli --example scaffold_output   # scaffold'ın ürettiği Rus
 
 - **Hot reload ~7s** — `cargo build` süresi baskın; in-process reload (dosya watching + dynamic library hot-swap) ile <500ms hedefi mümkün olur.
 - **Bellek ölçümü** — platform bağımsız gerçek bellek ölçümü henüz yok (Windows `GetProcessMemoryInfo` / Linux `/proc/self/statm` desteği FAZ 13'te planlanıyor).
-- **Yapısal pseudo-class'lar** (`:first-child`, `:last-child`, `:nth-child`) hâlâ basitleştirilmiş — her zaman eşleşiyor (parent'ın çocuk listesi gerekiyor).
 - **`:active` / `:visited`** desktop render döngüsünde izlenmiyor (mousedown anı / tarama geçmişi yok).
 
-### Düzeltilen sınırlar (FAZ 9-14)
+### Düzeltilen sınırlar (FAZ 9-15)
 
 Aşağıdaki maddeler FAZ 9-14 arasında düzeltilmiştir:
 
 - ~~Pseudo-class / attribute selector'lar eşleşmede yok sayılıyor~~ → FAZ 13: `[disabled]`, `:disabled`, attribute op'ları eşleşiyor; FAZ 14: `:hover`/`:focus` runtime state ile eşleşiyor.
 - ~~Descendant/child combinator'lar sadece son selector'a bakıyor~~ → FAZ 14: `build_node`/`collect_recursive` gerçek parent chain'i `match_full`'a geçiriyor; `.parent .child` ve `div > .btn` doğru eşleşiyor.
 - ~~`!important` cascade'de yok sayılıyor~~ → FAZ 14: `StyleEntry.important` + `(important, specificity, source order)` sıralaması; `!important` düşük specificity'yi yeniyor.
+- ~~Yapısal pseudo-class'lar basitleştirilmiş~~ → FAZ 15: `:first-child`, `:last-child`, `:nth-child(An+B)`, `:nth-of-type(An+B)`, `:empty`, `:not()` doğru eşleşiyor; parent chain ile child listesi kullanılıyor.
 - ~~Component props callee'ye geçirilmiyor~~ → FAZ 9: props forwarding eklendi.
 - ~~`{@html expr}` sahneye çıkmıyor~~ → FAZ 11: `html_parse.rs` ile runtime HTML parsing.
 - ~~`RenderStyle::overflow_hidden` CSS'ten doldurulmuyor~~ → FAZ 10: `PositionedNode.overflow_hidden` + `paint_to_render_style` güncellendi.
@@ -436,8 +436,9 @@ Aşağıdaki maddeler FAZ 9-14 arasında düzeltilmiştir:
 | `faz10.plan.md` | FAZ 10: overflow:hidden, gradient, vw/vh düzeltmeleri |
 | `faz11.plan.md` | FAZ 11: image desteği, text-overflow ellipsis, {@html} runtime parser |
 | `faz12.plan.md` | FAZ 12: clippy temizliği, benchmark harness, metrics, e2e testler |
+| `faz15.plan.md` | FAZ 15: yapısal pseudo-class eşleşmesi (:first-child, :nth-child, :not, :empty) |
 | `crates/uwebr-js/GAPS_PLAN.md` | uwebr-js durumu + script state lowering ayrıntısı |
 
 ---
 
-*Son güncelleme: 29 Ağustos 2026 (FAZ 12)*
+*Son güncelleme: 29 Ağustos 2026 (FAZ 15)*

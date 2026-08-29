@@ -302,6 +302,29 @@ fn selector_key(sel: &CssSelector) -> String {
         CssSelector::PseudoClass(inner, pseudo) => {
             format!("{}:{}", selector_key(inner), pseudo)
         }
+        CssSelector::Nth {
+            selector,
+            kind,
+            argument,
+        } => {
+            let base = selector_key(selector);
+            match kind {
+                NthKind::FirstChild => format!("{base}:first-child"),
+                NthKind::LastChild => format!("{base}:last-child"),
+                NthKind::FirstOfType => format!("{base}:first-of-type"),
+                NthKind::LastOfType => format!("{base}:last-of-type"),
+                NthKind::OfType => {
+                    let arg = argument.as_deref().unwrap_or("0");
+                    format!("{base}:nth-of-type({arg})")
+                }
+                NthKind::Empty => format!("{base}:empty"),
+            }
+        }
+        CssSelector::Not { selector, inner } => {
+            let base = selector_key(selector);
+            let inner_sel = selector_key(inner);
+            format!("{base}:not({inner_sel})")
+        }
         CssSelector::Attribute {
             selector,
             attr,
@@ -829,6 +852,31 @@ fn selector_to_fn_name(selector: &CssSelector) -> String {
                 "{}_{}",
                 selector_to_fn_name(inner),
                 pseudo.replace('-', "_")
+            )
+        }
+        CssSelector::Nth {
+            selector,
+            kind,
+            argument,
+        } => {
+            let base = selector_to_fn_name(selector);
+            match kind {
+                NthKind::FirstChild => format!("{base}_first_child"),
+                NthKind::LastChild => format!("{base}_last_child"),
+                NthKind::FirstOfType => format!("{base}_first_of_type"),
+                NthKind::LastOfType => format!("{base}_last_of_type"),
+                NthKind::OfType => {
+                    let arg = argument.as_deref().unwrap_or("0");
+                    format!("{base}_nth_of_type_{}", arg.replace(['-', '+'], "_"))
+                }
+                NthKind::Empty => format!("{base}_empty"),
+            }
+        }
+        CssSelector::Not { selector, inner } => {
+            format!(
+                "{}_not_{}",
+                selector_to_fn_name(selector),
+                selector_to_fn_name(inner)
             )
         }
         CssSelector::Attribute { selector, attr, .. } => format!(

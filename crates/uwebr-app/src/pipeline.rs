@@ -1239,7 +1239,10 @@ mod tests {
 
         pipeline.build_render_scene(&el, 800, 600);
         assert!(
-            pipeline.render_scene().nodes()[0].style.background.is_none(),
+            pipeline.render_scene().nodes()[0]
+                .style
+                .background
+                .is_none(),
             "no hover state yet, background should be unset"
         );
 
@@ -1247,7 +1250,10 @@ mod tests {
         uwebr_core::state::set_hovered(0, true);
         pipeline.build_render_scene(&el, 800, 600);
         assert!(
-            pipeline.render_scene().nodes()[0].style.background.is_some(),
+            pipeline.render_scene().nodes()[0]
+                .style
+                .background
+                .is_some(),
             ":hover background must reach the scene once hovered"
         );
         uwebr_core::state::clear_element_state();

@@ -25,8 +25,20 @@ pub enum CssSelector {
     Child(Vec<CssSelector>),
     /// .a, .b (list)
     List(Vec<CssSelector>),
-    /// .btn:hover, div:first-child
+    /// .btn:hover, div:focus (stateful, argümansız)
     PseudoClass(Box<CssSelector>, String),
+    /// div:nth-child(2n+1), li:first-child, ul:first-of-type, div:empty
+    Nth {
+        selector: Box<CssSelector>,
+        kind: NthKind,
+        /// An+B notasyonunun ham string'i, ör. "2n+1", "3", "-n+3"
+        argument: Option<String>,
+    },
+    /// div:not(.active), input:not([disabled])
+    Not {
+        selector: Box<CssSelector>,
+        inner: Box<CssSelector>,
+    },
     /// input[type="text"], [disabled]
     Attribute {
         selector: Box<CssSelector>,
@@ -51,6 +63,23 @@ pub enum AttributeOp {
     Suffix,
     /// `[attr*="value"]` — contains value substring
     Contains,
+}
+
+/// Structural pseudo-class kind for `:nth-*` selectors.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum NthKind {
+    /// `:first-child`, `:nth-child(An+B)`
+    FirstChild,
+    /// `:last-child`, `:nth-last-child(An+B)`
+    LastChild,
+    /// `:first-of-type`, `:nth-of-type(An+B)` — filtered by tag name
+    FirstOfType,
+    /// `:last-of-type`, `:nth-last-of-type(An+B)` — filtered by tag name
+    LastOfType,
+    /// `:nth-of-type(An+B)` generic with argument
+    OfType,
+    /// `:empty` — no children
+    Empty,
 }
 
 /// CSS property

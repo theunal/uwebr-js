@@ -189,6 +189,8 @@ fn parse_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Cs
             if ch == '{' || ch == ',' || ch == '\0' {
                 break;
             }
+        } else {
+            break;
         }
 
         // Check for combinators between selectors
@@ -264,15 +266,75 @@ fn parse_simple_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Re
                     chars.next();
                 }
                 let pseudo_name = read_ident(chars);
-                // Consume a functional argument like `nth-child(2n+1)`; the value
-                // is not modelled yet, so it is read and discarded.
+                // Consume a functional argument like `nth-child(2n+1)`.
+                let mut argument = None;
                 if chars.peek() == Some(&'(') {
-                    let _ = read_until(chars, ')');
+                    chars.next(); // consume '('
+                    argument = Some(read_until(chars, ')'));
                     if chars.peek() == Some(&')') {
                         chars.next();
                     }
                 }
-                sel = CssSelector::PseudoClass(Box::new(sel), pseudo_name);
+
+                // Route structural pseudo-classes to the Nth variant.
+                sel = match pseudo_name.as_str() {
+                    "first-child" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::FirstChild,
+                        argument: None,
+                    },
+                    "last-child" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::LastChild,
+                        argument: None,
+                    },
+                    "nth-child" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::FirstChild,
+                        argument,
+                    },
+                    "nth-last-child" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::LastChild,
+                        argument,
+                    },
+                    "first-of-type" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::FirstOfType,
+                        argument: None,
+                    },
+                    "last-of-type" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::LastOfType,
+                        argument: None,
+                    },
+                    "nth-of-type" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::OfType,
+                        argument,
+                    },
+                    "nth-last-of-type" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::LastOfType,
+                        argument,
+                    },
+                    "empty" => CssSelector::Nth {
+                        selector: Box::new(sel),
+                        kind: NthKind::Empty,
+                        argument: None,
+                    },
+                    "not" => {
+                        // The inner selector is in `argument`, already consumed
+                        // by read_until. Parse it as a fresh selector.
+                        let arg = argument.as_deref().unwrap_or("");
+                        let inner = parse_selector(&mut arg.chars().peekable())?;
+                        CssSelector::Not {
+                            selector: Box::new(sel),
+                            inner: Box::new(inner),
+                        }
+                    }
+                    _ => CssSelector::PseudoClass(Box::new(sel), pseudo_name),
+                };
             }
             Some(&'[') => {
                 chars.next(); // consume '['
@@ -351,6 +413,45 @@ fn parse_attribute_selector(
     };
 
     (attr, op, value)
+}
+
+/// Parse An+B notation for `:nth-child` and similar pseudo-classes.
+///
+/// Accepts: "odd", "even", "3", "2n+1", "2n-1", "-n+3", "+n+1", etc.
+/// Returns `(a, b)` where the match formula is `index == a * n + b` for some non-negative integer `n`.
+pub fn parse_nth(arg: &str) -> Option<(i32, i32)> {
+    let arg = arg.trim().to_lowercase();
+    if arg == "odd" {
+        return Some((2, 1));
+    }
+    if arg == "even" {
+        return Some((2, 0));
+    }
+
+    if let Some(n_pos) = arg.find('n') {
+        let a_str = arg[..n_pos].trim();
+        let a = if a_str.is_empty() || a_str == "+" {
+            1
+        } else if a_str == "-" {
+            -1
+        } else {
+            a_str.parse::<i32>().ok()?
+        };
+        let rest = arg[n_pos + 1..].trim();
+        let b = if rest.is_empty() {
+            0
+        } else if let Some(stripped) = rest.strip_prefix('+') {
+            stripped.trim().parse::<i32>().ok()?
+        } else if let Some(stripped) = rest.strip_prefix('-') {
+            -stripped.trim().parse::<i32>().ok()?
+        } else {
+            rest.parse::<i32>().ok()?
+        };
+        Some((a, b))
+    } else {
+        let b = arg.parse::<i32>().ok()?;
+        Some((0, b))
+    }
 }
 
 /// Read a quoted string value, consuming the surrounding quotes.
@@ -1172,11 +1273,16 @@ mod tests {
         let css = "div:first-child { color: red; }";
         let rules = parse_css(css).unwrap();
         match &rules[0].selector {
-            CssSelector::PseudoClass(inner, pseudo) => {
-                assert_eq!(**inner, CssSelector::Tag("div".to_string()));
-                assert_eq!(pseudo, "first-child");
+            CssSelector::Nth {
+                selector,
+                kind,
+                argument,
+            } => {
+                assert_eq!(**selector, CssSelector::Tag("div".to_string()));
+                assert_eq!(*kind, NthKind::FirstChild);
+                assert!(argument.is_none());
             }
-            other => panic!("expected pseudo-class, got {other:?}"),
+            other => panic!("expected Nth, got {other:?}"),
         }
     }
 
@@ -1278,6 +1384,70 @@ mod tests {
                 }
             }
             other => panic!("expected pseudo-class outer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_not_selector() {
+        let css = "div:not(.active) { opacity: 0.5; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Not { selector, inner } => {
+                assert_eq!(**selector, CssSelector::Tag("div".to_string()));
+                assert_eq!(**inner, CssSelector::Class("active".to_string()));
+            }
+            other => panic!("expected Not, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_not_with_tag_inner() {
+        let css = "div:not(p) { color: red; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Not { selector, inner } => {
+                assert_eq!(**selector, CssSelector::Tag("div".to_string()));
+                assert_eq!(**inner, CssSelector::Tag("p".to_string()));
+            }
+            other => panic!("expected Not, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_nth_child_with_arg() {
+        let css = "li:nth-child(2n+1) { color: red; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Nth { kind, argument, .. } => {
+                assert_eq!(*kind, NthKind::FirstChild);
+                assert_eq!(argument.as_deref(), Some("2n+1"));
+            }
+            other => panic!("expected Nth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_nth_of_type() {
+        let css = "p:nth-of-type(2) { margin-left: 10px; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Nth { kind, argument, .. } => {
+                assert_eq!(*kind, NthKind::OfType);
+                assert_eq!(argument.as_deref(), Some("2"));
+            }
+            other => panic!("expected Nth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_pseudo() {
+        let css = ":empty { display: none; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Nth { kind, .. } => {
+                assert_eq!(*kind, NthKind::Empty);
+            }
+            other => panic!("expected Nth(Empty), got {other:?}"),
         }
     }
 }
