@@ -44,6 +44,9 @@ pub struct CompileResult {
 ///
 /// `CompileOptions.project_dir` ayarlıysa mevcut projeyi yeniden kullanır
 /// (hızlı incremental build). Aksi halde her seferinde temp dizin oluşturur.
+///
+/// İlk build'de `cargo build --lib` kullanır (dependency'leri derlemek için).
+/// Sonraki build'lerde doğrudan `rustc` çağırır (skeleton pre-compiled).
 pub fn compile_shared_library(
     uwebr_content: &str,
     component_name: &str,
@@ -77,8 +80,17 @@ pub fn compile_shared_library(
     let lib_rs = generate_lib_rs(uwebr_content, component_name, &options.root)?;
     fs::write(tmp_path.join("src/lib.rs"), &lib_rs).context("failed to write lib.rs")?;
 
-    // Compile et (sccache ile)
-    let success = cargo_build_with_sccache(&tmp_path, options)?;
+    // Skeleton detection: ilk build cargo, sonraki rustc
+    let deps_dir = options.target_dir.join("debug").join("deps");
+    let skeleton_built = deps_dir.exists();
+
+    let success = if skeleton_built {
+        // Hızlı yol: doğrudan rustc (FAZ 20)
+        compile_with_rustc(&tmp_path, component_name, options)?
+    } else {
+        // İlk sefer: cargo build (skeleton)
+        cargo_build_with_sccache(&tmp_path, options)?
+    };
 
     if !success {
         anyhow::bail!("cargo build failed for component '{component_name}'");
@@ -151,6 +163,113 @@ fn cargo_build_with_sccache(project_dir: &Path, options: &CompileOptions) -> Res
     Ok(status.success())
 }
 
+/// `target/debug/deps/` altındaki `.rlib` dosyalarını toplar.
+///
+/// Her rlib dosyasından crate ismini çıkarır:
+/// `libuwebr_core-abc123.rlib` → `("uwebr_core", path)`
+///
+/// `--extern` parametreleri için kullanılır.
+fn collect_rlibs(target_dir: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let deps_dir = target_dir.join("debug").join("deps");
+    let mut rlibs = Vec::new();
+
+    if !deps_dir.exists() {
+        anyhow::bail!("deps dir not found: {}", deps_dir.display());
+    }
+
+    for entry in fs::read_dir(&deps_dir).context("failed to read deps dir")? {
+        let entry = entry.context("failed to read deps entry")?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rlib") {
+            // lib<name>-<hash>.rlib → <name>
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            // Skip "lib" prefix
+            let without_lib = stem.strip_prefix("lib").unwrap_or(stem);
+            // Remove hash suffix (after last '-')
+            if let Some(pos) = without_lib.rfind('-') {
+                let crate_name = &without_lib[..pos];
+                if !crate_name.is_empty() {
+                    rlibs.push((crate_name.to_string(), path));
+                }
+            }
+        }
+    }
+
+    // Sort by crate name for deterministic output
+    rlibs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    Ok(rlibs)
+}
+
+/// Doğrudan `rustc` kullanarak shared library compile eder.
+///
+/// `cargo build` overhead'ini atlar: sadece `rustc --edition 2021 --crate-type cdylib`
+/// ile tek dosya compile. Dependency'ler önceden compile edilmiş `.rlib` dosyalarından link edilir.
+///
+/// `target/debug/deps/` altındaki `.d` dosyalarından hangi kütüphanelerin gerektiğini anlar.
+fn compile_with_rustc(
+    project_dir: &Path,
+    component_name: &str,
+    options: &CompileOptions,
+) -> Result<bool> {
+    let deps_dir = options.target_dir.join("debug").join("deps");
+    let lib_rs = project_dir.join("src").join("lib.rs");
+
+    if !lib_rs.exists() {
+        anyhow::bail!("lib.rs not found at {}", lib_rs.display());
+    }
+    if !deps_dir.exists() {
+        anyhow::bail!(
+            "deps dir not found (run cargo build first): {}",
+            deps_dir.display()
+        );
+    }
+
+    // RLib'leri topla
+    let rlibs = collect_rlibs(&options.target_dir)?;
+
+    // Output path
+    let lib_name = abi::library_filename(component_name);
+    let lib_ext = abi::library_extension();
+    let profile_dir = match options.profile {
+        CompileProfile::Release => "release",
+        CompileProfile::Debug => "debug",
+    };
+    let output_path = options
+        .target_dir
+        .join(profile_dir)
+        .join(format!("{lib_name}.{lib_ext}"));
+
+    // rustc komutu oluştur
+    let mut cmd = Command::new("rustc");
+    cmd.arg("--edition")
+        .arg("2021")
+        .arg("--crate-type")
+        .arg("cdylib")
+        .arg("--crate-name")
+        .arg(format!("uwebr_dynlib_{component_name}"))
+        .arg("-L")
+        .arg(&deps_dir)
+        .arg("-o")
+        .arg(&output_path)
+        .arg(&lib_rs);
+
+    // Her rlib için --extern ekle
+    for (name, path) in &rlibs {
+        cmd.arg("--extern")
+            .arg(format!("{name}={}", path.display()));
+    }
+
+    log::debug!(
+        "rustc compile: {} rlabs, output={}",
+        rlibs.len(),
+        output_path.display()
+    );
+
+    let status = cmd.status().context("failed to run rustc")?;
+    Ok(status.success())
+}
+
 /// Geçici Cargo lib projesi oluşturur.
 fn init_lib_project(tmp_path: &Path, component_name: &str, project_root: &Path) -> Result<()> {
     let workspace_root = project_root.parent().unwrap_or(project_root);
@@ -174,6 +293,8 @@ fn init_lib_project(tmp_path: &Path, component_name: &str, project_root: &Path) 
 name = "uwebr_dynlib_{component_name}"
 version = "0.1.0"
 edition = "2021"
+
+[workspace]
 
 [lib]
 crate-type = ["cdylib"]

@@ -907,7 +907,7 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
     println!("uwebr dev (hot-swap mode)");
     println!("  Component: {component_name}");
 
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let crate_level_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or(Path::new("."))
         .to_path_buf();
@@ -915,7 +915,7 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
     let start = Instant::now();
     let content = fs::read_to_string(first)?;
     let compile_opts = uwebr_dynlib::CompileOptions {
-        root: workspace_root.clone(),
+        root: crate_level_root.clone(),
         target_dir: dynlib_dir.clone(),
         profile: uwebr_dynlib::CompileProfile::Debug,
         project_dir: Some(root.join("target/dynlib-project")),
@@ -1026,7 +1026,7 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
                     };
 
                     let opts = uwebr_dynlib::CompileOptions {
-                        root: workspace_root.clone(),
+                        root: crate_level_root.clone(),
                         target_dir: dynlib_dir.clone(),
                         profile: uwebr_dynlib::CompileProfile::Debug,
                         project_dir: Some(root.join("target/dynlib-project")),
@@ -1084,9 +1084,16 @@ pub fn bench_reload(input_path: &str, iterations: u32) -> Result<()> {
     let dynlib_dir = tmp_dir.path().join("dynlib");
     fs::create_dir_all(&dynlib_dir)?;
 
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    // CARGO_MANIFEST_DIR = crates/uwebr-cli
+    // .parent() = crates/ (init_lib_project expects this, it does .parent() again)
+    let crate_level_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or(Path::new("."))
+        .to_path_buf();
+    // .parent() again = actual workspace root (for project_dir path)
+    let workspace_root = crate_level_root
+        .parent()
+        .unwrap_or(&crate_level_root)
         .to_path_buf();
 
     println!(
@@ -1100,16 +1107,21 @@ pub fn bench_reload(input_path: &str, iterations: u32) -> Result<()> {
     let mut load_times = Vec::new();
     let mut render_times = Vec::new();
 
-    // Persistent project dir for incremental builds
-    let project_dir = tmp_dir.path().join("project");
+    // Persistent project dir in workspace target/ (survives across runs)
+    let project_dir = workspace_root.join("target").join("bench-project");
+    fs::create_dir_all(&project_dir)?;
+
+    // Persistent target dir for deps cache (FAZ 20 rustc needs persistent rlibs)
+    let persistent_target = workspace_root.join("target").join("bench-target");
+    fs::create_dir_all(&persistent_target)?;
 
     for i in 0..iterations {
         let iter_start = Instant::now();
 
         // Compile
         let opts = uwebr_dynlib::CompileOptions {
-            root: workspace_root.clone(),
-            target_dir: dynlib_dir.clone(),
+            root: crate_level_root.clone(),
+            target_dir: persistent_target.clone(),
             profile: uwebr_dynlib::CompileProfile::Debug,
             project_dir: Some(project_dir.clone()),
         };
