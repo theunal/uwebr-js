@@ -1222,17 +1222,6 @@ fn run_file_watcher(
                     continue;
                 }
 
-                let relevant: Vec<_> = changed
-                    .iter()
-                    .filter(|p| {
-                        matches!(
-                            p.extension().and_then(|e| e.to_str()),
-                            Some("uwebr") | Some("rs") | Some("css")
-                        )
-                    })
-                    .cloned()
-                    .collect();
-
                 if change_kind == ChangeKind::CssOnly {
                     // CSS-only: just signal reload (no recompile needed)
                     let _ = reload_tx.send(());
