@@ -10,5 +10,6 @@ anyhow.workspace = true
 tempfile.workspace = true
 log = "0.4"
 uwebr-core = { workspace = true }
+libloading = "0.8"
 
 [dev-dependencies]
