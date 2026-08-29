@@ -33,7 +33,7 @@ impl LayoutInfo {
 
 // ── Background ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Background {
     Solid(peniko::Color),
     LinearGradient {

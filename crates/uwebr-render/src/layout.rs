@@ -1,4 +1,5 @@
 use taffy::prelude::*;
+use taffy::style::Overflow;
 use uwebr_core::component::{Element, NodeType, PropValue};
 
 use crate::paint::ResolvedPaint;
@@ -67,6 +68,8 @@ pub struct PositionedNode {
     pub depth: usize,
     /// Fully resolved paint (CSS + inline props + inherited text style).
     pub paint: ResolvedPaint,
+    /// `overflow: hidden` (or `clip`) on either axis — the scene clips children.
+    pub overflow_hidden: bool,
 }
 
 impl LayoutEngine {
@@ -342,12 +345,24 @@ impl LayoutEngine {
         let matched = stylebook.match_full(element);
         let paint = ResolvedPaint::resolve(inherited, &matched.paint, element);
 
+        // Clip children when the element sets `overflow: hidden`/`clip` on either
+        // axis. Read from the resolved taffy style so it follows the cascade.
+        let overflow_hidden = self
+            .taffy
+            .style(taffy_node)
+            .map(|s| {
+                matches!(s.overflow.x, Overflow::Hidden | Overflow::Clip)
+                    || matches!(s.overflow.y, Overflow::Hidden | Overflow::Clip)
+            })
+            .unwrap_or(false);
+
         out.push(PositionedNode {
             taffy_node,
             element: element.clone(),
             layout: info,
             depth,
             paint: paint.clone(),
+            overflow_hidden,
         });
 
         if let Ok(children) = self.taffy.children(taffy_node) {
@@ -689,5 +704,34 @@ mod tests {
         // Guards the uwebr-css → uwebr-render paint bridge from silently rotting.
         let p = uwebr_css::codegen::PaintProps::default();
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn test_overflow_hidden_flag_set_from_css() {
+        let sb =
+            StyleBook::parse(".clip { overflow: hidden; width: 100px; height: 100px; }").unwrap();
+        let el = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("clip".into()))],
+            children: vec![],
+        };
+        let mut engine = LayoutEngine::new();
+        let root = engine.build_tree(&el, &sb).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &el, &sb);
+        assert!(
+            nodes[0].overflow_hidden,
+            "overflow:hidden must set the flag on the positioned node"
+        );
+    }
+
+    #[test]
+    fn test_overflow_visible_leaves_flag_false() {
+        let el = make_div_element(vec![]);
+        let mut engine = LayoutEngine::new();
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &el, &StyleBook::empty());
+        assert!(!nodes[0].overflow_hidden);
     }
 }

@@ -1,6 +1,8 @@
 use taffy::Style;
 use uwebr_core::component::{Element, NodeType, PropValue};
-use uwebr_css::codegen::{convert_to_style_entries, PaintProps, StyleEntry, StyleMask};
+use uwebr_css::codegen::{
+    convert_to_style_entries, convert_to_style_entries_vp, PaintProps, StyleEntry, StyleMask,
+};
 use uwebr_css::parser::parse_css;
 
 /// Result of matching an element against the stylesheet.
@@ -29,6 +31,24 @@ impl StyleBook {
         Ok(Self {
             rules: convert_to_style_entries(&rules)?,
         })
+    }
+
+    /// Parse CSS, resolving `vw`/`vh` against the given viewport dimensions.
+    pub fn parse_vp(css: &str, vw: f32, vh: f32) -> anyhow::Result<Self> {
+        let rules = parse_css(css)?;
+        Ok(Self {
+            rules: convert_to_style_entries_vp(&rules, vw, vh)?,
+        })
+    }
+
+    /// Re-parse CSS in place with new viewport dimensions.
+    ///
+    /// Called on resize so `vw`/`vh` track the window without rebuilding the
+    /// whole pipeline.
+    pub fn reparse(&mut self, css: &str, vw: f32, vh: f32) -> anyhow::Result<()> {
+        let rules = parse_css(css)?;
+        self.rules = convert_to_style_entries_vp(&rules, vw, vh)?;
+        Ok(())
     }
 
     /// Create from pre-converted (selector, Style) pairs — layout only, no paint.
@@ -447,7 +467,12 @@ mod tests {
         let m = sb.match_full(&el);
         assert!(m.matched);
         let bg = m.paint.background.clone().unwrap();
-        assert_eq!((bg.r, bg.g, bg.b), (0x1a, 0x1a, 0x2e));
+        match bg {
+            uwebr_css::codegen::BackgroundValue::Solid(c) => {
+                assert_eq!((c.r, c.g, c.b), (0x1a, 0x1a, 0x2e))
+            }
+            other => panic!("expected solid background, got {other:?}"),
+        }
         let color = m.paint.color.clone().unwrap();
         assert_eq!((color.r, color.g, color.b), (0xe0, 0xe0, 0xe0));
     }
@@ -499,7 +524,12 @@ mod tests {
         );
         let m = sb.match_full(&el);
         let bg = m.paint.background.unwrap();
-        assert_eq!((bg.r, bg.g, bg.b), (0x11, 0x22, 0x33));
+        match bg {
+            uwebr_css::codegen::BackgroundValue::Solid(c) => {
+                assert_eq!((c.r, c.g, c.b), (0x11, 0x22, 0x33))
+            }
+            other => panic!("expected solid background, got {other:?}"),
+        }
         let c = m.paint.color.unwrap();
         assert_eq!((c.r, c.g, c.b), (0, 0, 255));
     }
@@ -528,5 +558,20 @@ mod tests {
         let (out, matched) = sb.match_element(&el);
         assert!(matched);
         assert_eq!(out.display, taffy::Display::Flex);
+    }
+
+    // ── Viewport reparse (vw/vh) ────────────────────────────────
+
+    #[test]
+    fn test_reparse_resolves_vw_against_new_viewport() {
+        let mut sb = StyleBook::parse_vp(".w { width: 50vw; }", 800.0, 600.0).unwrap();
+        let el = make_element("div", vec![("class".into(), PropValue::String("w".into()))]);
+        let (style, _) = sb.match_element(&el);
+        assert_eq!(style.size.width, taffy::Dimension::length(400.0));
+
+        // Resize: 50vw of 1000px = 500px.
+        sb.reparse(".w { width: 50vw; }", 1000.0, 600.0).unwrap();
+        let (style, _) = sb.match_element(&el);
+        assert_eq!(style.size.width, taffy::Dimension::length(500.0));
     }
 }

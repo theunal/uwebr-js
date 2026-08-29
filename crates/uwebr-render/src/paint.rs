@@ -1,8 +1,9 @@
 use uwebr_core::component::{Element, NodeType, PropValue};
-use uwebr_css::codegen::PaintProps;
+use uwebr_css::codegen::{BackgroundValue, PaintProps};
 use vello::peniko;
 
 use crate::color::{css_color_to_peniko, parse_color_to_peniko};
+use crate::scene::Background;
 
 /// Default text colour when neither CSS nor props specify one.
 pub const DEFAULT_TEXT_COLOR: peniko::Color = peniko::color::palette::css::WHITE;
@@ -17,7 +18,7 @@ pub const DEFAULT_FONT_SIZE: f32 = 16.0;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedPaint {
     /// Fill for the node's box. `None` means "draw nothing".
-    pub background: Option<peniko::Color>,
+    pub background: Option<Background>,
     /// Text colour — inherited by descendants.
     pub color: peniko::Color,
     /// Font size in px — inherited by descendants.
@@ -64,7 +65,7 @@ impl ResolvedPaint {
     /// Apply the paint declarations from a matched CSS rule.
     pub fn apply_css(&mut self, paint: &PaintProps) {
         if let Some(ref bg) = paint.background {
-            self.background = Some(css_color_to_peniko(bg.clone()));
+            self.background = Some(background_to_scene(bg));
         }
         if let Some(ref c) = paint.color {
             self.color = css_color_to_peniko(c.clone());
@@ -98,7 +99,7 @@ impl ResolvedPaint {
             match name.as_str() {
                 "background" | "background-color" | "bg" => {
                     if let Some(c) = prop_to_color(value) {
-                        self.background = Some(c);
+                        self.background = Some(Background::Solid(c));
                     }
                 }
                 "color" | "text_color" | "text-color" => {
@@ -152,12 +153,75 @@ impl ResolvedPaint {
         paint
     }
 }
-
 /// Read a colour from a prop value (named or hex string).
 fn prop_to_color(value: &PropValue) -> Option<peniko::Color> {
     match value {
         PropValue::String(s) => parse_color_to_peniko(s),
         _ => None,
+    }
+}
+
+/// Convert a CSS `BackgroundValue` into the scene's `Background`.
+fn background_to_scene(bg: &BackgroundValue) -> Background {
+    match bg {
+        BackgroundValue::Solid(c) => Background::Solid(css_color_to_peniko(c.clone())),
+        BackgroundValue::LinearGradient { direction, stops } => {
+            let (start, end) = parse_gradient_direction(direction);
+            Background::LinearGradient {
+                start,
+                end,
+                stops: gradient_stops_to_scene(stops),
+            }
+        }
+        BackgroundValue::RadialGradient { stops } => Background::RadialGradient {
+            center: [0.5, 0.5],
+            radius: 0.5,
+            stops: gradient_stops_to_scene(stops),
+        },
+    }
+}
+
+/// Convert CSS gradient stops to `(offset, color)` pairs, distributing any
+/// stops without an explicit position evenly across the 0..1 range.
+fn gradient_stops_to_scene(stops: &[uwebr_css::ast::GradientStop]) -> Vec<(f32, peniko::Color)> {
+    let n = stops.len();
+    stops
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let offset = s.position.unwrap_or_else(|| {
+                if n <= 1 {
+                    0.0
+                } else {
+                    i as f32 / (n - 1) as f32
+                }
+            });
+            (offset, css_color_to_peniko(s.color.clone()))
+        })
+        .collect()
+}
+
+/// Map a CSS gradient direction to normalized start/end points in the 0..1 box.
+fn parse_gradient_direction(direction: &Option<String>) -> ([f32; 2], [f32; 2]) {
+    match direction.as_deref() {
+        Some("to right") => ([0.0, 0.0], [1.0, 0.0]),
+        Some("to left") => ([1.0, 0.0], [0.0, 0.0]),
+        Some("to bottom") => ([0.0, 0.0], [0.0, 1.0]),
+        Some("to top") => ([0.0, 1.0], [0.0, 0.0]),
+        Some(deg_str) if deg_str.ends_with("deg") => {
+            let deg: f32 = deg_str
+                .trim_end_matches("deg")
+                .trim()
+                .parse()
+                .unwrap_or(0.0);
+            let rad = deg.to_radians();
+            (
+                [0.5 - 0.5 * rad.sin(), 0.5 + 0.5 * rad.cos()],
+                [0.5 + 0.5 * rad.sin(), 0.5 - 0.5 * rad.cos()],
+            )
+        }
+        // Default: top → bottom.
+        _ => ([0.0, 0.0], [0.0, 1.0]),
     }
 }
 
@@ -210,7 +274,7 @@ mod tests {
     #[test]
     fn test_inherited_drops_background_keeps_color() {
         let parent = ResolvedPaint {
-            background: Some(peniko::color::palette::css::RED),
+            background: Some(Background::Solid(peniko::color::palette::css::RED)),
             color: peniko::color::palette::css::BLUE,
             font_size: 32.0,
             ..Default::default()
@@ -226,13 +290,15 @@ mod tests {
     fn test_apply_css_background_and_color() {
         let mut p = ResolvedPaint::default();
         p.apply_css(&PaintProps {
-            background: Some(CssColor::rgb(0x1a, 0x1a, 0x2e)),
+            background: Some(BackgroundValue::Solid(CssColor::rgb(0x1a, 0x1a, 0x2e))),
             color: Some(CssColor::rgb(0xe0, 0xe0, 0xe0)),
             ..Default::default()
         });
         assert_eq!(
             p.background,
-            Some(peniko::Color::from_rgba8(0x1a, 0x1a, 0x2e, 255))
+            Some(Background::Solid(peniko::Color::from_rgba8(
+                0x1a, 0x1a, 0x2e, 255
+            )))
         );
         assert_eq!(p.color, peniko::Color::from_rgba8(0xe0, 0xe0, 0xe0, 255));
     }
@@ -287,7 +353,10 @@ mod tests {
     fn test_hex_background_prop() {
         let mut p = ResolvedPaint::default();
         p.apply_props(&[("bg".into(), PropValue::String("#ff8000".into()))]);
-        assert_eq!(p.background, Some(peniko::Color::from_rgb8(255, 128, 0)));
+        assert_eq!(
+            p.background,
+            Some(Background::Solid(peniko::Color::from_rgb8(255, 128, 0)))
+        );
     }
 
     #[test]
@@ -302,7 +371,10 @@ mod tests {
         let parent = ResolvedPaint::default();
         let e = el("div", vec![("bg".into(), PropValue::String("red".into()))]);
         let p = ResolvedPaint::resolve(&parent, &PaintProps::default(), &e);
-        assert_eq!(p.background, Some(peniko::Color::from_rgb8(255, 0, 0)));
+        assert_eq!(
+            p.background,
+            Some(Background::Solid(peniko::Color::from_rgb8(255, 0, 0)))
+        );
     }
 
     #[test]
@@ -310,7 +382,7 @@ mod tests {
         let parent = ResolvedPaint {
             color: peniko::color::palette::css::GREEN,
             font_size: 40.0,
-            background: Some(peniko::color::palette::css::RED),
+            background: Some(Background::Solid(peniko::color::palette::css::RED)),
             ..Default::default()
         };
 

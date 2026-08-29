@@ -1,9 +1,7 @@
 use uwebr_core::component::{Element, NodeType, PropValue};
 use uwebr_render::layout::{LayoutEngine, PositionedNode};
 use uwebr_render::paint::ResolvedPaint;
-use uwebr_render::scene::{
-    Background, LayoutInfo, RenderNode, RenderNodeKind, RenderScene, RenderStyle,
-};
+use uwebr_render::scene::{LayoutInfo, RenderNode, RenderNodeKind, RenderScene, RenderStyle};
 use uwebr_render::scene_builder::SceneBuilder;
 use uwebr_render::stylebook::StyleBook;
 
@@ -26,6 +24,8 @@ pub struct RenderPipeline {
     stylebook: StyleBook,
     scene_builder: SceneBuilder,
     hit_targets: Vec<HitTarget>,
+    /// Raw CSS kept so `vw`/`vh` can be re-resolved when the viewport changes.
+    css_string: Option<String>,
 }
 
 impl RenderPipeline {
@@ -37,6 +37,7 @@ impl RenderPipeline {
             // Reused across frames: building one enumerates the system fonts.
             scene_builder: SceneBuilder::new(),
             hit_targets: Vec::new(),
+            css_string: None,
         }
     }
 
@@ -45,12 +46,19 @@ impl RenderPipeline {
         if let Ok(sb) = StyleBook::parse(css) {
             self.stylebook = sb;
         }
+        self.css_string = Some(css.to_string());
         self
     }
 
     /// Set the stylebook directly
     pub fn with_stylebook(mut self, stylebook: StyleBook) -> Self {
         self.stylebook = stylebook;
+        self
+    }
+
+    /// Keep the raw CSS so `vw`/`vh` are re-resolved when the viewport changes.
+    pub fn with_css_source(mut self, css: &str) -> Self {
+        self.css_string = Some(css.to_string());
         self
     }
 
@@ -69,6 +77,11 @@ impl RenderPipeline {
         self.layout_engine.reset();
         self.render_scene.clear();
         self.hit_targets.clear();
+
+        // Re-resolve `vw`/`vh` against the current viewport before layout.
+        if let Some(ref css) = self.css_string {
+            let _ = self.stylebook.reparse(css, width as f32, height as f32);
+        }
 
         let Ok(root) = self.layout_engine.build_tree(element, &self.stylebook) else {
             return;
@@ -174,7 +187,7 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 id,
                 kind: RenderNodeKind::Container,
                 layout,
-                style: paint_to_render_style(&pos.paint),
+                style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
             })
         }
         NodeType::Component(_) => {
@@ -185,7 +198,7 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 id,
                 kind: RenderNodeKind::Container,
                 layout,
-                style: paint_to_render_style(&pos.paint),
+                style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
             })
         }
         NodeType::Raw(_) => None,
@@ -193,9 +206,9 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
 }
 
 /// Translate resolved paint into the scene's style representation.
-fn paint_to_render_style(paint: &ResolvedPaint) -> RenderStyle {
+fn paint_to_render_style(paint: &ResolvedPaint, overflow_hidden: bool) -> RenderStyle {
     RenderStyle {
-        background: paint.background.map(Background::Solid),
+        background: paint.background.clone(),
         border: if paint.border_width > 0.0 {
             Some(uwebr_render::scene::BorderStyle {
                 width: paint.border_width,
@@ -206,7 +219,7 @@ fn paint_to_render_style(paint: &ResolvedPaint) -> RenderStyle {
         },
         border_radius: paint.border_radius,
         opacity: paint.opacity,
-        overflow_hidden: false,
+        overflow_hidden,
     }
 }
 
@@ -214,6 +227,7 @@ fn paint_to_render_style(paint: &ResolvedPaint) -> RenderStyle {
 mod tests {
     use super::*;
     use uwebr_core::component::PropValue;
+    use uwebr_render::scene::Background;
     use vello::peniko;
 
     fn make_text(content: &str) -> Element {
@@ -343,6 +357,7 @@ mod tests {
             layout: uwebr_render::scene::LayoutInfo::new(10.0, 20.0, 100.0, 30.0),
             depth: 0,
             paint: ResolvedPaint::default(),
+            overflow_hidden: false,
         };
         let node = positioned_to_render_node(&pos).unwrap();
         assert!(matches!(node.kind, RenderNodeKind::Text { .. }));
@@ -356,6 +371,7 @@ mod tests {
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 800.0, 600.0),
             depth: 0,
             paint: ResolvedPaint::default(),
+            overflow_hidden: false,
         };
         let node = positioned_to_render_node(&pos).unwrap();
         assert!(matches!(node.kind, RenderNodeKind::Container));
@@ -369,6 +385,7 @@ mod tests {
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 0.0, 0.0),
             depth: 0,
             paint: ResolvedPaint::default(),
+            overflow_hidden: false,
         };
         assert!(positioned_to_render_node(&pos).is_none());
     }
@@ -383,6 +400,7 @@ mod tests {
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 0.0, 0.0),
             depth: 0,
             paint: ResolvedPaint::default(),
+            overflow_hidden: false,
         };
         assert!(positioned_to_render_node(&pos).is_some());
     }
@@ -395,6 +413,7 @@ mod tests {
             layout: uwebr_render::scene::LayoutInfo::new(0.0, 0.0, 100.0, 20.0),
             depth: 0,
             paint: ResolvedPaint::default(),
+            overflow_hidden: false,
         };
         assert!(positioned_to_render_node(&pos).is_none());
     }
@@ -820,5 +839,66 @@ mod tests {
 
         assert_eq!(pipeline.hit_test(5.0, 5.0), None, "inside the padding");
         assert_eq!(pipeline.hit_test(40.0, 40.0), Some("go"));
+    }
+
+    // ── CSS fixes (FAZ 10) ─────────────────────────────────────
+
+    #[test]
+    fn test_overflow_hidden_reaches_render_style() {
+        let mut pipeline = RenderPipeline::new()
+            .with_css(".clip { overflow: hidden; width: 100px; height: 100px; }");
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("clip".into()))],
+            vec![],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        assert!(
+            pipeline.render_scene().nodes()[0].style.overflow_hidden,
+            "overflow:hidden must reach the render style"
+        );
+    }
+
+    #[test]
+    fn test_gradient_background_reaches_scene() {
+        let mut pipeline = RenderPipeline::new().with_css(
+            ".g { background: linear-gradient(to right, red, blue); width: 100px; height: 100px; }",
+        );
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("g".into()))],
+            vec![],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        match &pipeline.render_scene().nodes()[0].style.background {
+            Some(Background::LinearGradient { stops, .. }) => {
+                assert_eq!(stops.len(), 2);
+            }
+            other => panic!("expected a linear gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_nested_vw_resolves_against_viewport() {
+        // An inner element sized 50vw must be 400px on an 800px viewport, even
+        // though its parent is narrower — the old percent approximation failed.
+        let mut pipeline = RenderPipeline::new().with_css(
+            ".outer { width: 600px; height: 400px; } .inner { width: 50vw; height: 50px; }",
+        );
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("outer".into()))],
+            vec![make_div_with_props(
+                vec![("class".into(), PropValue::String("inner".into()))],
+                vec![],
+            )],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+
+        let inner = &pipeline.render_scene().nodes()[1];
+        assert_eq!(
+            inner.layout.width, 400.0,
+            "50vw must resolve to 400px against the 800px viewport, got {}",
+            inner.layout.width
+        );
     }
 }

@@ -70,13 +70,26 @@ impl StyleMask {
     }
 }
 
+/// Background paint — a solid colour or a gradient.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundValue {
+    Solid(Color),
+    LinearGradient {
+        direction: Option<String>,
+        stops: Vec<GradientStop>,
+    },
+    RadialGradient {
+        stops: Vec<GradientStop>,
+    },
+}
+
 /// CSS paint properties that Taffy has no place for.
 ///
 /// Taffy only models layout; `background-color`, `color`, `font-size` etc. would
 /// otherwise be dropped at the layout boundary and never reach the scene.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaintProps {
-    pub background: Option<Color>,
+    pub background: Option<BackgroundValue>,
     pub color: Option<Color>,
     pub font_size: Option<f32>,
     pub font_family: Option<String>,
@@ -138,8 +151,20 @@ pub fn convert_to_taffy_styles(rules: &[CssRule]) -> Result<Vec<(String, Style)>
         .collect())
 }
 
+/// Default viewport used when the caller has no real window size yet.
+const DEFAULT_VIEWPORT: (f32, f32) = (1920.0, 1080.0);
+
 /// Convert CssRule list into full style entries (layout + mask + paint).
+///
+/// Uses a default viewport; call [`convert_to_style_entries_vp`] to resolve
+/// `vw`/`vh` against real window dimensions.
 pub fn convert_to_style_entries(rules: &[CssRule]) -> Result<Vec<StyleEntry>> {
+    convert_to_style_entries_vp(rules, DEFAULT_VIEWPORT.0, DEFAULT_VIEWPORT.1)
+}
+
+/// Convert CssRule list into full style entries, resolving `vw`/`vh` against the
+/// given viewport dimensions.
+pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Result<Vec<StyleEntry>> {
     let mut entries = Vec::with_capacity(rules.len());
 
     for rule in rules {
@@ -148,7 +173,7 @@ pub fn convert_to_style_entries(rules: &[CssRule]) -> Result<Vec<StyleEntry>> {
         let mut mask = StyleMask::default();
 
         for prop in &rule.properties {
-            apply_property(&mut style, &mut mask, &prop.name, &prop.value);
+            apply_property(&mut style, &mut mask, &prop.name, &prop.value, vw, vh);
         }
 
         entries.push(StyleEntry {
@@ -168,11 +193,23 @@ pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
 
     for prop in properties {
         match prop.name.as_str() {
-            "background" | "background-color" => {
-                if let CssValue::Color(c) = &prop.value {
-                    paint.background = Some(c.clone());
+            "background" | "background-color" => match &prop.value {
+                CssValue::Color(c) => {
+                    paint.background = Some(BackgroundValue::Solid(c.clone()));
                 }
-            }
+                CssValue::LinearGradient { direction, stops } => {
+                    paint.background = Some(BackgroundValue::LinearGradient {
+                        direction: direction.clone(),
+                        stops: stops.clone(),
+                    });
+                }
+                CssValue::RadialGradient { stops } => {
+                    paint.background = Some(BackgroundValue::RadialGradient {
+                        stops: stops.clone(),
+                    });
+                }
+                _ => {}
+            },
             "color" => {
                 if let CssValue::Color(c) = &prop.value {
                     paint.color = Some(c.clone());
@@ -248,7 +285,14 @@ fn selector_key(sel: &CssSelector) -> String {
     }
 }
 
-fn apply_property(style: &mut Style, mask: &mut StyleMask, name: &str, value: &CssValue) {
+fn apply_property(
+    style: &mut Style,
+    mask: &mut StyleMask,
+    name: &str,
+    value: &CssValue,
+    vw: f32,
+    vh: f32,
+) {
     match name {
         "display" => {
             if let Some(v) = to_display(value) {
@@ -299,7 +343,7 @@ fn apply_property(style: &mut Style, mask: &mut StyleMask, name: &str, value: &C
             }
         }
         "gap" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.gap.width = lp;
                 style.gap.height = lp;
                 mask.gap_width = true;
@@ -307,105 +351,105 @@ fn apply_property(style: &mut Style, mask: &mut StyleMask, name: &str, value: &C
             }
         }
         "row-gap" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.gap.height = lp;
                 mask.gap_height = true;
             }
         }
         "column-gap" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.gap.width = lp;
                 mask.gap_width = true;
             }
         }
         "padding" => {
-            apply_rect_lp(&mut style.padding, value);
+            apply_rect_lp(&mut style.padding, value, vw, vh);
             mask.padding = true;
         }
         "padding-top" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.padding.top = lp;
                 mask.padding = true;
             }
         }
         "padding-right" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.padding.right = lp;
                 mask.padding = true;
             }
         }
         "padding-bottom" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.padding.bottom = lp;
                 mask.padding = true;
             }
         }
         "padding-left" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.padding.left = lp;
                 mask.padding = true;
             }
         }
         "margin" => {
-            apply_rect_lpa(&mut style.margin, value);
+            apply_rect_lpa(&mut style.margin, value, vw, vh);
             mask.margin = true;
         }
         "margin-top" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.margin.top = v;
                 mask.margin = true;
             }
         }
         "margin-right" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.margin.right = v;
                 mask.margin = true;
             }
         }
         "margin-bottom" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.margin.bottom = v;
                 mask.margin = true;
             }
         }
         "margin-left" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.margin.left = v;
                 mask.margin = true;
             }
         }
         "width" => {
-            if let Some(d) = to_dimension(value) {
+            if let Some(d) = to_dimension(value, vw, vh) {
                 style.size.width = d;
                 mask.width = true;
             }
         }
         "height" => {
-            if let Some(d) = to_dimension(value) {
+            if let Some(d) = to_dimension(value, vw, vh) {
                 style.size.height = d;
                 mask.height = true;
             }
         }
         "min-width" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.min_size.width = v;
                 mask.min_width = true;
             }
         }
         "min-height" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.min_size.height = v;
                 mask.min_height = true;
             }
         }
         "max-width" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.max_size.width = v;
                 mask.max_width = true;
             }
         }
         "max-height" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.max_size.height = v;
                 mask.max_height = true;
             }
@@ -417,25 +461,25 @@ fn apply_property(style: &mut Style, mask: &mut StyleMask, name: &str, value: &C
             }
         }
         "top" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.inset.top = v;
                 mask.inset = true;
             }
         }
         "right" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.inset.right = v;
                 mask.inset = true;
             }
         }
         "bottom" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.inset.bottom = v;
                 mask.inset = true;
             }
         }
         "left" => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 style.inset.left = v;
                 mask.inset = true;
             }
@@ -447,7 +491,7 @@ fn apply_property(style: &mut Style, mask: &mut StyleMask, name: &str, value: &C
             }
         }
         "border-radius" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.border.top = lp;
                 style.border.right = lp;
                 style.border.bottom = lp;
@@ -456,7 +500,7 @@ fn apply_property(style: &mut Style, mask: &mut StyleMask, name: &str, value: &C
             }
         }
         "border-width" => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.border.top = lp;
                 style.border.right = lp;
                 style.border.bottom = lp;
@@ -558,43 +602,41 @@ fn to_overflow(val: &CssValue) -> Option<Overflow> {
     }
 }
 
-fn to_length_percentage(val: &CssValue) -> Option<LengthPercentage> {
+fn to_length_percentage(val: &CssValue, vw: f32, vh: f32) -> Option<LengthPercentage> {
     match val {
         CssValue::Length(n, unit) => match unit {
-            // Viewport units are approximated as percentages. The layout root is
-            // sized to the window, so `100vh` resolves to the viewport height at
-            // the top level. For nested elements this resolves against the parent
-            // instead of the viewport — an approximation, but far closer than the
-            // previous behaviour of treating `100vh` as 100 pixels.
-            LengthUnit::Percent | LengthUnit::Vw | LengthUnit::Vh => {
-                Some(LengthPercentage::percent(*n / 100.0))
-            }
+            // Viewport units resolve to absolute pixels against the given
+            // viewport, so nested elements no longer mis-resolve `50vw` against
+            // their parent. `%` stays parent-relative, as CSS requires.
+            LengthUnit::Vw => Some(LengthPercentage::length(*n / 100.0 * vw)),
+            LengthUnit::Vh => Some(LengthPercentage::length(*n / 100.0 * vh)),
+            LengthUnit::Percent => Some(LengthPercentage::percent(*n / 100.0)),
             _ => Some(LengthPercentage::length(*n)),
         },
         _ => None,
     }
 }
 
-fn to_length_percentage_auto(val: &CssValue) -> Option<LengthPercentageAuto> {
+fn to_length_percentage_auto(val: &CssValue, vw: f32, vh: f32) -> Option<LengthPercentageAuto> {
     match val {
         CssValue::Auto => Some(LengthPercentageAuto::auto()),
         CssValue::Length(n, unit) => match unit {
-            LengthUnit::Percent | LengthUnit::Vw | LengthUnit::Vh => {
-                Some(LengthPercentageAuto::percent(*n / 100.0))
-            }
+            LengthUnit::Vw => Some(LengthPercentageAuto::length(*n / 100.0 * vw)),
+            LengthUnit::Vh => Some(LengthPercentageAuto::length(*n / 100.0 * vh)),
+            LengthUnit::Percent => Some(LengthPercentageAuto::percent(*n / 100.0)),
             _ => Some(LengthPercentageAuto::length(*n)),
         },
         _ => None,
     }
 }
 
-fn to_dimension(val: &CssValue) -> Option<Dimension> {
+fn to_dimension(val: &CssValue, vw: f32, vh: f32) -> Option<Dimension> {
     match val {
         CssValue::Auto => Some(Dimension::auto()),
         CssValue::Length(n, unit) => match unit {
-            LengthUnit::Percent | LengthUnit::Vw | LengthUnit::Vh => {
-                Some(Dimension::percent(*n / 100.0))
-            }
+            LengthUnit::Vw => Some(Dimension::length(*n / 100.0 * vw)),
+            LengthUnit::Vh => Some(Dimension::length(*n / 100.0 * vh)),
+            LengthUnit::Percent => Some(Dimension::percent(*n / 100.0)),
             _ => Some(Dimension::length(*n)),
         },
         CssValue::Keyword(k) if k == "auto" => Some(Dimension::auto()),
@@ -602,11 +644,13 @@ fn to_dimension(val: &CssValue) -> Option<Dimension> {
     }
 }
 
-fn apply_rect_lp(target: &mut Rect<LengthPercentage>, value: &CssValue) {
+fn apply_rect_lp(target: &mut Rect<LengthPercentage>, value: &CssValue, vw: f32, vh: f32) {
     match value {
         CssValue::Shorthand(parts) => {
-            let vals: Vec<LengthPercentage> =
-                parts.iter().filter_map(to_length_percentage).collect();
+            let vals: Vec<LengthPercentage> = parts
+                .iter()
+                .filter_map(|p| to_length_percentage(p, vw, vh))
+                .collect();
             match vals.len() {
                 1 => {
                     *target = Rect {
@@ -644,7 +688,7 @@ fn apply_rect_lp(target: &mut Rect<LengthPercentage>, value: &CssValue) {
             }
         }
         _ => {
-            if let Some(lp) = to_length_percentage(value) {
+            if let Some(lp) = to_length_percentage(value, vw, vh) {
                 *target = Rect {
                     top: lp,
                     right: lp,
@@ -656,11 +700,13 @@ fn apply_rect_lp(target: &mut Rect<LengthPercentage>, value: &CssValue) {
     }
 }
 
-fn apply_rect_lpa(target: &mut Rect<LengthPercentageAuto>, value: &CssValue) {
+fn apply_rect_lpa(target: &mut Rect<LengthPercentageAuto>, value: &CssValue, vw: f32, vh: f32) {
     match value {
         CssValue::Shorthand(parts) => {
-            let vals: Vec<LengthPercentageAuto> =
-                parts.iter().filter_map(to_length_percentage_auto).collect();
+            let vals: Vec<LengthPercentageAuto> = parts
+                .iter()
+                .filter_map(|p| to_length_percentage_auto(p, vw, vh))
+                .collect();
             match vals.len() {
                 1 => {
                     *target = Rect {
@@ -698,7 +744,7 @@ fn apply_rect_lpa(target: &mut Rect<LengthPercentageAuto>, value: &CssValue) {
             }
         }
         _ => {
-            if let Some(v) = to_length_percentage_auto(value) {
+            if let Some(v) = to_length_percentage_auto(value, vw, vh) {
                 *target = Rect {
                     top: v,
                     right: v,
@@ -1052,8 +1098,10 @@ mod tests {
         let css = ".app { background-color: #1a1a2e; }";
         let rules = parse_css(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
-        let bg = entries[0].paint.background.clone().unwrap();
-        assert_eq!((bg.r, bg.g, bg.b), (0x1a, 0x1a, 0x2e));
+        match entries[0].paint.background.clone().unwrap() {
+            BackgroundValue::Solid(bg) => assert_eq!((bg.r, bg.g, bg.b), (0x1a, 0x1a, 0x2e)),
+            other => panic!("expected solid background, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1100,7 +1148,7 @@ mod tests {
     #[test]
     fn test_paint_merge_keeps_unspecified() {
         let mut base = PaintProps {
-            background: Some(Color::rgb(1, 2, 3)),
+            background: Some(BackgroundValue::Solid(Color::rgb(1, 2, 3))),
             font_size: Some(16.0),
             ..Default::default()
         };
@@ -1112,7 +1160,7 @@ mod tests {
         assert_eq!(base.font_size, Some(24.0), "specified field overwritten");
         assert_eq!(
             base.background,
-            Some(Color::rgb(1, 2, 3)),
+            Some(BackgroundValue::Solid(Color::rgb(1, 2, 3))),
             "unspecified field preserved"
         );
     }
@@ -1139,5 +1187,44 @@ mod tests {
         assert_eq!(legacy.len(), entries.len());
         assert_eq!(legacy[0].0, entries[0].selector);
         assert_eq!(legacy[0].1.display, entries[0].style.display);
+    }
+
+    // ── Viewport units (vw/vh) ──────────────────────────────────
+
+    #[test]
+    fn test_vw_resolves_to_pixels_against_viewport() {
+        let css = ".w { width: 50vw; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
+        // 50vw of an 800px viewport = 400px, an absolute length not a percent.
+        assert_eq!(entries[0].style.size.width, Dimension::length(400.0));
+    }
+
+    #[test]
+    fn test_vh_resolves_to_pixels_against_viewport() {
+        let css = ".h { height: 50vh; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
+        assert_eq!(entries[0].style.size.height, Dimension::length(300.0));
+    }
+
+    #[test]
+    fn test_percent_stays_parent_relative() {
+        let css = ".w { width: 50%; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
+        // `%` must remain a percentage, resolved against the parent by taffy.
+        assert_eq!(entries[0].style.size.width, Dimension::percent(0.5));
+    }
+
+    #[test]
+    fn test_vw_in_padding_resolves_to_length() {
+        let css = ".p { padding: 10vw; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 1000.0, 500.0).unwrap();
+        assert_eq!(
+            entries[0].style.padding.top,
+            LengthPercentage::length(100.0)
+        );
     }
 }

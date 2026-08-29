@@ -81,6 +81,8 @@ pub struct App {
     primary_window: Option<WindowId>,
     pending_windows: Vec<PendingWindow>,
     stylebook: Option<StyleBook>,
+    /// Raw CSS kept so windows can re-resolve `vw`/`vh` on resize.
+    css_string: Option<String>,
 }
 
 impl App {
@@ -95,6 +97,7 @@ impl App {
             primary_window: None,
             pending_windows: vec![],
             stylebook: None,
+            css_string: None,
         }
     }
 
@@ -114,6 +117,7 @@ impl App {
         if let Ok(sb) = StyleBook::parse(css) {
             self.stylebook = Some(sb);
         }
+        self.css_string = Some(css.to_string());
         self
     }
 
@@ -220,6 +224,9 @@ impl ApplicationHandler for App {
             if let Some(ref sb) = self.stylebook {
                 ws.pipeline = ws.pipeline.with_stylebook(sb.clone());
             }
+            if let Some(ref css) = self.css_string {
+                ws.pipeline = ws.pipeline.with_css_source(css);
+            }
             self.windows.insert(id, ws);
         }
 
@@ -250,6 +257,9 @@ impl ApplicationHandler for App {
             let mut ws = WindowState::new(ctx, component);
             if let Some(ref sb) = self.stylebook {
                 ws.pipeline = ws.pipeline.with_stylebook(sb.clone());
+            }
+            if let Some(ref css) = self.css_string {
+                ws.pipeline = ws.pipeline.with_css_source(css);
             }
             self.windows.insert(id, ws);
         }

@@ -46,10 +46,26 @@ pub enum CssValue {
     Keyword(String),
     /// flex: 1 0 auto
     Shorthand(Vec<CssValue>),
+    /// linear-gradient(direction, stops...)
+    LinearGradient {
+        /// "to right", "45deg", or None → default (to bottom).
+        direction: Option<String>,
+        stops: Vec<GradientStop>,
+    },
+    /// radial-gradient(stops...)
+    RadialGradient { stops: Vec<GradientStop> },
     /// unset, inherit, initial
     Inherited,
     /// none, auto
     Auto,
+}
+
+/// A single colour stop in a gradient.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GradientStop {
+    pub color: Color,
+    /// Position 0.0–1.0. `None` means "distribute automatically".
+    pub position: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -389,6 +389,19 @@ fn parse_single_value(raw: &str) -> Result<CssValue> {
         return Ok(value);
     }
 
+    // Gradients — must precede the keyword fallback, which would otherwise
+    // swallow them (or reject them for containing parens/commas).
+    if raw.starts_with("linear-gradient(") {
+        if let Some(v) = parse_linear_gradient(raw) {
+            return Ok(v);
+        }
+    }
+    if raw.starts_with("radial-gradient(") {
+        if let Some(v) = parse_radial_gradient(raw) {
+            return Ok(v);
+        }
+    }
+
     // Keyword
     if raw
         .chars()
@@ -437,6 +450,134 @@ fn parse_length(raw: &str) -> Option<CssValue> {
     }
 
     None
+}
+
+/// Split gradient arguments on top-level commas, respecting nested parens so
+/// `rgb(0, 0, 255)` stays intact.
+fn split_gradient_args(inner: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0i32;
+    for ch in inner.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
+/// Does this token name a direction rather than a colour stop?
+fn is_gradient_direction(token: &str) -> bool {
+    token.starts_with("to ") || token.ends_with("deg")
+}
+
+/// Parse a single stop like `red`, `#ff0000 50%`, or `rgb(0,0,255) 100%`.
+fn parse_gradient_stop(token: &str) -> Option<GradientStop> {
+    let token = token.trim();
+
+    // A trailing percentage is the position; the rest is the colour.
+    let (color_part, position) = if let Some(idx) = token.rfind('%') {
+        // Find the whitespace separating colour from position.
+        let before_pct = &token[..idx];
+        if let Some(space) = before_pct.rfind(char::is_whitespace) {
+            let pos: Option<f32> = before_pct[space + 1..].trim().parse().ok();
+            (token[..space].trim(), pos.map(|p| p / 100.0))
+        } else {
+            // The whole token is a percentage with no colour — invalid.
+            (token, None)
+        }
+    } else {
+        (token, None)
+    };
+
+    let color = parse_color_token(color_part)?;
+    Some(GradientStop { color, position })
+}
+
+/// Parse a colour token used inside a gradient (hex, named, rgb(), hsl()).
+fn parse_color_token(token: &str) -> Option<Color> {
+    let token = token.trim();
+    if token.starts_with('#') {
+        return Some(Color::from_hex(token));
+    }
+    if let Some(c) = named_color(token) {
+        return Some(c);
+    }
+    if token.starts_with("rgb") {
+        if let Ok(CssValue::Color(c)) = parse_rgb(token) {
+            return Some(c);
+        }
+    }
+    if token.starts_with("hsl") {
+        if let Ok(CssValue::Color(c)) = parse_hsl(token) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+fn parse_linear_gradient(raw: &str) -> Option<CssValue> {
+    let inner = raw
+        .trim()
+        .strip_prefix("linear-gradient(")?
+        .strip_suffix(')')?;
+    let args = split_gradient_args(inner);
+    if args.is_empty() {
+        return None;
+    }
+
+    let mut direction = None;
+    let mut stop_tokens = &args[..];
+    if is_gradient_direction(&args[0]) {
+        direction = Some(args[0].clone());
+        stop_tokens = &args[1..];
+    }
+
+    let stops: Vec<GradientStop> = stop_tokens
+        .iter()
+        .filter_map(|t| parse_gradient_stop(t))
+        .collect();
+
+    // A gradient needs at least two stops to be meaningful.
+    if stops.len() < 2 {
+        return None;
+    }
+
+    Some(CssValue::LinearGradient { direction, stops })
+}
+
+fn parse_radial_gradient(raw: &str) -> Option<CssValue> {
+    let inner = raw
+        .trim()
+        .strip_prefix("radial-gradient(")?
+        .strip_suffix(')')?;
+    let args = split_gradient_args(inner);
+
+    // Drop a leading shape/size/position token if it is not a colour stop
+    // (e.g. "circle", "circle at center"). Keep it simple: skip the first arg
+    // when it doesn't parse as a stop.
+    let stops: Vec<GradientStop> = args.iter().filter_map(|t| parse_gradient_stop(t)).collect();
+
+    if stops.len() < 2 {
+        return None;
+    }
+
+    Some(CssValue::RadialGradient { stops })
 }
 
 fn parse_rgb(raw: &str) -> Result<CssValue> {
@@ -790,10 +931,77 @@ mod tests {
 
     #[test]
     fn test_gradient_fallback_to_keyword() {
-        let css = ".bg { background: linear-gradient(red, blue); }";
+        // A malformed gradient (single stop) still falls back to a keyword so it
+        // is ignored rather than crashing the parse.
+        let css = ".bg { background: linear-gradient(red); }";
         let rules = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
-        // gradient stored as keyword — Taffy ignores it
+        assert!(matches!(rules[0].properties[0].value, CssValue::Keyword(_)));
+    }
+
+    #[test]
+    fn test_parse_linear_gradient_two_colors() {
+        let css = ".bg { background: linear-gradient(red, blue); }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::LinearGradient { direction, stops } => {
+                assert!(direction.is_none());
+                assert_eq!(stops.len(), 2);
+                assert_eq!(
+                    (stops[0].color.r, stops[0].color.g, stops[0].color.b),
+                    (255, 0, 0)
+                );
+                assert_eq!(
+                    (stops[1].color.r, stops[1].color.g, stops[1].color.b),
+                    (0, 0, 255)
+                );
+            }
+            other => panic!("expected linear gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_linear_gradient_with_direction_and_positions() {
+        let css = ".bg { background: linear-gradient(to right, red 0%, blue 100%); }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::LinearGradient { direction, stops } => {
+                assert_eq!(direction.as_deref(), Some("to right"));
+                assert_eq!(stops.len(), 2);
+                assert_eq!(stops[0].position, Some(0.0));
+                assert_eq!(stops[1].position, Some(1.0));
+            }
+            other => panic!("expected linear gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_linear_gradient_deg_and_rgb() {
+        let css = ".bg { background: linear-gradient(45deg, #ff0000, rgb(0, 0, 255)); }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::LinearGradient { direction, stops } => {
+                assert_eq!(direction.as_deref(), Some("45deg"));
+                assert_eq!(stops.len(), 2);
+                assert_eq!(
+                    (stops[1].color.r, stops[1].color.g, stops[1].color.b),
+                    (0, 0, 255)
+                );
+            }
+            other => panic!("expected linear gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_radial_gradient() {
+        let css = ".bg { background: radial-gradient(red, blue); }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::RadialGradient { stops } => {
+                assert_eq!(stops.len(), 2);
+            }
+            other => panic!("expected radial gradient, got {other:?}"),
+        }
     }
 
     #[test]
