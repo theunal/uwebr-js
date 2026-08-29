@@ -205,8 +205,7 @@ fn collect_rlibs(target_dir: &Path) -> Result<Vec<(String, PathBuf)>> {
 ///
 /// `cargo build` overhead'ini atlar: sadece `rustc --edition 2021 --crate-type cdylib`
 /// ile tek dosya compile. Dependency'ler önceden compile edilmiş `.rlib` dosyalarından link edilir.
-///
-/// `target/debug/deps/` altındaki `.d` dosyalarından hangi kütüphanelerin gerektiğini anlar.
+/// `codegen-units=1`, `strip=symbols`, `debug-assertions=no` ile optimize edilir.
 fn compile_with_rustc(
     project_dir: &Path,
     component_name: &str,
@@ -240,7 +239,7 @@ fn compile_with_rustc(
         .join(profile_dir)
         .join(format!("{lib_name}.{lib_ext}"));
 
-    // rustc komutu oluştur
+    // rustc komutu oluştur — optimize flags
     let mut cmd = Command::new("rustc");
     cmd.arg("--edition")
         .arg("2021")
@@ -248,6 +247,15 @@ fn compile_with_rustc(
         .arg("cdylib")
         .arg("--crate-name")
         .arg(format!("uwebr_dynlib_{component_name}"))
+        // Hız optimizasyonları
+        .arg("-C")
+        .arg("codegen-units=1") // Tek codegen unit — daha hızlı link
+        .arg("-C")
+        .arg("strip=symbols") // Sembol strip — daha küçük çıktı
+        .arg("-C")
+        .arg("debug-assertions=no")
+        .arg("-C")
+        .arg("overflow-checks=no")
         .arg("-L")
         .arg(&deps_dir)
         .arg("-o")
@@ -283,11 +291,8 @@ fn init_lib_project(tmp_path: &Path, component_name: &str, project_root: &Path) 
         .join("crates/uwebr-core")
         .to_string_lossy()
         .replace('\\', "/");
-    let render_path = workspace_root
-        .join("crates/uwebr-render")
-        .to_string_lossy()
-        .replace('\\', "/");
 
+    // uwebr-render kullanılmıyor — sadece uwebr-core yeterli (163→5 rlib)
     let manifest = format!(
         r#"[package]
 name = "uwebr_dynlib_{component_name}"
@@ -301,7 +306,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 uwebr-core = {{ path = "{core_path}" }}
-uwebr-render = {{ path = "{render_path}" }}
 "#,
     );
     fs::write(tmp_path.join("Cargo.toml"), manifest)?;
