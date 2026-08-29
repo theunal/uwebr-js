@@ -1,5 +1,6 @@
 use taffy::Style;
 use uwebr_core::component::{Element, NodeType, PropValue};
+use uwebr_css::ast::{AttributeOp, CssSelector};
 use uwebr_css::codegen::{
     convert_to_style_entries, convert_to_style_entries_vp, PaintProps, StyleEntry, StyleMask,
 };
@@ -58,6 +59,7 @@ impl StyleBook {
                 .into_iter()
                 .map(|(selector, style)| StyleEntry {
                     selector,
+                    selector_ast: None,
                     style,
                     // Legacy callers give no mask information; treat every field
                     // as specified so behaviour matches the old merge_style().
@@ -101,32 +103,48 @@ impl StyleBook {
             NodeType::Text(_) | NodeType::Component(_) | NodeType::Raw(_) => return out,
         };
 
-        // 1. Tag rules (e.g. "div", "h1")
-        for entry in &self.rules {
-            if entry.selector == tag {
-                self.absorb(&mut out, entry);
+        // Apply matching rules in ascending specificity order so higher-priority
+        // rules (id > class/attr/pseudo > tag) overwrite lower ones. Rules that
+        // predate AST tracking fall back to the old string-key matching.
+        let mut matches: Vec<(u32, usize, &StyleEntry)> = Vec::new();
+        for (idx, entry) in self.rules.iter().enumerate() {
+            let matched = match &entry.selector_ast {
+                Some(ast) => selector_matches(ast, element, tag),
+                None => self.string_selector_matches(&entry.selector, element, tag),
+            };
+            if matched {
+                let spec = entry
+                    .selector_ast
+                    .as_ref()
+                    .map(selector_specificity)
+                    .unwrap_or(0);
+                matches.push((spec, idx, entry));
             }
         }
 
-        // 2. Class rules (e.g. ".container")
-        for entry in &self.rules {
-            if let Some(class_name) = entry.selector.strip_prefix('.') {
-                if element_has_class(element, class_name) {
-                    self.absorb(&mut out, entry);
-                }
-            }
-        }
+        // Stable sort by (specificity, source order): equal specificity keeps
+        // declaration order, matching the CSS cascade.
+        matches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
-        // 3. Id rules (e.g. "#main")
-        for entry in &self.rules {
-            if let Some(id_name) = entry.selector.strip_prefix('#') {
-                if element_has_id(element, id_name) {
-                    self.absorb(&mut out, entry);
-                }
-            }
+        for (_, _, entry) in matches {
+            self.absorb(&mut out, entry);
         }
 
         out
+    }
+
+    /// Legacy string-key matching for entries without a parsed selector AST.
+    fn string_selector_matches(&self, selector: &str, element: &Element, tag: &str) -> bool {
+        if selector == tag || selector == "*" {
+            return true;
+        }
+        if let Some(class_name) = selector.strip_prefix('.') {
+            return element_has_class(element, class_name);
+        }
+        if let Some(id_name) = selector.strip_prefix('#') {
+            return element_has_id(element, id_name);
+        }
+        false
     }
 
     fn absorb(&self, out: &mut MatchedStyle, entry: &StyleEntry) {
@@ -168,6 +186,138 @@ fn element_has_id(element: &Element, id_name: &str) -> bool {
         .props
         .iter()
         .any(|(name, val)| name == "id" && matches!(val, PropValue::String(s) if s == id_name))
+}
+
+/// Recursively test whether a selector matches an element.
+///
+/// Descendant/child combinators are simplified: only the rightmost (subject)
+/// selector is tested against the element, since the pipeline does not yet pass
+/// a parent chain. This is documented as a FAZ 13 limitation.
+fn selector_matches(sel: &CssSelector, element: &Element, tag: &str) -> bool {
+    match sel {
+        CssSelector::Tag(t) => t == tag,
+        CssSelector::Class(c) => element_has_class(element, c),
+        CssSelector::Id(id) => element_has_id(element, id),
+        CssSelector::Universal => true,
+        CssSelector::PseudoClass(inner, pseudo) => {
+            selector_matches(inner, element, tag) && pseudo_class_matches(pseudo, element)
+        }
+        CssSelector::Attribute {
+            selector: inner,
+            attr,
+            op,
+            value,
+        } => {
+            selector_matches(inner, element, tag)
+                && attribute_matches(element, attr, op, value.as_deref())
+        }
+        // Simplified: match on the rightmost selector only (no parent chain yet).
+        CssSelector::Descendant(selectors) | CssSelector::Child(selectors) => selectors
+            .last()
+            .is_some_and(|last| selector_matches(last, element, tag)),
+        CssSelector::List(sels) => sels.iter().any(|s| selector_matches(s, element, tag)),
+    }
+}
+
+/// CSS specificity as a single sortable integer: (id, class/attr/pseudo, tag).
+///
+/// Packed as `id * 10000 + (class+attr+pseudo) * 100 + tag` so that a higher
+/// value always wins, matching the cascade ordering used by browsers.
+fn selector_specificity(sel: &CssSelector) -> u32 {
+    fn count(sel: &CssSelector, ids: &mut u32, classes: &mut u32, tags: &mut u32) {
+        match sel {
+            CssSelector::Id(_) => *ids += 1,
+            CssSelector::Class(_) => *classes += 1,
+            CssSelector::Tag(_) => *tags += 1,
+            CssSelector::Universal => {}
+            CssSelector::PseudoClass(inner, _) => {
+                *classes += 1;
+                count(inner, ids, classes, tags);
+            }
+            CssSelector::Attribute { selector, .. } => {
+                *classes += 1;
+                count(selector, ids, classes, tags);
+            }
+            CssSelector::Descendant(sels) | CssSelector::Child(sels) => {
+                for s in sels {
+                    count(s, ids, classes, tags);
+                }
+            }
+            // A list matches on any branch; specificity is taken as the max.
+            CssSelector::List(sels) => {
+                let mut best = 0;
+                for s in sels {
+                    best = best.max(selector_specificity(s));
+                }
+                // Fold the best branch back into the counters via the packed form.
+                *ids += best / 10000;
+                *classes += (best / 100) % 100;
+                *tags += best % 100;
+            }
+        }
+    }
+
+    let (mut ids, mut classes, mut tags) = (0, 0, 0);
+    count(sel, &mut ids, &mut classes, &mut tags);
+    ids * 10000 + classes * 100 + tags
+}
+
+/// Match a pseudo-class name against an element.
+///
+/// Stateless structural pseudo-classes that need a parent chain
+/// (`:first-child`, …) are simplified to always match. Stateful ones
+/// (`:hover`, …) return false until runtime state tracking lands in a later
+/// phase. `:disabled` / `:enabled` are checked against the element's props.
+fn pseudo_class_matches(pseudo: &str, element: &Element) -> bool {
+    match pseudo {
+        // Structural — real matching needs the parent's child list (future phase).
+        "first-child" | "last-child" | "only-child" | "nth-child" | "nth-of-type" => true,
+        // Stateful — needs runtime hover/focus tracking (future phase).
+        "hover" | "focus" | "active" | "visited" | "focus-within" | "focus-visible" => false,
+        "disabled" => is_disabled(element),
+        "enabled" => !is_disabled(element),
+        "checked" => element
+            .props
+            .iter()
+            .any(|(k, v)| k == "checked" && matches!(v, PropValue::Bool(true))),
+        _ => false,
+    }
+}
+
+/// Whether an element carries a truthy `disabled` attribute.
+fn is_disabled(element: &Element) -> bool {
+    element.props.iter().any(|(k, v)| {
+        k == "disabled"
+            && match v {
+                PropValue::Bool(b) => *b,
+                PropValue::String(s) => s != "false",
+                _ => false,
+            }
+    })
+}
+
+/// Match an attribute selector against an element's props.
+fn attribute_matches(element: &Element, attr: &str, op: &AttributeOp, value: Option<&str>) -> bool {
+    let attr_value = element
+        .props
+        .iter()
+        .find(|(k, _)| k == attr)
+        .and_then(|(_, v)| match v {
+            PropValue::String(s) => Some(s.as_str()),
+            PropValue::Bool(true) => Some(""),
+            _ => None,
+        });
+
+    match op {
+        AttributeOp::Exists => attr_value.is_some(),
+        AttributeOp::Equals => attr_value == value,
+        AttributeOp::Includes => {
+            attr_value.is_some_and(|v| v.split_whitespace().any(|w| w == value.unwrap_or("")))
+        }
+        AttributeOp::Prefix => attr_value.is_some_and(|v| v.starts_with(value.unwrap_or(""))),
+        AttributeOp::Suffix => attr_value.is_some_and(|v| v.ends_with(value.unwrap_or(""))),
+        AttributeOp::Contains => attr_value.is_some_and(|v| v.contains(value.unwrap_or(""))),
+    }
 }
 
 /// Every field marked as specified — used for legacy `from_rules` entries.
@@ -573,5 +723,125 @@ mod tests {
         sb.reparse(".w { width: 50vw; }", 1000.0, 600.0).unwrap();
         let (style, _) = sb.match_element(&el);
         assert_eq!(style.size.width, taffy::Dimension::length(500.0));
+    }
+
+    // ── Pseudo-class / attribute selector matching (FAZ 13) ─────
+
+    #[test]
+    fn test_pseudo_hover_not_applied_without_state() {
+        // :hover is stateful; with no runtime tracking it never matches yet.
+        let sb = StyleBook::parse(".btn:hover { background-color: blue; }").unwrap();
+        let el = make_element(
+            "button",
+            vec![("class".into(), PropValue::String("btn".into()))],
+        );
+        let m = sb.match_full(&el);
+        assert!(
+            m.paint.background.is_none(),
+            ":hover must not apply without hover state"
+        );
+    }
+
+    #[test]
+    fn test_pseudo_disabled_applies_to_disabled_element() {
+        let sb = StyleBook::parse("button:disabled { opacity: 0.5; }").unwrap();
+        let el = make_element("button", vec![("disabled".into(), PropValue::Bool(true))]);
+        let m = sb.match_full(&el);
+        assert_eq!(m.paint.opacity, Some(0.5), "disabled element must match");
+    }
+
+    #[test]
+    fn test_pseudo_disabled_skips_enabled_element() {
+        let sb = StyleBook::parse("button:disabled { opacity: 0.5; }").unwrap();
+        let el = make_element("button", vec![]);
+        let m = sb.match_full(&el);
+        assert!(
+            m.paint.opacity.is_none(),
+            "enabled element must not match :disabled"
+        );
+    }
+
+    #[test]
+    fn test_attribute_exists_matches() {
+        let sb = StyleBook::parse("[disabled] { opacity: 0.5; }").unwrap();
+        let el = make_element("input", vec![("disabled".into(), PropValue::Bool(true))]);
+        let m = sb.match_full(&el);
+        assert_eq!(m.paint.opacity, Some(0.5));
+    }
+
+    #[test]
+    fn test_attribute_equals_matches_specific_value() {
+        let sb = StyleBook::parse(r#"input[type="text"] { border-width: 1px; }"#).unwrap();
+        let text_input = make_element(
+            "input",
+            vec![("type".into(), PropValue::String("text".into()))],
+        );
+        let checkbox = make_element(
+            "input",
+            vec![("type".into(), PropValue::String("checkbox".into()))],
+        );
+
+        assert!(
+            sb.match_full(&text_input).paint.border_width.is_some(),
+            "type=text must match"
+        );
+        assert!(
+            sb.match_full(&checkbox).paint.border_width.is_none(),
+            "type=checkbox must not match"
+        );
+    }
+
+    #[test]
+    fn test_attribute_contains_matches_substring() {
+        let sb = StyleBook::parse(r#"[class*="btn"] { opacity: 0.9; }"#).unwrap();
+        let el = make_element(
+            "div",
+            vec![("class".into(), PropValue::String("my-btn-primary".into()))],
+        );
+        let m = sb.match_full(&el);
+        assert_eq!(m.paint.opacity, Some(0.9));
+    }
+
+    #[test]
+    fn test_attribute_prefix_and_suffix() {
+        let prefix = StyleBook::parse(r#"[href^="https"] { opacity: 0.8; }"#).unwrap();
+        let secure = make_element(
+            "a",
+            vec![("href".into(), PropValue::String("https://x.com".into()))],
+        );
+        let insecure = make_element(
+            "a",
+            vec![("href".into(), PropValue::String("http://x.com".into()))],
+        );
+        assert!(prefix.match_full(&secure).paint.opacity.is_some());
+        assert!(prefix.match_full(&insecure).paint.opacity.is_none());
+
+        let suffix = StyleBook::parse(r#"[src$=".png"] { opacity: 0.7; }"#).unwrap();
+        let png = make_element(
+            "img",
+            vec![("src".into(), PropValue::String("a.png".into()))],
+        );
+        let jpg = make_element(
+            "img",
+            vec![("src".into(), PropValue::String("a.jpg".into()))],
+        );
+        assert!(suffix.match_full(&png).paint.opacity.is_some());
+        assert!(suffix.match_full(&jpg).paint.opacity.is_none());
+    }
+
+    #[test]
+    fn test_id_specificity_beats_attribute() {
+        // #x wins over [data-x] regardless of source order.
+        let sb =
+            StyleBook::parse(r#"[data-x="1"] { color: red; } #hero { color: blue; }"#).unwrap();
+        let el = make_element(
+            "div",
+            vec![
+                ("data-x".into(), PropValue::String("1".into())),
+                ("id".into(), PropValue::String("hero".into())),
+            ],
+        );
+        let c = sb.match_full(&el).paint.color.unwrap();
+        assert_eq!((c.r, c.g, c.b), (0, 0, 255), "id rule must win");
     }
 }

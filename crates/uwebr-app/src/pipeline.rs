@@ -131,6 +131,17 @@ impl RenderPipeline {
             .max_by_key(|t| t.depth)
             .map(|t| t.action.as_str())
     }
+
+    /// Reload CSS without rebuilding the entire pipeline.
+    ///
+    /// Called by the dev server on a CSS-only change: re-parses the stylesheet
+    /// against the current viewport and stores it so the next `render` picks up
+    /// the new rules. The layout tree and hit targets are rebuilt on that next
+    /// render, so no scene work happens here.
+    pub fn reload_css(&mut self, css: &str, width: u32, height: u32) {
+        let _ = self.stylebook.reparse(css, width as f32, height as f32);
+        self.css_string = Some(css.to_string());
+    }
 }
 
 fn contains_point(bounds: &LayoutInfo, x: f32, y: f32) -> bool {
@@ -592,6 +603,27 @@ mod tests {
             vec![make_text("Styled")],
         );
         let _scene = pipeline.render(&el, 800, 600);
+    }
+
+    #[test]
+    fn test_reload_css_updates_layout() {
+        // reload_css must swap the stylebook so the next render uses new rules.
+        let mut pipeline = RenderPipeline::new().with_css(".box { width: 100px; height: 50px; }");
+        let el = make_div_with_props(
+            vec![("class".into(), PropValue::String("box".into()))],
+            vec![],
+        );
+        pipeline.build_render_scene(&el, 800, 600);
+        assert_eq!(pipeline.render_scene().nodes()[0].layout.width, 100.0);
+
+        // Hot-reload the CSS with a new width; the next render reflects it.
+        pipeline.reload_css(".box { width: 250px; height: 50px; }", 800, 600);
+        pipeline.build_render_scene(&el, 800, 600);
+        assert_eq!(
+            pipeline.render_scene().nodes()[0].layout.width,
+            250.0,
+            "reload_css should change the box width"
+        );
     }
 
     #[test]

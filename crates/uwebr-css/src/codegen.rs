@@ -142,6 +142,9 @@ impl PaintProps {
 #[derive(Debug, Clone)]
 pub struct StyleEntry {
     pub selector: String,
+    /// The parsed selector AST, used for pseudo-class / attribute matching.
+    /// `None` for legacy string-only entries built via `from_rules`.
+    pub selector_ast: Option<CssSelector>,
     pub style: Style,
     pub mask: StyleMask,
     pub paint: PaintProps,
@@ -182,6 +185,7 @@ pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Resul
 
         entries.push(StyleEntry {
             selector,
+            selector_ast: Some(rule.selector.clone()),
             style,
             mask,
             paint: extract_paint(&rule.properties),
@@ -290,6 +294,26 @@ fn selector_key(sel: &CssSelector) -> String {
         CssSelector::List(parts) => {
             let keys: Vec<String> = parts.iter().map(selector_key).collect();
             keys.join(", ")
+        }
+        CssSelector::PseudoClass(inner, pseudo) => {
+            format!("{}:{}", selector_key(inner), pseudo)
+        }
+        CssSelector::Attribute {
+            selector,
+            attr,
+            op,
+            value,
+        } => {
+            let base = selector_key(selector);
+            match (op, value) {
+                (AttributeOp::Exists, _) => format!("{base}[{attr}]"),
+                (AttributeOp::Equals, Some(v)) => format!("{base}[{attr}=\"{v}\"]"),
+                (AttributeOp::Includes, Some(v)) => format!("{base}[{attr}~=\"{v}\"]"),
+                (AttributeOp::Prefix, Some(v)) => format!("{base}[{attr}^=\"{v}\"]"),
+                (AttributeOp::Suffix, Some(v)) => format!("{base}[{attr}$=\"{v}\"]"),
+                (AttributeOp::Contains, Some(v)) => format!("{base}[{attr}*=\"{v}\"]"),
+                (_, None) => format!("{base}[{attr}]"),
+            }
         }
     }
 }
@@ -796,6 +820,18 @@ fn selector_to_fn_name(selector: &CssSelector) -> String {
         CssSelector::Descendant(_) => "style_descendant".to_string(),
         CssSelector::Child(_) => "style_child".to_string(),
         CssSelector::List(_) => "style_list".to_string(),
+        CssSelector::PseudoClass(inner, pseudo) => {
+            format!(
+                "{}_{}",
+                selector_to_fn_name(inner),
+                pseudo.replace('-', "_")
+            )
+        }
+        CssSelector::Attribute { selector, attr, .. } => format!(
+            "{}_attr_{}",
+            selector_to_fn_name(selector),
+            attr.replace('-', "_")
+        ),
     }
 }
 

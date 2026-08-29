@@ -222,7 +222,7 @@ fn parse_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Cs
 
 fn parse_simple_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<CssSelector> {
     skip_whitespace(chars);
-    let sel = match chars.peek() {
+    let mut sel = match chars.peek() {
         Some(&'.') => {
             chars.next();
             let name = read_ident(chars);
@@ -237,6 +237,14 @@ fn parse_simple_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Re
             chars.next();
             CssSelector::Universal
         }
+        Some(&'[') => {
+            // Bare attribute selector, e.g. `[disabled]` → applies to any element.
+            CssSelector::Universal
+        }
+        Some(&':') => {
+            // Bare pseudo-class, e.g. `:first-child` → applies to any element.
+            CssSelector::Universal
+        }
         Some(&ch) if ch.is_alphabetic() || ch == '_' || ch == '-' => {
             let name = read_ident(chars);
             CssSelector::Tag(name)
@@ -244,22 +252,125 @@ fn parse_simple_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Re
         _ => bail!("Unexpected character in selector: {:?}", chars.peek()),
     };
 
-    // Handle pseudo-classes after any selector: .btn:hover, #id:focus, div:first-child
-    skip_whitespace(chars);
-    if chars.peek() == Some(&':') {
-        chars.next(); // consume ':'
-        let _pseudo = read_ident(chars); // e.g. "hover", "focus", "first-child"
-    }
-    // Handle attribute selectors after any selector: input[type="text"]
-    skip_whitespace(chars);
-    if chars.peek() == Some(&'[') {
-        let _attrs = read_until(chars, ']');
-        if chars.peek() == Some(&']') {
-            chars.next(); // consume ']'
+    // Chain any number of pseudo-classes and attribute selectors onto the base,
+    // e.g. `input[type="text"]:focus` or `.btn:hover:first-child`. No whitespace
+    // is skipped here: a space would start a descendant selector instead.
+    loop {
+        match chars.peek() {
+            Some(&':') => {
+                chars.next(); // consume ':'
+                              // A leading `::` is a pseudo-element; skip the extra colon.
+                if chars.peek() == Some(&':') {
+                    chars.next();
+                }
+                let pseudo_name = read_ident(chars);
+                // Consume a functional argument like `nth-child(2n+1)`; the value
+                // is not modelled yet, so it is read and discarded.
+                if chars.peek() == Some(&'(') {
+                    let _ = read_until(chars, ')');
+                    if chars.peek() == Some(&')') {
+                        chars.next();
+                    }
+                }
+                sel = CssSelector::PseudoClass(Box::new(sel), pseudo_name);
+            }
+            Some(&'[') => {
+                chars.next(); // consume '['
+                let (attr, op, value) = parse_attribute_selector(chars);
+                skip_whitespace(chars);
+                if chars.peek() == Some(&']') {
+                    chars.next(); // consume ']'
+                }
+                sel = CssSelector::Attribute {
+                    selector: Box::new(sel),
+                    attr,
+                    op,
+                    value,
+                };
+            }
+            _ => break,
         }
     }
 
     Ok(sel)
+}
+
+/// Parse the interior of an attribute selector (after the opening `[`).
+///
+/// Returns the attribute name, the match operator, and the optional value.
+/// Positioned just after `[`; the caller consumes the closing `]`.
+fn parse_attribute_selector(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+) -> (String, AttributeOp, Option<String>) {
+    skip_whitespace(chars);
+    let attr = read_ident(chars);
+    skip_whitespace(chars);
+
+    // Operator: `=`, `~=`, `^=`, `$=`, `*=`, or none (existence check).
+    let op = match chars.peek() {
+        Some(&'=') => {
+            chars.next();
+            AttributeOp::Equals
+        }
+        Some(&'~') => {
+            chars.next();
+            if chars.peek() == Some(&'=') {
+                chars.next();
+            }
+            AttributeOp::Includes
+        }
+        Some(&'^') => {
+            chars.next();
+            if chars.peek() == Some(&'=') {
+                chars.next();
+            }
+            AttributeOp::Prefix
+        }
+        Some(&'$') => {
+            chars.next();
+            if chars.peek() == Some(&'=') {
+                chars.next();
+            }
+            AttributeOp::Suffix
+        }
+        Some(&'*') => {
+            chars.next();
+            if chars.peek() == Some(&'=') {
+                chars.next();
+            }
+            AttributeOp::Contains
+        }
+        _ => return (attr, AttributeOp::Exists, None),
+    };
+
+    skip_whitespace(chars);
+    let value = if chars.peek() == Some(&'"') || chars.peek() == Some(&'\'') {
+        Some(read_quoted_string(chars))
+    } else {
+        Some(read_ident(chars))
+    };
+
+    (attr, op, value)
+}
+
+/// Read a quoted string value, consuming the surrounding quotes.
+fn read_quoted_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let quote = match chars.peek() {
+        Some(&q @ ('"' | '\'')) => {
+            chars.next();
+            q
+        }
+        _ => return String::new(),
+    };
+    let mut s = String::new();
+    while let Some(&ch) = chars.peek() {
+        chars.next();
+        if ch == quote {
+            break;
+        }
+        s.push(ch);
+    }
+    s
 }
 
 fn parse_declarations(
@@ -894,18 +1005,20 @@ mod tests {
 
     #[test]
     fn test_pseudo_class_fallback() {
-        // :hover, :focus, :active etc. — stored as keyword, Taffy ignores
+        // :hover, :focus, :active etc. are now parsed into PseudoClass variants.
         let css = ".btn:hover { background: blue; }";
         let rules = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
+        assert!(matches!(rules[0].selector, CssSelector::PseudoClass(_, _)));
     }
 
     #[test]
     fn test_attribute_selector_fallback() {
-        // [type="text"] — stored as keyword, Taffy ignores
+        // [type="text"] is now parsed into an Attribute variant.
         let css = r#"input[type="text"] { border: 1px solid; }"#;
         let rules = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
+        assert!(matches!(rules[0].selector, CssSelector::Attribute { .. }));
     }
 
     #[test]
@@ -1037,5 +1150,134 @@ mod tests {
             rules[0].properties[0].value,
             CssValue::Length(1.5, LengthUnit::Em)
         );
+    }
+
+    // --- Pseudo-class / attribute selectors (FAZ 13) ---
+
+    #[test]
+    fn test_parse_pseudo_class_hover() {
+        let css = ".btn:hover { background: blue; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::PseudoClass(inner, pseudo) => {
+                assert_eq!(**inner, CssSelector::Class("btn".to_string()));
+                assert_eq!(pseudo, "hover");
+            }
+            other => panic!("expected pseudo-class, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_pseudo_class_first_child_on_tag() {
+        let css = "div:first-child { color: red; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::PseudoClass(inner, pseudo) => {
+                assert_eq!(**inner, CssSelector::Tag("div".to_string()));
+                assert_eq!(pseudo, "first-child");
+            }
+            other => panic!("expected pseudo-class, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_attribute_equals() {
+        let css = r#"input[type="text"] { border: 1px solid; }"#;
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Attribute {
+                selector,
+                attr,
+                op,
+                value,
+            } => {
+                assert_eq!(**selector, CssSelector::Tag("input".to_string()));
+                assert_eq!(attr, "type");
+                assert_eq!(*op, AttributeOp::Equals);
+                assert_eq!(value.as_deref(), Some("text"));
+            }
+            other => panic!("expected attribute selector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_attribute_exists() {
+        let css = "[disabled] { opacity: 0.5; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Attribute {
+                selector,
+                attr,
+                op,
+                value,
+            } => {
+                assert_eq!(**selector, CssSelector::Universal);
+                assert_eq!(attr, "disabled");
+                assert_eq!(*op, AttributeOp::Exists);
+                assert_eq!(*value, None);
+            }
+            other => panic!("expected attribute selector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_attribute_contains() {
+        let css = r#"[class*="active"] { font-weight: bold; }"#;
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::Attribute {
+                selector,
+                attr,
+                op,
+                value,
+            } => {
+                assert_eq!(**selector, CssSelector::Universal);
+                assert_eq!(attr, "class");
+                assert_eq!(*op, AttributeOp::Contains);
+                assert_eq!(value.as_deref(), Some("active"));
+            }
+            other => panic!("expected attribute selector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_attribute_prefix_suffix_includes() {
+        let ops = [
+            (r#"[href^="https"]"#, AttributeOp::Prefix, "https"),
+            (r#"[src$=".png"]"#, AttributeOp::Suffix, ".png"),
+            (r#"[rel~="next"]"#, AttributeOp::Includes, "next"),
+        ];
+        for (sel, expected_op, expected_val) in ops {
+            let css = format!("{sel} {{ color: red; }}");
+            let rules = parse_css(&css).unwrap();
+            match &rules[0].selector {
+                CssSelector::Attribute { op, value, .. } => {
+                    assert_eq!(*op, expected_op, "op mismatch for {sel}");
+                    assert_eq!(
+                        value.as_deref(),
+                        Some(expected_val),
+                        "value mismatch for {sel}"
+                    );
+                }
+                other => panic!("expected attribute selector for {sel}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_tag_with_attribute_and_pseudo() {
+        // Chained: input[type="text"]:focus
+        let css = r#"input[type="text"]:focus { outline: none; }"#;
+        let rules = parse_css(css).unwrap();
+        match &rules[0].selector {
+            CssSelector::PseudoClass(inner, pseudo) => {
+                assert_eq!(pseudo, "focus");
+                match &**inner {
+                    CssSelector::Attribute { attr, .. } => assert_eq!(attr, "type"),
+                    other => panic!("expected attribute inside pseudo, got {other:?}"),
+                }
+            }
+            other => panic!("expected pseudo-class outer, got {other:?}"),
+        }
     }
 }

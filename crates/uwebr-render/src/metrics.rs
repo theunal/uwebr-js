@@ -78,13 +78,22 @@ impl Metrics {
         start.elapsed().as_secs_f64() * 1000.0
     }
 
-    /// Best-effort resident memory estimate.
+    /// Best-effort resident memory estimate in bytes.
     ///
-    /// A real per-platform reading (e.g. `GetProcessMemoryInfo` on Windows,
-    /// `/proc/self/statm` on Linux) is out of scope here; returns 0 to signal
-    /// "not measured" rather than reporting a misleading number.
+    /// Uses `sysinfo` to read the current process's memory. Returns 0 when the
+    /// process cannot be found (e.g. a sandboxed CI environment), signalling
+    /// "not measured" rather than a misleading number.
     pub fn measure_memory() -> u64 {
-        0
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+        let pid = Pid::from_u32(std::process::id());
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_memory(),
+        );
+        sys.process(pid).map(|p| p.memory()).unwrap_or(0)
     }
 
     /// Size of the current executable on disk, or 0 if it cannot be determined.
@@ -166,5 +175,26 @@ mod tests {
         let m = Metrics::default();
         assert_eq!(m.fps, 0.0);
         assert_eq!(m.memory_bytes, 0);
+    }
+
+    #[test]
+    fn test_measure_memory_is_nonnegative() {
+        // On a real desktop this is > 0; in a sandboxed CI the process may not
+        // be found and 0 is acceptable. Either way it must not panic.
+        let _mem = Metrics::measure_memory();
+    }
+
+    #[test]
+    fn test_measure_all_populates_memory_field() {
+        // measure_all() must route the memory probe into the struct field.
+        // We can't assert a specific value (platform-dependent), but on a host
+        // where the probe works the field should be non-zero.
+        let m = Metrics::measure_all();
+        if Metrics::measure_memory() > 0 {
+            assert!(
+                m.memory_bytes > 0,
+                "measure_all should carry the memory reading through"
+            );
+        }
     }
 }

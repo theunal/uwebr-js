@@ -25,6 +25,32 @@ pub enum CssSelector {
     Child(Vec<CssSelector>),
     /// .a, .b (list)
     List(Vec<CssSelector>),
+    /// .btn:hover, div:first-child
+    PseudoClass(Box<CssSelector>, String),
+    /// input[type="text"], [disabled]
+    Attribute {
+        selector: Box<CssSelector>,
+        attr: String,
+        op: AttributeOp,
+        value: Option<String>,
+    },
+}
+
+/// Attribute selector operator: `[attr]`, `[attr="v"]`, `[attr^="v"]`, …
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AttributeOp {
+    /// `[attr]`
+    Exists,
+    /// `[attr="value"]`
+    Equals,
+    /// `[attr~="value"]` — whitespace-separated word list contains value
+    Includes,
+    /// `[attr^="value"]` — starts with value
+    Prefix,
+    /// `[attr$="value"]` — ends with value
+    Suffix,
+    /// `[attr*="value"]` — contains value substring
+    Contains,
 }
 
 /// CSS property

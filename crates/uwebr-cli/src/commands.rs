@@ -479,18 +479,24 @@ pub fn dev_server(path: &str) -> Result<()> {
                     }
                 }
 
-                // Filter to only .uwebr files
-                let uwebr_changed: Vec<_> = changed
-                    .iter()
-                    .filter(|p| p.extension().is_some_and(|ext| ext == "uwebr"))
-                    .cloned()
-                    .collect();
-
-                if uwebr_changed.is_empty() {
+                // Classify the batch: a CSS-only change skips the transpile step.
+                let change_kind = classify_changes(&changed);
+                if change_kind == ChangeKind::None {
                     continue;
                 }
 
-                let paths_display: Vec<_> = uwebr_changed
+                let relevant: Vec<_> = changed
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            p.extension().and_then(|e| e.to_str()),
+                            Some("uwebr") | Some("rs") | Some("css")
+                        )
+                    })
+                    .cloned()
+                    .collect();
+
+                let paths_display: Vec<_> = relevant
                     .iter()
                     .filter_map(|p| p.strip_prefix(&root).ok())
                     .map(|p| p.display().to_string())
@@ -498,24 +504,38 @@ pub fn dev_server(path: &str) -> Result<()> {
 
                 println!(
                     "[reload] {} file(s): {}",
-                    uwebr_changed.len(),
+                    relevant.len(),
                     paths_display.join(", ")
                 );
 
                 let start = Instant::now();
 
-                // Re-parse for diagnostics, then transpile.
-                for result in cache.build_incremental(&uwebr_changed)? {
-                    if let Some(ref err) = result.error {
-                        eprintln!("  parse error in {}: {err}", result.path.display());
-                    }
-                }
+                // CSS-only fast path: skip transpile, rebuild + relaunch only.
+                // (In-process CSS hot-swap without a restart is a future phase;
+                // for now we still rebuild but save the transpile cost.)
+                let transpiled = if change_kind == ChangeKind::CssOnly {
+                    println!("  CSS changed — fast rebuild (skipping transpile)");
+                    0
+                } else {
+                    let uwebr_changed: Vec<_> = relevant
+                        .iter()
+                        .filter(|p| p.extension().is_some_and(|ext| ext == "uwebr"))
+                        .cloned()
+                        .collect();
 
-                let transpiled = match transpile_incremental(&root, &uwebr_changed) {
-                    Ok(count) => count,
-                    Err(e) => {
-                        eprintln!("  transpile error: {e}");
-                        continue;
+                    // Re-parse for diagnostics, then transpile.
+                    for result in cache.build_incremental(&uwebr_changed)? {
+                        if let Some(ref err) = result.error {
+                            eprintln!("  parse error in {}: {err}", result.path.display());
+                        }
+                    }
+
+                    match transpile_incremental(&root, &uwebr_changed) {
+                        Ok(count) => count,
+                        Err(e) => {
+                            eprintln!("  transpile error: {e}");
+                            continue;
+                        }
                     }
                 };
 
@@ -575,6 +595,43 @@ pub fn dev_server(path: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Classification of a batch of changed files for the dev server.
+///
+/// Drives the hot-reload strategy: a CSS-only batch can skip the transpile step
+/// entirely, while any `.uwebr`/`.rs` change needs the full transpile + build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    /// Only `.css` files changed — skip transpile, rebuild only.
+    CssOnly,
+    /// At least one `.uwebr` or `.rs` file changed — full pipeline.
+    Full,
+    /// Nothing relevant changed.
+    None,
+}
+
+/// Classify a set of changed paths into a [`ChangeKind`].
+///
+/// `.uwebr`/`.rs` changes always force a [`ChangeKind::Full`] rebuild. When only
+/// `.css` files changed, the transpile step can be skipped ([`ChangeKind::CssOnly`]).
+pub fn classify_changes(paths: &[PathBuf]) -> ChangeKind {
+    let mut css = false;
+    let mut full = false;
+    for p in paths {
+        match p.extension().and_then(|e| e.to_str()) {
+            Some("css") => css = true,
+            Some("uwebr") | Some("rs") => full = true,
+            _ => {}
+        }
+    }
+    if full {
+        ChangeKind::Full
+    } else if css {
+        ChangeKind::CssOnly
+    } else {
+        ChangeKind::None
+    }
 }
 
 /// Transpile all .uwebr files to .rs
@@ -1051,5 +1108,35 @@ mod tests {
         cache.build_all().unwrap();
         // html5ever is lenient, so a clean file must report no errors.
         assert!(cache.failing_files().is_empty());
+    }
+
+    // ── Hot reload change classification (FAZ 13) ───────────────
+
+    #[test]
+    fn test_classify_css_only_change() {
+        let paths = vec![PathBuf::from("src/app/App.css")];
+        assert_eq!(classify_changes(&paths), ChangeKind::CssOnly);
+    }
+
+    #[test]
+    fn test_classify_uwebr_change_is_full() {
+        let paths = vec![PathBuf::from("src/app/App.uwebr")];
+        assert_eq!(classify_changes(&paths), ChangeKind::Full);
+    }
+
+    #[test]
+    fn test_classify_mixed_css_and_uwebr_is_full() {
+        // Any .uwebr/.rs change forces the full pipeline, even alongside CSS.
+        let paths = vec![
+            PathBuf::from("styles/main.css"),
+            PathBuf::from("src/app/App.uwebr"),
+        ];
+        assert_eq!(classify_changes(&paths), ChangeKind::Full);
+    }
+
+    #[test]
+    fn test_classify_irrelevant_change_is_none() {
+        let paths = vec![PathBuf::from("README.md"), PathBuf::from("notes.txt")];
+        assert_eq!(classify_changes(&paths), ChangeKind::None);
     }
 }

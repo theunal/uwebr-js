@@ -353,12 +353,14 @@ uwebr dev
 
 | Metrik | Hedef | Ölçülen | Notlar |
 |--------|-------|---------|--------|
-| İlk render | < 100ms | ölçülmedi | Cold start |
-| Frame rate | 60 FPS | ölçülmedi | AutoVsync |
-| Memory | < 50MB | ölçülmedi | Typical desktop app |
-| Binary size | < 10MB | ölçülmedi | Optimized release |
-| Hot reload | < 500ms | **~7s** | `cargo build` süresi baskın; hedef gerçekçi değil |
-| Layout compute | < 1ms | ölçülmedi | 1000 node tree |
+| İlk render | < 100ms | `Metrics::measure_cold_start()` | `uwebr metrics` komutu ile ölçülebilir |
+| Frame rate | 60 FPS | `Renderer::fps()` | Renderer frame-time tracking aktif |
+| Memory | < 50MB | ölçülmüyor | Platform bağımsız ölçülemiyor (FAZ 13'te) |
+| Binary size | < 10MB | `Metrics::measure_binary_size()` | `uwebr metrics` komutu ile ölçülüyor |
+| Hot reload | < 500ms | **~7s** | `cargo build` süresi baskın; in-process reload gerekiyor |
+| Layout compute | < 1ms | `Metrics::measure_layout_1000()` | 1000 node tree, `uwebr metrics` ile ölçülebilir |
+
+Altyapı: `uwebr_render::metrics::Metrics` modülü (FAZ 12). `uwebr metrics` CLI komutu cold start, layout, binary boyutu basar. Criterion benchmark harness'ı (`benches/render_bench.rs`) istatistiksel ölçüm sağlar.
 
 Hot reload ölçümü: dosya kaydından yeni sürecin ayağa kalkmasına kadar 6.9 s (debug profili, tek `.uwebr` dosyalı scaffold). Bunun neredeyse tamamı `cargo build`; transpile adımı ~60 ms. `< 500 ms` hedefi ancak süreç yeniden başlatmadan (in-process reload) mümkün olur.
 
@@ -368,13 +370,20 @@ Hot reload ölçümü: dosya kaydından yeni sürecin ayağa kalkmasına kadar 6
 |-------|------------------|
 | Metin ekrana çıkıyor | `cargo run -p uwebr-app --example gpu_probe` → 17 glyph, 947 px `#e0e0e0` |
 | CSS arka planı çıkıyor | aynı probe → yüzeyin baskın rengi `#1a1a2e` |
+| Gradient çalışıyor | `e2e_gradient_render` testi + `test_gradient_background_reaches_scene` |
+| Image desteği | `e2e_image_render_node` + `test_draw_valid_image_encodes_something` |
+| overflow:hidden clip | `e2e_overflow_hidden_clip` + `test_overflow_hidden_pushes_clip` |
+| text-overflow:ellipsis | `test_truncate_long_text_gets_ellipsis` + `test_text_overflow_reaches_render_style` |
+| {@html expr} runtime | `e2e_nested_layout_with_text` + `test_raw_html_produces_render_node` |
+| vw/vh viewport çözümlenmesi | `test_nested_vw_resolves_against_viewport` + `test_vw_resolves_to_pixels_against_viewport` |
+| Component props geçirme | `test_props_flow_to_component` + `test_component_receives_props` |
 | Scaffold derleniyor | `uwebr init` + `cargo build` → başarılı |
 | Uygulama açılıyor | üretilen binary 7 s boyunca çalıştı, panik yok |
 | Hot reload çalışıyor | `uwebr dev` + dosya değişimi → yeni PID, 6.9 s |
 | Tıklama → state → yeniden render | `cargo test -p uwebr-app --test interaction_tests` (8 test) |
-| Test sayısı | `cargo test --workspace` → 444 test |
-
-Ölçülmeyenler: FPS, bellek, binary boyutu, ilk render süresi, 1000 node layout süresi.
+| Clippy temiz | `cargo clippy --workspace` → 0 uyarı (FAZ 12) |
+| Performans metrikleri | `uwebr metrics` komutu + criterion benchmark (FAZ 12) |
+| Test sayısı | `cargo test --workspace` → **501 test**, 0 başarısız (FAZ 12)
 
 ### Tanılama örnekleri
 
@@ -389,14 +398,21 @@ cargo run -p uwebr-cli --example scaffold_output   # scaffold'ın ürettiği Rus
 
 ## Bilinen Sınırlar
 
-- **Component props callee'ye geçirilmiyor** — `<Card title="x" />` prop'u `Element.props`'a yazılıyor, `card_component()` argüman almıyor.
-- **`{@html expr}`** sahneye çıkmıyor; geçersiz Rust üretmiyor, sessizce düşüyor.
-- **`RenderStyle::overflow_hidden`** CSS'ten doldurulmuyor. Sahne tarafı kırpmayı destekliyor (`push_clip_layer`), `pipeline.rs::paint_to_render_style` her zaman `false` yazıyor.
-- **Gradient** CSS'ten gelmiyor — `Background::LinearGradient` desteği var, `uwebr-css` `linear-gradient(...)`'ı `Keyword` olarak saklıyor.
-- **Pseudo-class / attribute selector'lar** parse ediliyor ama eşleşmede yok sayılıyor.
-- **`vw`/`vh`** yüzde olarak yaklaşılıyor: kökte viewport'a, iç içe elementlerde ebeveyne göre çözülür.
-- **`RenderNodeKind::Image`** gerçek görsel çizmiyor, `Rect` olarak düşüyor.
-- **Metin kırpma/eliding yok** — taşan metin kutu dışına çizilir.
+- **Pseudo-class / attribute selector'lar** parse ediliyor ama eşleşmede yok sayılıyor (`:hover`, `[disabled]`, `:first-child` vb.).
+- **Hot reload ~7s** — `cargo build` süresi baskın; in-process reload (dosya watching + dynamic library hot-swap) ile <500ms hedefi mümkün olur.
+- **Bellek ölçümü** — platform bağımsız gerçek bellek ölçümü henüz yok (Windows `GetProcessMemoryInfo` / Linux `/proc/self/statm` desteği FAZ 13'te planlanıyor).
+
+### Düzeltilen sınırlar (FAZ 9-12)
+
+Aşağıdaki maddeler FAZ 9-12 arasında düzeltilmiştir:
+
+- ~~Component props callee'ye geçirilmiyor~~ → FAZ 9: props forwarding eklendi.
+- ~~`{@html expr}` sahneye çıkmıyor~~ → FAZ 11: `html_parse.rs` ile runtime HTML parsing.
+- ~~`RenderStyle::overflow_hidden` CSS'ten doldurulmuyor~~ → FAZ 10: `PositionedNode.overflow_hidden` + `paint_to_render_style` güncellendi.
+- ~~Gradient CSS'ten gelmiyor~~ → FAZ 10: `linear-gradient()` / `radial-gradient()` parse + `BackgroundValue` enum.
+- ~~`vw`/`vh` yüzde olarak yaklaşılıyor~~ → FAZ 10: `StyleBook::parse_vp` ile viewport'a göre çözümlenme.
+- ~~`RenderNodeKind::Image` gerçek görsel çizmiyor~~ → FAZ 11: `image` crate + `draw_image` implementasyonu.
+- ~~Metin kırpma/eliding yok~~ → FAZ 11: `TextOverflow::Ellipsis` + `truncate_with_ellipsis`.
 
 ## Güvenlik
 
@@ -412,10 +428,12 @@ cargo run -p uwebr-cli --example scaffold_output   # scaffold'ın ürettiği Rus
 | Belge | İçerik |
 |-------|--------|
 | `PLAN.md` | Yol haritası, faz durumları, test sayıları, bilinen sınırlar |
-| `faz4.plan.md` | FAZ 4 (`uwebr-render`) planı ve plandan sapmalar |
 | `faz8.plan.md` | FAZ 8 raporu: bulgu doğrulama tablosu, ölçümler, açık maddeler |
+| `faz10.plan.md` | FAZ 10: overflow:hidden, gradient, vw/vh düzeltmeleri |
+| `faz11.plan.md` | FAZ 11: image desteği, text-overflow ellipsis, {@html} runtime parser |
+| `faz12.plan.md` | FAZ 12: clippy temizliği, benchmark harness, metrics, e2e testler |
 | `crates/uwebr-js/GAPS_PLAN.md` | uwebr-js durumu + script state lowering ayrıntısı |
 
 ---
 
-*Son güncelleme: 28 Ağustos 2026 (FAZ 8)*
+*Son güncelleme: 29 Ağustos 2026 (FAZ 12)*
