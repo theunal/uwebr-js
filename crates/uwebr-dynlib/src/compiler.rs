@@ -22,6 +22,8 @@ pub struct CompileOptions {
     pub target_dir: PathBuf,
     /// Compile profili.
     pub profile: CompileProfile,
+    /// Kalıcı proje dizini (temp yerine reuse). None ise geçici dizin oluşturulur.
+    pub project_dir: Option<PathBuf>,
 }
 
 /// Compile sonucu.
@@ -39,6 +41,9 @@ pub struct CompileResult {
 ///
 /// Geçici bir Cargo projesi oluşturur, transpile edilmiş kodu yazar,
 /// `cargo build --lib` ile derler ve çıktıyı `target_dir`'e kopyalar.
+///
+/// `CompileOptions.project_dir` ayarlıysa mevcut projeyi yeniden kullanır
+/// (hızlı incremental build). Aksi halde her seferinde temp dizin oluşturur.
 pub fn compile_shared_library(
     uwebr_content: &str,
     component_name: &str,
@@ -49,32 +54,33 @@ pub fn compile_shared_library(
     // CSS extraction (raw content'den)
     let css = extract_css(uwebr_content);
 
-    // Geçici proje dizini
-    let tmp_dir = tempfile::tempdir().context("failed to create temp dir")?;
-    let tmp_path = tmp_dir.path();
-
-    // Cargo projesini oluştur
-    init_lib_project(tmp_path, component_name, &options.root)?;
+    // Proje dizini: reuse veya temp
+    let tmp_path;
+    let _tmp_dir;
+    if let Some(ref proj_dir) = options.project_dir {
+        fs::create_dir_all(proj_dir.join("src")).context("failed to create project dir")?;
+        tmp_path = proj_dir.clone();
+        // İlk seferde Cargo.toml oluştur (yoksa)
+        if !tmp_path.join("Cargo.toml").exists() {
+            init_lib_project(&tmp_path, component_name, &options.root)?;
+        }
+        _tmp_dir = None;
+    } else {
+        let td = tempfile::tempdir().context("failed to create temp dir")?;
+        let p = td.path().to_path_buf();
+        init_lib_project(&p, component_name, &options.root)?;
+        tmp_path = p;
+        _tmp_dir = Some(td);
+    }
 
     // Transpile edilmiş kodu yaz
     let lib_rs = generate_lib_rs(uwebr_content, component_name, &options.root)?;
     fs::write(tmp_path.join("src/lib.rs"), &lib_rs).context("failed to write lib.rs")?;
 
-    // Compile et
-    let status = Command::new("cargo")
-        .args(["build", "--lib"])
-        .arg("--manifest-path")
-        .arg(tmp_path.join("Cargo.toml"))
-        .arg("--target-dir")
-        .arg(&options.target_dir)
-        .args(match options.profile {
-            CompileProfile::Release => &["--release"][..],
-            CompileProfile::Debug => &[],
-        })
-        .status()
-        .context("failed to run cargo build")?;
+    // Compile et (sccache ile)
+    let success = cargo_build_with_sccache(&tmp_path, options)?;
 
-    if !status.success() {
+    if !success {
         anyhow::bail!("cargo build failed for component '{component_name}'");
     }
 
@@ -116,6 +122,33 @@ pub fn compile_shared_library(
         compile_time_ms,
         css,
     })
+}
+
+/// `cargo build --lib` çalıştırır. sccache mevcutsa RUSTC_WRAPPER olarak kullanır.
+fn cargo_build_with_sccache(project_dir: &Path, options: &CompileOptions) -> Result<bool> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["build", "--lib"])
+        .arg("--manifest-path")
+        .arg(project_dir.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&options.target_dir);
+
+    match options.profile {
+        CompileProfile::Release => {
+            cmd.arg("--release");
+        }
+        CompileProfile::Debug => {}
+    }
+
+    // sccache varsa kullan
+    if let Ok(output) = Command::new("sccache").arg("--version").output() {
+        if output.status.success() {
+            cmd.env("RUSTC_WRAPPER", "sccache");
+        }
+    }
+
+    let status = cmd.status().context("failed to run cargo build")?;
+    Ok(status.success())
 }
 
 /// Geçici Cargo lib projesi oluşturur.

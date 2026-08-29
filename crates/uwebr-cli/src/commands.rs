@@ -853,6 +853,7 @@ pub fn compile_library(input_path: &str, output_dir: &str) -> Result<()> {
         root: workspace_root,
         target_dir: output.clone(),
         profile: uwebr_dynlib::CompileProfile::Debug,
+        project_dir: None,
     };
 
     println!("Compiling {input_path} → shared library...");
@@ -917,6 +918,7 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
         root: workspace_root.clone(),
         target_dir: dynlib_dir.clone(),
         profile: uwebr_dynlib::CompileProfile::Debug,
+        project_dir: Some(root.join("target/dynlib-project")),
     };
 
     println!("  Compiling shared library...");
@@ -1027,6 +1029,7 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
                         root: workspace_root.clone(),
                         target_dir: dynlib_dir.clone(),
                         profile: uwebr_dynlib::CompileProfile::Debug,
+                        project_dir: Some(root.join("target/dynlib-project")),
                     };
 
                     match uwebr_dynlib::compile_shared_library(&content, &component_name, &opts) {
@@ -1097,6 +1100,9 @@ pub fn bench_reload(input_path: &str, iterations: u32) -> Result<()> {
     let mut load_times = Vec::new();
     let mut render_times = Vec::new();
 
+    // Persistent project dir for incremental builds
+    let project_dir = tmp_dir.path().join("project");
+
     for i in 0..iterations {
         let iter_start = Instant::now();
 
@@ -1105,6 +1111,7 @@ pub fn bench_reload(input_path: &str, iterations: u32) -> Result<()> {
             root: workspace_root.clone(),
             target_dir: dynlib_dir.clone(),
             profile: uwebr_dynlib::CompileProfile::Debug,
+            project_dir: Some(project_dir.clone()),
         };
 
         let compile_start = Instant::now();
