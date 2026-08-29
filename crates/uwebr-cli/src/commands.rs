@@ -737,7 +737,7 @@ fn write_mod_and_main(root: &Path, generated: &[String]) -> Result<()> {
         main_content.push_str(&format!("    app = app.with_css(CSS_{root_upper});\n"));
     }
     main_content.push_str("    app.with_component(FnComponent::new(|| {\n");
-    main_content.push_str(&format!("        {root_snake}_component()\n"));
+    main_content.push_str(&format!("        {root_snake}_component(&[])\n"));
     main_content.push_str("    }))\n");
     main_content.push_str("    .run()\n");
     main_content.push_str("}\n");

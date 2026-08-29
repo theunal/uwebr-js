@@ -127,7 +127,9 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
     output.push_str("#![allow(unused_parens, unused_imports, dead_code, clippy::all)]\n\n");
 
     // Header
-    output.push_str("use uwebr_core::component::{Element, NodeType, PropValue};\n");
+    output.push_str(
+        "use uwebr_core::component::{Element, NodeType, PropValue, prop_string, prop_bool, prop_number};\n",
+    );
     for comp in &component_refs {
         let mod_name = to_snake(comp);
         let fn_name = to_snake(comp);
@@ -167,7 +169,7 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
 
     // Component function
     output.push_str(&format!(
-        "pub fn {}_component() -> Element {{\n",
+        "pub fn {}_component(__props: &[(String, PropValue)]) -> Element {{\n",
         to_snake(component_name)
     ));
     output.push_str(&format!("    // HTML from {}.uwebr\n", component_name));
@@ -445,9 +447,14 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 format!("vec![{}]", props.join(", "))
             };
 
-            // Component composition: call the component function, then append
-            // any slot children the caller supplied.
+            // Component composition: call the component function, passing any
+            // props the caller wrote, then append any slot children supplied.
             let fn_name = format!("{}_component", to_snake(name));
+            let call_args = if props.is_empty() {
+                "&[]".to_string()
+            } else {
+                format!("&[{}]", props.join(", "))
+            };
             let slot_children: Vec<String> = comp
                 .children
                 .iter()
@@ -456,11 +463,12 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 .collect();
 
             let children_str = if slot_children.is_empty() {
-                format!("vec![{}()]", fn_name)
+                format!("vec![{}({})]", fn_name, call_args)
             } else {
                 format!(
-                    "{{ let mut __c = vec![{}()]; __c.extend(vec![\n{}\n{}]); __c }}",
+                    "{{ let mut __c = vec![{}({})]; __c.extend(vec![\n{}\n{}]); __c }}",
                     fn_name,
+                    call_args,
                     slot_children.join(",\n"),
                     pad
                 )
@@ -741,14 +749,14 @@ mod tests {
     #[test]
     fn test_transpile_empty() {
         let result = transpile("", "Empty").unwrap();
-        assert!(result.contains("pub fn empty_component()"));
+        assert!(result.contains("pub fn empty_component(__props: &[(String, PropValue)])"));
     }
 
     #[test]
     fn test_transpile_component_function() {
         let html = r#"<div>Hello</div>"#;
         let result = transpile(html, "Hello").unwrap();
-        assert!(result.contains("pub fn hello_component()"));
+        assert!(result.contains("pub fn hello_component(__props: &[(String, PropValue)])"));
         assert!(result.contains("NodeType::Element(\"div\""));
         assert!(result.contains("NodeType::Text(\"Hello\""));
         assert!(!result.contains("pub fn main"));
@@ -804,9 +812,9 @@ mod tests {
         // Should use NodeType::Component (not div wrapper)
         assert!(result.contains("NodeType::Component(\"Header\""));
         assert!(result.contains("NodeType::Component(\"Footer\""));
-        // Should call component functions
-        assert!(result.contains("header_component()"));
-        assert!(result.contains("footer_component()"));
+        // Should call component functions with props slice
+        assert!(result.contains("header_component(&[])"));
+        assert!(result.contains("footer_component(&[])"));
     }
 
     // ── Script ↔ template wiring (M6) ───────────────────────────
@@ -943,7 +951,7 @@ mod tests {
     fn test_component_slot_children_preserved() {
         let html = r#"<div><Card><p>Slot</p></Card></div>"#;
         let result = transpile(html, "Page").unwrap();
-        assert!(result.contains("card_component()"));
+        assert!(result.contains("card_component(&[])"));
         assert!(
             result.contains("NodeType::Element(\"p\""),
             "slot children must not be dropped:\n{result}"
@@ -1003,7 +1011,7 @@ mod tests {
 </style>
 "#;
         let result = transpile(input, "App").unwrap();
-        assert!(result.contains("pub fn app_component()"));
+        assert!(result.contains("pub fn app_component(__props: &[(String, PropValue)])"));
         assert!(result.contains("CSS_APP"));
         assert!(result.contains("fn increment()"));
         assert!(result.contains("Hello from uwebr!"));
@@ -1035,5 +1043,48 @@ mod tests {
             result.contains("NodeType::Element(\"span\""),
             "expected an inline wrapper:\n{result}"
         );
+    }
+
+    #[test]
+    fn test_component_receives_props() {
+        let input = r#"<div><Card title="Hello" count={42} /></div>
+<script></script>
+<style></style>"#;
+        let result = transpile(input, "App").unwrap();
+        assert!(
+            result.contains("card_component(&["),
+            "component with props must be called with a slice:\n{result}"
+        );
+        assert!(result.contains("PropValue::String(\"Hello\".into())"));
+        assert!(
+            result.contains("\"count\".into()"),
+            "the count prop must be forwarded:\n{result}"
+        );
+    }
+
+    #[test]
+    fn test_component_no_props_uses_empty_slice() {
+        let input = r#"<div><Card /></div>
+<script></script>
+<style></style>"#;
+        let result = transpile(input, "App").unwrap();
+        assert!(
+            result.contains("card_component(&[])"),
+            "propless component must be called with an empty slice:\n{result}"
+        );
+    }
+
+    #[test]
+    fn test_component_fn_signature_takes_props() {
+        let result = transpile("<div></div>", "App").unwrap();
+        assert!(result.contains("pub fn app_component(__props: &[(String, PropValue)])"));
+    }
+
+    #[test]
+    fn test_generated_imports_prop_helpers() {
+        let result = transpile("<div></div>", "App").unwrap();
+        assert!(result.contains("prop_string"));
+        assert!(result.contains("prop_bool"));
+        assert!(result.contains("prop_number"));
     }
 }
