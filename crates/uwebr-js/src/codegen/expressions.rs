@@ -130,13 +130,12 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
                     codegen.write(")");
                     return;
                 }
-                if name == "vec" && args.len() == 2 {
-                    if matches!(&args[0], RsExpr::Lit(RsLit::Null)) {
-                        codegen.write("vec![Default::default(); ");
-                        generate_expression(codegen, &args[1]);
-                        codegen.write("]");
-                        return;
-                    }
+                if name == "vec" && args.len() == 2 && matches!(&args[0], RsExpr::Lit(RsLit::Null))
+                {
+                    codegen.write("vec![Default::default(); ");
+                    generate_expression(codegen, &args[1]);
+                    codegen.write("]");
+                    return;
                 }
             }
             generate_expression(codegen, callee);
@@ -380,7 +379,7 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
                                 codegen.write(", ");
                             }
                             codegen.write("(");
-                            if let Some(key_expr) = entry.get(0) {
+                            if let Some(key_expr) = entry.first() {
                                 generate_expression(codegen, key_expr);
                                 codegen.write(".to_string()");
                                 codegen.write(", ");
@@ -469,7 +468,7 @@ pub fn generate_expression(codegen: &mut CodeGen, expr: &RsExpr) {
                 "substring" | "slice" => {
                     generate_expression(codegen, obj);
                     codegen.write("[");
-                    if let Some(start) = args.get(0) {
+                    if let Some(start) = args.first() {
                         generate_expression(codegen, start);
                     }
                     codegen.write("..");

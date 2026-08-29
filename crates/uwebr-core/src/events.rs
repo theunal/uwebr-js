@@ -21,9 +21,11 @@ pub enum EventType {
     Custom(String),
 }
 
-impl EventType {
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for EventType {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "click" | "on:click" => Self::Click,
             "dblclick" | "on:dblclick" => Self::DoubleClick,
             "mousedown" | "on:mousedown" => Self::MouseDown,
@@ -39,9 +41,11 @@ impl EventType {
             "blur" | "on:blur" => Self::Blur,
             "submit" | "on:submit" => Self::Submit,
             other => Self::Custom(other.to_string()),
-        }
+        })
     }
+}
 
+impl EventType {
     pub fn to_str(&self) -> &str {
         match self {
             Self::Click => "click",
@@ -216,12 +220,13 @@ mod tests {
 
     #[test]
     fn test_event_type_from_str() {
-        assert_eq!(EventType::from_str("click"), EventType::Click);
-        assert_eq!(EventType::from_str("on:click"), EventType::Click);
-        assert_eq!(EventType::from_str("input"), EventType::Input);
-        assert_eq!(EventType::from_str("on:input"), EventType::Input);
+        use std::str::FromStr;
+        assert_eq!(EventType::from_str("click").unwrap(), EventType::Click);
+        assert_eq!(EventType::from_str("on:click").unwrap(), EventType::Click);
+        assert_eq!(EventType::from_str("input").unwrap(), EventType::Input);
+        assert_eq!(EventType::from_str("on:input").unwrap(), EventType::Input);
         assert_eq!(
-            EventType::from_str("custom"),
+            EventType::from_str("custom").unwrap(),
             EventType::Custom("custom".to_string())
         );
     }

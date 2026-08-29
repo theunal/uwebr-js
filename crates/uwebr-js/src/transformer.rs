@@ -27,6 +27,12 @@ pub struct Transformer {
     ctx: Context,
 }
 
+impl Default for Transformer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Transformer {
     pub fn new() -> Self {
         Self {
@@ -45,7 +51,7 @@ impl Transformer {
                 .elems
                 .iter()
                 .filter_map(|e| {
-                    e.as_ref().map(|p| Self::pat_to_names(p)).map(|mut v| {
+                    e.as_ref().map(Self::pat_to_names).map(|mut v| {
                         if v.len() == 1 {
                             v.remove(0)
                         } else {
@@ -497,7 +503,7 @@ impl Transformer {
                 if tpl.exprs.is_empty() {
                     let mut s = String::new();
                     for quasi in &tpl.quasis {
-                        s.push_str(&quasi.raw.to_string());
+                        s.push_str(quasi.raw.as_ref());
                     }
                     RsExpr::Lit(RsLit::Str(s))
                 } else {
@@ -1160,11 +1166,11 @@ impl Transformer {
                     let items: Vec<String> = import
                         .specifiers
                         .iter()
-                        .filter_map(|s| match s {
-                            ImportSpecifier::Named(n) => Some(atom_to_string(&n.local.sym)),
-                            ImportSpecifier::Default(d) => Some(atom_to_string(&d.local.sym)),
+                        .map(|s| match s {
+                            ImportSpecifier::Named(n) => atom_to_string(&n.local.sym),
+                            ImportSpecifier::Default(d) => atom_to_string(&d.local.sym),
                             ImportSpecifier::Namespace(ns) => {
-                                Some(format!("* as {}", atom_to_string(&ns.local.sym)))
+                                format!("* as {}", atom_to_string(&ns.local.sym))
                             }
                         })
                         .collect();

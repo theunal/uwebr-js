@@ -15,6 +15,7 @@ clap = { version = "4", features = ["derive"] }
 uwebr-js = { workspace = true }
 uwebr-html = { workspace = true }
 uwebr-css = { workspace = true }
+uwebr-render = { workspace = true }
 notify = "7"
 walkdir = "2"
 

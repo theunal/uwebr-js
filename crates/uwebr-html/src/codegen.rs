@@ -68,7 +68,7 @@ fn generate_element(el: &HtmlElement, indent: usize) -> String {
         output.push_str(&generate_rsx(&el.children[0], indent + 1));
         output.push('\n');
         output.push_str(&prefix);
-        output.push_str("}");
+        output.push('}');
     } else {
         output.push_str(") {\n");
         for child in &el.children {
@@ -128,11 +128,7 @@ fn generate_component(comp: &HtmlComponent, indent: usize) -> String {
     let mut output = format!("{}{}(", prefix, comp.name);
 
     if !comp.attributes.is_empty() {
-        let attrs: Vec<String> = comp
-            .attributes
-            .iter()
-            .map(|a| generate_attribute(a))
-            .collect();
+        let attrs: Vec<String> = comp.attributes.iter().map(generate_attribute).collect();
         output.push_str(&attrs.join(", "));
     }
 
@@ -227,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_component() {
-        let mut node = HtmlNode::Component(HtmlComponent {
+        let node = HtmlNode::Component(HtmlComponent {
             name: "Card".to_string(),
             attributes: vec![HtmlAttribute {
                 name: "title".to_string(),
@@ -235,7 +231,7 @@ mod tests {
             }],
             children: vec![HtmlNode::Text("Content".to_string())],
         });
-        let rsx = generate_rsx(&mut node, 0);
+        let rsx = generate_rsx(&node, 0);
         assert!(rsx.contains("Card("));
         assert!(rsx.contains("title: \"Hello\""));
         assert!(rsx.contains("Content"));
@@ -244,7 +240,7 @@ mod tests {
     #[test]
     fn test_event_handler() {
         // Test with programmatic AST since html5ever may handle on: differently
-        let mut node = HtmlNode::Element(HtmlElement {
+        let node = HtmlNode::Element(HtmlElement {
             tag: "button".to_string(),
             attributes: vec![HtmlAttribute {
                 name: "on:click".to_string(),
@@ -253,7 +249,7 @@ mod tests {
             children: vec![HtmlNode::Text("Click".to_string())],
             self_closing: false,
         });
-        let rsx = generate_rsx(&mut node, 0);
+        let rsx = generate_rsx(&node, 0);
         eprintln!("Generated RSX:\n{}", rsx);
         assert!(rsx.contains("on:click"), "RSX should contain on:click");
         assert!(
@@ -264,24 +260,24 @@ mod tests {
 
     #[test]
     fn test_each_loop() {
-        let mut node = HtmlNode::EachLoop(HtmlEach {
+        let node = HtmlNode::EachLoop(HtmlEach {
             iterable: "items".to_string(),
             item_name: "item".to_string(),
             index_name: None,
             body: vec![HtmlNode::Text("item".to_string())],
         });
-        let rsx = generate_rsx(&mut node, 0);
+        let rsx = generate_rsx(&node, 0);
         assert!(rsx.contains("for item in items.iter()"));
     }
 
     #[test]
     fn test_if_block() {
-        let mut node = HtmlNode::IfBlock(HtmlIf {
+        let node = HtmlNode::IfBlock(HtmlIf {
             condition: "show".to_string(),
             then_body: vec![HtmlNode::Text("yes".to_string())],
             else_body: Some(vec![HtmlNode::Text("no".to_string())]),
         });
-        let rsx = generate_rsx(&mut node, 0);
+        let rsx = generate_rsx(&node, 0);
         assert!(rsx.contains("if show"));
         assert!(rsx.contains("else"));
     }

@@ -16,7 +16,7 @@ pub fn detect_components(html: &str) -> HashMap<String, String> {
     while let Some((i, c)) = chars.next() {
         if c == '<' {
             // Skip </ closing tags
-            if chars.peek().map_or(false, |(_, c)| *c == '/') {
+            if chars.peek().is_some_and(|(_, c)| *c == '/') {
                 continue;
             }
             // Read tag name
@@ -34,7 +34,7 @@ pub fn detect_components(html: &str) -> HashMap<String, String> {
                 let tag = &html[start..end];
                 // PascalCase: starts with uppercase, has at least 2 chars
                 if tag.len() >= 2
-                    && tag.chars().next().map_or(false, |c| c.is_uppercase())
+                    && tag.chars().next().is_some_and(|c| c.is_uppercase())
                     && tag.chars().any(|c| c.is_lowercase())
                 {
                     // Store lowercase → original mapping
@@ -221,7 +221,7 @@ fn convert_node(
                 (true, original.clone())
             } else {
                 (
-                    tag.chars().next().map_or(false, |c| c.is_uppercase()),
+                    tag.chars().next().is_some_and(|c| c.is_uppercase()),
                     tag.clone(),
                 )
             };

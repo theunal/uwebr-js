@@ -1,6 +1,8 @@
 use anyhow::Result;
+use std::time::Instant;
 use vello::peniko::color::palette;
 
+use crate::metrics::Metrics;
 use crate::scene::RenderScene;
 use crate::scene_builder::SceneBuilder;
 
@@ -14,6 +16,10 @@ pub struct Renderer {
     scene: RenderScene,
     needs_redraw: bool,
     builder: SceneBuilder,
+    /// Timestamp of the previous `render_frame` call, for frame-time deltas.
+    last_frame_time: Option<Instant>,
+    /// Duration of the last frame, in milliseconds.
+    frame_time_ms: f64,
 }
 
 impl Renderer {
@@ -25,6 +31,8 @@ impl Renderer {
             scene: RenderScene::new(),
             needs_redraw: true,
             builder: SceneBuilder::new(),
+            last_frame_time: None,
+            frame_time_ms: 0.0,
         }
     }
 
@@ -64,9 +72,27 @@ impl Renderer {
 
     /// Render a frame (builds vello scene — GPU submission handled by caller)
     pub fn render_frame(&mut self) -> Result<vello::Scene> {
+        let now = Instant::now();
+        if let Some(last) = self.last_frame_time {
+            self.frame_time_ms = now.duration_since(last).as_secs_f64() * 1000.0;
+        }
+        self.last_frame_time = Some(now);
+
         let scene = self.build_vello_scene();
         self.needs_redraw = false;
         Ok(scene)
+    }
+
+    /// Frames per second derived from the last measured frame time.
+    ///
+    /// Zero on the first frame (no previous timestamp to diff against).
+    pub fn fps(&self) -> f64 {
+        Metrics::fps_from_frame_time(self.frame_time_ms)
+    }
+
+    /// Duration of the last rendered frame, in milliseconds.
+    pub fn frame_time_ms(&self) -> f64 {
+        self.frame_time_ms
     }
 
     /// Get background color for the render surface
@@ -154,5 +180,25 @@ mod tests {
         let r = Renderer::default();
         assert_eq!(r.width, 800);
         assert_eq!(r.height, 600);
+    }
+
+    #[test]
+    fn test_fps_zero_on_first_frame() {
+        // No previous timestamp to diff against, so the first frame reports 0.
+        let mut r = Renderer::new(800, 600);
+        let _ = r.render_frame().unwrap();
+        assert_eq!(r.fps(), 0.0);
+        assert_eq!(r.frame_time_ms(), 0.0);
+    }
+
+    #[test]
+    fn test_fps_positive_after_second_frame() {
+        let mut r = Renderer::new(800, 600);
+        let _ = r.render_frame().unwrap();
+        // Ensure a measurable gap between frames.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let _ = r.render_frame().unwrap();
+        assert!(r.frame_time_ms() > 0.0, "frame time should be positive");
+        assert!(r.fps() > 0.0, "fps should be positive after two frames");
     }
 }

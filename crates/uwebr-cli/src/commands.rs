@@ -746,6 +746,28 @@ fn write_mod_and_main(root: &Path, generated: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Print performance metrics to stdout.
+///
+/// Runs the self-contained measurements (cold parse, 1000-node layout) and
+/// reports the running binary's size. Memory is reported when the platform
+/// probe returns a non-zero value.
+pub fn metrics_command() {
+    let m = uwebr_render::metrics::Metrics::measure_all();
+    println!("uwebr performance metrics");
+    println!("  Cold start:  {:.3} ms", m.cold_start_ms);
+    println!("  Layout 1000: {:.3} ms", m.layout_1000_nodes_ms);
+    if m.memory_bytes > 0 {
+        println!("  Memory:      {} bytes", m.memory_bytes);
+    } else {
+        println!("  Memory:      (not measured on this platform)");
+    }
+    if m.binary_size_bytes > 0 {
+        println!("  Binary size: {} bytes", m.binary_size_bytes);
+    } else {
+        println!("  Binary size: (unavailable)");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

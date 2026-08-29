@@ -95,7 +95,7 @@ fn diff_node(old: &Element, new: &Element, path: &mut Vec<usize>, patches: &mut 
     }
 }
 
-fn diff_props(old: &Element, new: &Element, path: &mut Vec<usize>, patches: &mut Vec<Patch>) {
+fn diff_props(old: &Element, new: &Element, path: &[usize], patches: &mut Vec<Patch>) {
     let old_props: std::collections::HashMap<_, _> = old.props.iter().cloned().collect();
     let new_props: std::collections::HashMap<_, _> = new.props.iter().cloned().collect();
 
@@ -123,7 +123,7 @@ fn diff_props(old: &Element, new: &Element, path: &mut Vec<usize>, patches: &mut
 
     if !changed.is_empty() {
         patches.push(Patch::UpdateProps {
-            path: path.clone(),
+            path: path.to_vec(),
             props: changed,
         });
     }

@@ -1,0 +1,170 @@
+//! Lightweight performance metrics for the render pipeline.
+//!
+//! These are deliberately self-contained: `uwebr-render` builds scenes only and
+//! does not depend on `uwebr-html`, so the layout benchmark constructs an
+//! [`Element`] tree directly rather than parsing HTML. Measurements are wall
+//! clock and single-shot — good enough for a `uwebr metrics` snapshot, while
+//! `criterion` (see `benches/`) handles statistically rigorous benchmarking.
+
+use std::time::Instant;
+
+use uwebr_core::component::{Element, NodeType, PropValue};
+
+use crate::layout::LayoutEngine;
+use crate::stylebook::StyleBook;
+
+/// A snapshot of framework performance metrics.
+#[derive(Debug, Clone)]
+pub struct Metrics {
+    /// Frames per second derived from the last measured frame time.
+    pub fps: f64,
+    /// Time to render the last frame, in milliseconds.
+    pub frame_time_ms: f64,
+    /// Time to parse a small stylesheet from a cold start, in milliseconds.
+    pub cold_start_ms: f64,
+    /// Time to lay out a 1000-node tree, in milliseconds.
+    pub layout_1000_nodes_ms: f64,
+    /// Resident memory estimate in bytes (0 when unavailable on this platform).
+    pub memory_bytes: u64,
+    /// Size of the running executable in bytes (0 when it cannot be read).
+    pub binary_size_bytes: u64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            fps: 0.0,
+            frame_time_ms: 0.0,
+            cold_start_ms: 0.0,
+            layout_1000_nodes_ms: 0.0,
+            memory_bytes: 0,
+            binary_size_bytes: 0,
+        }
+    }
+}
+
+impl Metrics {
+    /// Measure every self-contained metric (everything except live FPS).
+    pub fn measure_all() -> Self {
+        Self {
+            cold_start_ms: Self::measure_cold_start(),
+            layout_1000_nodes_ms: Self::measure_layout_1000(),
+            memory_bytes: Self::measure_memory(),
+            binary_size_bytes: Self::measure_binary_size(),
+            ..Self::default()
+        }
+    }
+
+    /// Time a cold parse of a small stylesheet.
+    pub fn measure_cold_start() -> f64 {
+        let start = Instant::now();
+        let css = ".a { width: 100px; height: 200px; background: red; }";
+        let _ = StyleBook::parse(css);
+        start.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Time building + laying out a 1000-node flat tree.
+    pub fn measure_layout_1000() -> f64 {
+        let css = ".box { width: 10px; height: 10px; }";
+        let root = build_flat_tree(1000);
+
+        let start = Instant::now();
+        if let Ok(stylebook) = StyleBook::parse(css) {
+            let mut engine = LayoutEngine::new();
+            if let Ok(node) = engine.build_tree(&root, &stylebook) {
+                let _ = engine.compute(node, 800.0, 600.0);
+            }
+        }
+        start.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Best-effort resident memory estimate.
+    ///
+    /// A real per-platform reading (e.g. `GetProcessMemoryInfo` on Windows,
+    /// `/proc/self/statm` on Linux) is out of scope here; returns 0 to signal
+    /// "not measured" rather than reporting a misleading number.
+    pub fn measure_memory() -> u64 {
+        0
+    }
+
+    /// Size of the current executable on disk, or 0 if it cannot be determined.
+    pub fn measure_binary_size() -> u64 {
+        std::env::current_exe()
+            .and_then(std::fs::metadata)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// Convert a frame time in milliseconds to frames per second.
+    pub fn fps_from_frame_time(frame_time_ms: f64) -> f64 {
+        if frame_time_ms > 0.0 {
+            1000.0 / frame_time_ms
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Build a flat tree of `count` `<div class="box">` children under one root.
+fn build_flat_tree(count: usize) -> Element {
+    let children = (0..count)
+        .map(|_| Element {
+            node_type: NodeType::Element("div".to_string()),
+            props: vec![("class".to_string(), PropValue::String("box".to_string()))],
+            children: vec![Element::text("x")],
+        })
+        .collect();
+
+    Element {
+        node_type: NodeType::Element("div".to_string()),
+        props: vec![],
+        children,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_measure_cold_start_is_positive() {
+        assert!(Metrics::measure_cold_start() > 0.0);
+    }
+
+    #[test]
+    fn test_measure_layout_1000_is_positive() {
+        assert!(Metrics::measure_layout_1000() > 0.0);
+    }
+
+    #[test]
+    fn test_fps_from_frame_time() {
+        assert_eq!(Metrics::fps_from_frame_time(16.0), 1000.0 / 16.0);
+        assert_eq!(Metrics::fps_from_frame_time(0.0), 0.0);
+        // 60 fps ≈ 16.67ms/frame.
+        let fps = Metrics::fps_from_frame_time(1000.0 / 60.0);
+        assert!((fps - 60.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_measure_all_fills_self_contained_fields() {
+        let m = Metrics::measure_all();
+        assert!(m.cold_start_ms > 0.0);
+        assert!(m.layout_1000_nodes_ms > 0.0);
+        // fps/frame_time are runtime-only and stay at their defaults here.
+        assert_eq!(m.fps, 0.0);
+        assert_eq!(m.frame_time_ms, 0.0);
+    }
+
+    #[test]
+    fn test_build_flat_tree_child_count() {
+        let root = build_flat_tree(1000);
+        assert_eq!(root.children.len(), 1000);
+    }
+
+    #[test]
+    fn test_default_metrics_are_zero() {
+        let m = Metrics::default();
+        assert_eq!(m.fps, 0.0);
+        assert_eq!(m.memory_bytes, 0);
+    }
+}

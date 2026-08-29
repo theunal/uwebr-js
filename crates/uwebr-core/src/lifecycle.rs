@@ -7,7 +7,7 @@ pub type ComponentId = u64;
 
 thread_local! {
     static LIFECYCLE: RefCell<LifecycleState> = RefCell::new(LifecycleState::new());
-    static CURRENT_COMPONENT: std::cell::Cell<Option<ComponentId>> = std::cell::Cell::new(None);
+    static CURRENT_COMPONENT: std::cell::Cell<Option<ComponentId>> = const { std::cell::Cell::new(None) };
     static NEXT_COMPONENT_ID: Cell<u64> = const { Cell::new(1) };
 }
 

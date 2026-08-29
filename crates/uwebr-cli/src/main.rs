@@ -36,6 +36,8 @@ enum Commands {
         #[arg(default_value = ".")]
         path: String,
     },
+    /// Print performance metrics (cold start, layout, binary size)
+    Metrics,
 }
 
 fn main() -> Result<()> {
@@ -53,6 +55,9 @@ fn main() -> Result<()> {
         }
         Commands::Dev { path } => {
             uwebr_cli::commands::dev_server(&path)?;
+        }
+        Commands::Metrics => {
+            uwebr_cli::commands::metrics_command();
         }
     }
 

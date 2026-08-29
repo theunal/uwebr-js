@@ -10,12 +10,11 @@ pub fn expand_directives(node: &mut HtmlNode) {
         HtmlNode::Component(comp) => {
             expand_children(&mut comp.children);
         }
-        HtmlNode::Text(text) => {
+        HtmlNode::Text(text)
             // Check if this text node contains template directives
-            if text.contains('{') {
+            if text.contains('{') => {
                 *node = parse_text_as_nodes(text);
             }
-        }
         _ => {}
     }
 }
@@ -43,22 +42,18 @@ fn reassemble_block_directives(children: &mut Vec<HtmlNode>) {
             // Check for {#each ...} opening tag
             if trimmed.starts_with("{#each ") {
                 // Look for matching {/each} in subsequent siblings
-                let mut end_idx = None;
-                for j in (i + 1)..children.len() {
-                    if let HtmlNode::Text(t) = &children[j] {
-                        if t.trim() == "{/each}" {
-                            end_idx = Some(j);
-                            break;
-                        }
-                    }
-                }
+                let end_idx = children
+                    .iter()
+                    .enumerate()
+                    .skip(i + 1)
+                    .find_map(|(j, c)| match c {
+                        HtmlNode::Text(t) if t.trim() == "{/each}" => Some(j),
+                        _ => None,
+                    });
 
                 if let Some(end) = end_idx {
                     // Collect all children between {#each} and {/each}
-                    let mut body_children: Vec<HtmlNode> = Vec::new();
-                    for k in (i + 1)..end {
-                        body_children.push(children[k].clone());
-                    }
+                    let body_children: Vec<HtmlNode> = children[(i + 1)..end].to_vec();
 
                     // Parse the opening tag
                     if let Some(each_node) = parse_each_with_body(trimmed, body_children) {
@@ -73,22 +68,18 @@ fn reassemble_block_directives(children: &mut Vec<HtmlNode>) {
             // Check for {#if ...} opening tag
             if trimmed.starts_with("{#if ") {
                 // Look for matching {/if} in subsequent siblings
-                let mut end_idx = None;
-                for j in (i + 1)..children.len() {
-                    if let HtmlNode::Text(t) = &children[j] {
-                        if t.trim() == "{/if}" {
-                            end_idx = Some(j);
-                            break;
-                        }
-                    }
-                }
+                let end_idx = children
+                    .iter()
+                    .enumerate()
+                    .skip(i + 1)
+                    .find_map(|(j, c)| match c {
+                        HtmlNode::Text(t) if t.trim() == "{/if}" => Some(j),
+                        _ => None,
+                    });
 
                 if let Some(end) = end_idx {
                     // Collect all children between {#if} and {/if}
-                    let mut body_children: Vec<HtmlNode> = Vec::new();
-                    for k in (i + 1)..end {
-                        body_children.push(children[k].clone());
-                    }
+                    let body_children: Vec<HtmlNode> = children[(i + 1)..end].to_vec();
 
                     // Parse the opening tag and assemble
                     if let Some(if_node) = parse_if_with_body(trimmed, body_children) {
