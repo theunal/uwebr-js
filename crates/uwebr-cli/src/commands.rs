@@ -825,6 +825,55 @@ pub fn metrics_command() {
     }
 }
 
+/// Compile a `.uwebr` file to a shared library (.dll/.so/.dylib).
+pub fn compile_library(input_path: &str, output_dir: &str) -> Result<()> {
+    let input = PathBuf::from(input_path);
+    let output = PathBuf::from(output_dir);
+
+    if !input.exists() {
+        anyhow::bail!("file not found: {}", input.display());
+    }
+
+    let content = fs::read_to_string(&input)
+        .with_context(|| format!("failed to read {}", input.display()))?;
+
+    let component_name = input
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Component");
+
+    fs::create_dir_all(&output)?;
+
+    // Workspace root'u bul: CARGO_MANIFEST_DIR env var'ından türet
+    // (CLI her zaman workspace içinde compile edilir)
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+
+    let options = uwebr_dynlib::CompileOptions {
+        root: workspace_root,
+        target_dir: output.clone(),
+        profile: uwebr_dynlib::CompileProfile::Debug,
+    };
+
+    println!("Compiling {input_path} → shared library...");
+
+    let result = uwebr_dynlib::compile_shared_library(&content, component_name, &options)?;
+
+    println!(
+        "  compiled in {}ms → {}",
+        result.compile_time_ms,
+        result.library_path.display()
+    );
+
+    if let Some(ref css) = result.css {
+        println!("  CSS: {} bytes", css.len());
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

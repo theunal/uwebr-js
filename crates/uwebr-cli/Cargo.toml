@@ -16,9 +16,15 @@ uwebr-js = { workspace = true }
 uwebr-html = { workspace = true }
 uwebr-css = { workspace = true }
 uwebr-render = { workspace = true }
+uwebr-dynlib = { workspace = true }
 notify = "7"
 walkdir = "2"
 
 [dev-dependencies]
 tempfile.workspace = true
 uwebr-core = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "hot_reload_bench"
+harness = false

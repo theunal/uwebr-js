@@ -9,6 +9,7 @@ members = [
     "crates/uwebr-render",
     "crates/uwebr-app",
     "crates/uwebr-cli",
+    "crates/uwebr-dynlib",
 ]
 
 [workspace.package]
@@ -57,6 +58,7 @@ uwebr-core = { path = "crates/uwebr-core" }
 uwebr-macro = { path = "crates/uwebr-macro" }
 uwebr-render = { path = "crates/uwebr-render" }
 uwebr-app = { path = "crates/uwebr-app" }
+uwebr-dynlib = { path = "crates/uwebr-dynlib" }
 
 # Testing
 tempfile = "3.0"

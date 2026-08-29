@@ -38,6 +38,15 @@ enum Commands {
     },
     /// Print performance metrics (cold start, layout, binary size)
     Metrics,
+    /// Compile .uwebr to shared library (for hot reload)
+    Compile {
+        /// .uwebr file path
+        #[arg(long)]
+        input: String,
+        /// Output directory for .dll/.so
+        #[arg(long, default_value = "target/dynlib")]
+        output: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -58,6 +67,9 @@ fn main() -> Result<()> {
         }
         Commands::Metrics => {
             uwebr_cli::commands::metrics_command();
+        }
+        Commands::Compile { input, output } => {
+            uwebr_cli::commands::compile_library(&input, &output)?;
         }
     }
 
