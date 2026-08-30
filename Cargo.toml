@@ -37,6 +37,7 @@ tracing-subscriber = "0.3"
 
 # CLI
 clap = { version = "4.0", features = ["derive"] }
+toml = "0.8"
 
 # Window + GPU
 winit = "0.30"

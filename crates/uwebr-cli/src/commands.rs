@@ -11,6 +11,62 @@ use std::time::{Duration, Instant};
 use uwebr_app::Component;
 use uwebr_core::component::Element;
 
+/// `uwebr.config.toml` ile yapılandırılabilir pencere ayarları.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct WindowConfig {
+    /// Pencere başlığı (varsayılan: "uwebr")
+    #[serde(default = "default_title")]
+    pub title: String,
+    /// Pencere genişliği (varsayılan: 800)
+    #[serde(default = "default_width")]
+    pub width: u32,
+    /// Pencere yüksekliği (varsayılan: 600)
+    #[serde(default = "default_height")]
+    pub height: u32,
+    /// Yeniden boyutlandırılabilir mi (varsayılan: true)
+    #[serde(default = "default_resizable")]
+    pub resizable: bool,
+}
+
+fn default_title() -> String {
+    "uwebr".to_string()
+}
+fn default_width() -> u32 {
+    800
+}
+fn default_height() -> u32 {
+    600
+}
+fn default_resizable() -> bool {
+    true
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            title: default_title(),
+            width: default_width(),
+            height: default_height(),
+            resizable: default_resizable(),
+        }
+    }
+}
+
+/// Proje dizinindeki `uwebr.config.toml` dosyasını oku; yoksa default döndür.
+pub fn load_window_config(root: &Path) -> WindowConfig {
+    let config_path = root.join("uwebr.config.toml");
+    match fs::read_to_string(&config_path) {
+        Ok(content) => match toml::from_str::<WindowConfig>(&content) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("Warning: failed to parse {}: {e}", config_path.display());
+                WindowConfig::default()
+            }
+        },
+        Err(_) => WindowConfig::default(),
+    }
+}
+
 /// Hot-swap capable component that wraps a dynamically loaded shared library.
 ///
 /// Each render call invokes the shared library's `render()` function,
@@ -1016,6 +1072,7 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
         component_name,
         root: root_w2,
         error: None,
+        window_config: load_window_config(&root),
     };
 
     event_loop.run_app(&mut state)?;
@@ -1034,6 +1091,8 @@ struct HotSwapState {
     root: PathBuf,
     /// Son compile/load hatası — Some ise error overlay gösterilir.
     error: Option<String>,
+    /// uwebr.config.toml'dan yüklenen pencere ayarları.
+    window_config: WindowConfig,
 }
 
 impl winit::application::ApplicationHandler for HotSwapState {
@@ -1053,8 +1112,15 @@ impl winit::application::ApplicationHandler for HotSwapState {
             return;
         }
         let attrs = winit::window::WindowAttributes::default()
-            .with_title(format!("uwebr — {}", self.component_name))
-            .with_inner_size(winit::dpi::LogicalSize::new(800u32, 600u32));
+            .with_title(format!(
+                "{} — {}",
+                self.window_config.title, self.component_name
+            ))
+            .with_inner_size(winit::dpi::LogicalSize::new(
+                self.window_config.width,
+                self.window_config.height,
+            ))
+            .with_resizable(self.window_config.resizable);
 
         let window = match event_loop.create_window(attrs) {
             Ok(w) => std::sync::Arc::new(w),
@@ -1256,8 +1322,9 @@ fn run_file_watcher(
         }
     };
 
-    if let Err(e) = watcher.watch(root.join("src").as_path(), RecursiveMode::Recursive) {
-        eprintln!("Failed to watch src/: {e}");
+    // Proje dizinini recursive olarak izle — tüm .uwebr dosyaları dahil
+    if let Err(e) = watcher.watch(root, RecursiveMode::Recursive) {
+        eprintln!("Failed to watch project directory: {e}");
         return;
     }
 
@@ -1763,5 +1830,66 @@ mod tests {
     fn test_classify_irrelevant_change_is_none() {
         let paths = vec![PathBuf::from("README.md"), PathBuf::from("notes.txt")];
         assert_eq!(classify_changes(&paths), ChangeKind::None);
+    }
+
+    // ── Window config tests (FAZ 22.8) ──────────────────────────
+
+    #[test]
+    fn test_window_config_default() {
+        let cfg = WindowConfig::default();
+        assert_eq!(cfg.title, "uwebr");
+        assert_eq!(cfg.width, 800);
+        assert_eq!(cfg.height, 600);
+        assert!(cfg.resizable);
+    }
+
+    #[test]
+    fn test_load_window_config_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = load_window_config(tmp.path());
+        assert_eq!(cfg.title, "uwebr");
+    }
+
+    #[test]
+    fn test_load_window_config_valid() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("uwebr.config.toml"),
+            "title = \"MyApp\"\nwidth = 1200\nheight = 900\nresizable = false\n",
+        )
+        .unwrap();
+        let cfg = load_window_config(tmp.path());
+        assert_eq!(cfg.title, "MyApp");
+        assert_eq!(cfg.width, 1200);
+        assert_eq!(cfg.height, 900);
+        assert!(!cfg.resizable);
+    }
+
+    #[test]
+    fn test_load_window_config_partial() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("uwebr.config.toml"),
+            "title = \"Partial\"\n",
+        )
+        .unwrap();
+        let cfg = load_window_config(tmp.path());
+        assert_eq!(cfg.title, "Partial");
+        assert_eq!(cfg.width, 800); // default
+        assert_eq!(cfg.height, 600); // default
+        assert!(cfg.resizable); // default
+    }
+
+    #[test]
+    fn test_load_window_config_invalid_toml() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("uwebr.config.toml"),
+            "this is not valid toml [[[",
+        )
+        .unwrap();
+        let cfg = load_window_config(tmp.path());
+        // Should fall back to defaults on parse error
+        assert_eq!(cfg.title, "uwebr");
     }
 }

@@ -77,9 +77,13 @@ pub fn compile_shared_library(
         _tmp_dir = Some(td);
     }
 
-    // Transpile: gerçek pipeline'ı kullan
-    let transpiled =
-        uwebr_transpiler::transpile(uwebr_content, component_name).context("transpile failed")?;
+    // Transpile: gerçek pipeline'ı kullan (shared_lib modu)
+    let transpiled = uwebr_transpiler::transpile_with_options(
+        uwebr_content,
+        component_name,
+        &uwebr_transpiler::TranspileOptions { shared_lib: true },
+    )
+    .context("transpile failed")?;
 
     // Transpile çıktısındaki `pub const CSS_*:` satırlarını kaldır
     // (shared library'de CSS'i static olarak ayrı tanımlıyoruz)

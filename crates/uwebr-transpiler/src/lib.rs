@@ -87,8 +87,25 @@ impl ScriptBindings {
     }
 }
 
+/// Transpile options.
+#[derive(Debug, Default, Clone)]
+pub struct TranspileOptions {
+    /// Shared library modu: `use crate::generated::...` import'larını atlar,
+    /// component composition'ı placeholder ile değiştirir.
+    pub shared_lib: bool,
+}
+
 /// Transpile .uwebr content to Rust source code
 pub fn transpile(content: &str, component_name: &str) -> Result<String> {
+    transpile_with_options(content, component_name, &TranspileOptions::default())
+}
+
+/// Transpile .uwebr content with custom options.
+pub fn transpile_with_options(
+    content: &str,
+    component_name: &str,
+    options: &TranspileOptions,
+) -> Result<String> {
     // Extract <style> blocks
     let css = extract_tag(content, "style");
     // Extract <script> blocks
@@ -135,12 +152,16 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
     output.push_str(
         "use uwebr_core::component::{Element, NodeType, PropValue, prop_string, prop_bool, prop_number};\n",
     );
-    for comp in &component_refs {
-        let mod_name = to_snake(comp);
-        let fn_name = to_snake(comp);
-        output.push_str(&format!(
-            "use crate::generated::{mod_name}::{fn_name}_component;\n"
-        ));
+    // Shared library modunda crate::generated import'ları atla —
+    // tüm component fonksiyonları aynı dosyada tanımlı.
+    if !options.shared_lib {
+        for comp in &component_refs {
+            let mod_name = to_snake(comp);
+            let fn_name = to_snake(comp);
+            output.push_str(&format!(
+                "use crate::generated::{mod_name}::{fn_name}_component;\n"
+            ));
+        }
     }
     output.push('\n');
 
@@ -188,7 +209,7 @@ pub fn transpile(content: &str, component_name: &str) -> Result<String> {
         ));
     }
 
-    output.push_str(&generate_element_code(&root, 2, &bindings));
+    output.push_str(&generate_element_code(&root, 2, &bindings, options));
     output.push_str("\n}\n");
 
     Ok(output)
@@ -348,7 +369,12 @@ fn is_emittable(node: &HtmlNode) -> bool {
 }
 
 /// Generate Rust Element code from an HtmlNode
-fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindings) -> String {
+fn generate_element_code(
+    node: &HtmlNode,
+    indent: usize,
+    bindings: &ScriptBindings,
+    options: &TranspileOptions,
+) -> String {
     let pad = "    ".repeat(indent);
     match node {
         HtmlNode::Element(el) => {
@@ -379,7 +405,7 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 // Mixed static + dynamic: build children imperatively
                 let mut lines = vec!["{ let mut __c: Vec<Element> = vec![];".to_string()];
                 for child in &emittable {
-                    let code = generate_element_code(child, indent + 3, bindings)
+                    let code = generate_element_code(child, indent + 3, bindings, options)
                         .trim()
                         .to_string();
                     if matches!(child, HtmlNode::EachLoop(_) | HtmlNode::IfBlock(_)) {
@@ -393,7 +419,7 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
             } else {
                 let children_code: Vec<String> = emittable
                     .iter()
-                    .map(|c| generate_element_code(c, indent + 2, bindings))
+                    .map(|c| generate_element_code(c, indent + 2, bindings, options))
                     .collect();
                 format!("vec![\n{}\n{}]", children_code.join(",\n"), pad)
             };
@@ -426,11 +452,11 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 );
             }
             if emittable.len() == 1 {
-                return generate_element_code(emittable[0], indent, bindings);
+                return generate_element_code(emittable[0], indent, bindings, options);
             }
             let children: Vec<String> = emittable
                 .iter()
-                .map(|n| generate_element_code(n, indent + 1, bindings))
+                .map(|n| generate_element_code(n, indent + 1, bindings, options))
                 .collect();
             // `span`, not `div`: fragments come from mixed inline content like
             // `Count: {count}`, which must flow on one line rather than stack.
@@ -452,6 +478,26 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 format!("vec![{}]", props.join(", "))
             };
 
+            // Shared library modunda component fonksiyonları mevcut değil —
+            // placeholder element üret. Slot children'ları koru.
+            if options.shared_lib {
+                let slot_children: Vec<String> = comp
+                    .children
+                    .iter()
+                    .filter(|c| is_emittable(c))
+                    .map(|c| generate_element_code(c, indent + 2, bindings, options))
+                    .collect();
+                let children_str = if slot_children.is_empty() {
+                    "vec![]".to_string()
+                } else {
+                    format!("vec![\n{}\n{}]", slot_children.join(",\n"), pad)
+                };
+                return format!(
+                    "{}Element {{\n{}node_type: NodeType::Element(\"{}\".into()),\n{}props: {},\n{}children: {},\n{}}}",
+                    pad, pad, name, pad, props_str, pad, children_str, pad
+                );
+            }
+
             // Component composition: call the component function, passing any
             // props the caller wrote, then append any slot children supplied.
             let fn_name = format!("{}_component", to_snake(name));
@@ -464,7 +510,7 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 .children
                 .iter()
                 .filter(|c| is_emittable(c))
-                .map(|c| generate_element_code(c, indent + 2, bindings))
+                .map(|c| generate_element_code(c, indent + 2, bindings, options))
                 .collect();
 
             let children_str = if slot_children.is_empty() {
@@ -491,7 +537,7 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 .body
                 .iter()
                 .filter(|n| is_emittable(n))
-                .map(|n| generate_element_code(n, indent + 3, bindings))
+                .map(|n| generate_element_code(n, indent + 3, bindings, options))
                 .collect();
             let body_str = if body_elements.len() == 1 {
                 body_elements[0].clone()
@@ -518,7 +564,7 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 .then_body
                 .iter()
                 .filter(|n| is_emittable(n))
-                .map(|n| generate_element_code(n, indent + 2, bindings))
+                .map(|n| generate_element_code(n, indent + 2, bindings, options))
                 .collect();
             let then_str = if then_elements.len() == 1 {
                 then_elements[0].clone()
@@ -533,7 +579,7 @@ fn generate_element_code(node: &HtmlNode, indent: usize, bindings: &ScriptBindin
                 let else_elements: Vec<String> = else_body
                     .iter()
                     .filter(|n| is_emittable(n))
-                    .map(|n| generate_element_code(n, indent + 2, bindings))
+                    .map(|n| generate_element_code(n, indent + 2, bindings, options))
                     .collect();
                 if else_elements.len() == 1 {
                     format!(" else {{ {} }}", else_elements[0].trim())
@@ -1091,5 +1137,55 @@ mod tests {
         assert!(result.contains("prop_string"));
         assert!(result.contains("prop_bool"));
         assert!(result.contains("prop_number"));
+    }
+
+    // ── Shared library mode tests ────────────────────────────────
+
+    #[test]
+    fn test_shared_lib_no_crate_generated_imports() {
+        let input = r#"<div><Header></Header><p>Content</p></div>"#;
+        let opts = TranspileOptions { shared_lib: true };
+        let result = transpile_with_options(input, "Page", &opts).unwrap();
+        assert!(
+            !result.contains("use crate::generated::"),
+            "shared lib mode must not generate crate::generated imports:\n{result}"
+        );
+    }
+
+    #[test]
+    fn test_shared_lib_component_becomes_element() {
+        let input = r#"<div><Header></Header></div>"#;
+        let opts = TranspileOptions { shared_lib: true };
+        let result = transpile_with_options(input, "Page", &opts).unwrap();
+        // Component'ler Element'e dönüştürülmeli
+        assert!(result.contains("NodeType::Element(\"Header\""));
+        assert!(!result.contains("header_component("));
+    }
+
+    #[test]
+    fn test_shared_lib_preserves_script() {
+        let input = r#"<div><span>{count}</span></div>
+<script>let count = 0;</script>"#;
+        let opts = TranspileOptions { shared_lib: true };
+        let result = transpile_with_options(input, "App", &opts).unwrap();
+        assert!(result.contains("__state_count()"));
+        assert!(result.contains("fn __set_state_count("));
+    }
+
+    #[test]
+    fn test_shared_lib_preserves_event_handlers() {
+        let input = r#"<button on:click={increment}>+</button>
+<script>function increment() {}</script>"#;
+        let opts = TranspileOptions { shared_lib: true };
+        let result = transpile_with_options(input, "App", &opts).unwrap();
+        assert!(result.contains("register_action(\"increment\", increment)"));
+        assert!(result.contains("PropValue::Closure(\"increment\".into())"));
+    }
+
+    #[test]
+    fn test_default_transpile_has_crate_generated_imports() {
+        let input = r#"<div><Header></Header></div>"#;
+        let result = transpile(input, "Page").unwrap();
+        assert!(result.contains("use crate::generated::header::header_component"));
     }
 }
