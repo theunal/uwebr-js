@@ -15,6 +15,16 @@ pub type CssFn = unsafe extern "C" fn() -> *const c_char;
 /// Library unload edilmeden önce çağrılan cleanup fonksiyonu.
 pub type CleanupFn = unsafe extern "C" fn();
 
+/// Script state'ini JSON olarak export eden fonksiyon.
+///
+/// Null-terminated JSON string pointer'ı döndürür.
+pub type ExportStateFn = unsafe extern "C" fn() -> *const c_char;
+
+/// Script state'ini JSON'dan import eden fonksiyon.
+///
+/// Null-terminated JSON string pointer'ı alır.
+pub type ImportStateFn = unsafe extern "C" fn(*const c_char);
+
 /// Library uzantısını döndürür.
 pub fn library_extension() -> &'static str {
     #[cfg(target_os = "windows")]

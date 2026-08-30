@@ -88,11 +88,38 @@ impl HotSwapManager {
 
     /// Try to swap to a new library. On success the old library is dropped.
     pub fn try_swap(&mut self, new_library_path: &Path) -> Result<SwapResult, SwapError> {
+        self.try_swap_inner(new_library_path, false)
+    }
+
+    /// Try to swap while preserving state from the old library.
+    ///
+    /// Eski library'den state'i export edip yeni library'ye import eder.
+    pub fn try_swap_with_state(
+        &mut self,
+        new_library_path: &Path,
+    ) -> Result<SwapResult, SwapError> {
+        self.try_swap_inner(new_library_path, true)
+    }
+
+    fn try_swap_inner(
+        &mut self,
+        new_library_path: &Path,
+        preserve_state: bool,
+    ) -> Result<SwapResult, SwapError> {
+        // 1. Eski state'i export et
+        let old_state = if preserve_state {
+            self.current.as_ref().and_then(|lib| lib.export_state())
+        } else {
+            None
+        };
+
+        // 2. Yeni library'yi yükle
         let new_lib = LoadedLibrary::load(new_library_path).map_err(|e| SwapError::LoadFailed {
             path: new_library_path.to_path_buf(),
             error: e.to_string(),
         })?;
 
+        // 3. Render test
         let render_start = std::time::Instant::now();
         let ptr = new_lib.render_element();
         let render_time_ms = render_start.elapsed().as_millis() as u64;
@@ -104,10 +131,17 @@ impl HotSwapManager {
         }
         unsafe { drop(Box::from_raw(ptr)) };
 
+        // 4. State'i import et
+        if let Some(json) = &old_state {
+            new_lib.import_state(json);
+        }
+
+        // 5. CSS karşılaştır
         let old_css = self.current.as_ref().and_then(|c| c.css());
         let new_css = new_lib.css();
         let css_changed = old_css != new_css;
 
+        // 6. Swap
         let had_old = self.current.is_some();
         let old_path = self.expected_path();
         self.current = Some(new_lib);

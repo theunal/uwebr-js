@@ -152,6 +152,98 @@ pub fn clear() {
     SCRIPT_STATE.with(|s| s.borrow_mut().clear());
 }
 
+// ── State persistence (FAZ 23) ────────────────────────────────
+
+/// A single state entry for serialization.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StateEntry {
+    pub key: String,
+    /// Tip adı: "i64", "f64", "bool", "string"
+    pub ty: String,
+    /// JSON value — number, bool, veya string olarak saklanır.
+    pub value: serde_json::Value,
+}
+
+/// Export all script state as a JSON string.
+///
+/// Desteklenen tipler: `i64`, `f64`, `bool`, `String`. Desteklenmeyen
+/// tipler atlanır.
+pub fn export_state() -> String {
+    let entries: Vec<StateEntry> = SCRIPT_STATE.with(|s| {
+        let state = s.borrow();
+        state
+            .iter()
+            .filter_map(|(key, boxed)| {
+                // SCRIPT_STATE'taki değerler Signal<T> olarak saklanır
+                if let Some(sig) = boxed.downcast_ref::<Signal<i64>>() {
+                    Some(StateEntry {
+                        key: key.clone(),
+                        ty: "i64".into(),
+                        value: serde_json::Value::Number(sig.get().into()),
+                    })
+                } else if let Some(sig) = boxed.downcast_ref::<Signal<f64>>() {
+                    let num = serde_json::Number::from_f64(sig.get())?;
+                    Some(StateEntry {
+                        key: key.clone(),
+                        ty: "f64".into(),
+                        value: serde_json::Value::Number(num),
+                    })
+                } else if let Some(sig) = boxed.downcast_ref::<Signal<bool>>() {
+                    Some(StateEntry {
+                        key: key.clone(),
+                        ty: "bool".into(),
+                        value: serde_json::Value::Bool(sig.get()),
+                    })
+                } else {
+                    boxed
+                        .downcast_ref::<Signal<String>>()
+                        .map(|sig| StateEntry {
+                            key: key.clone(),
+                            ty: "string".into(),
+                            value: serde_json::Value::String(sig.get()),
+                        })
+                }
+            })
+            .collect()
+    });
+    serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Import script state from a JSON string previously produced by [`export_state`].
+///
+/// Mevcut state üzerine yaz eksik key'leri oluştur. Desteklenmeyen tipleri atla.
+pub fn import_state(json: &str) {
+    let entries: Vec<StateEntry> = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    for entry in &entries {
+        match entry.ty.as_str() {
+            "i64" => {
+                if let Some(v) = entry.value.as_i64() {
+                    set(&entry.key, v);
+                }
+            }
+            "f64" => {
+                if let Some(v) = entry.value.as_f64() {
+                    set(&entry.key, v);
+                }
+            }
+            "bool" => {
+                if let Some(v) = entry.value.as_bool() {
+                    set(&entry.key, v);
+                }
+            }
+            "string" => {
+                if let Some(v) = entry.value.as_str() {
+                    set(&entry.key, v.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +371,98 @@ mod tests {
         clear_hover();
         assert!(!is_hovered(1), "hover cleared");
         assert!(is_focused(2), "focus preserved across hover clear");
+    }
+
+    // ── State persistence tests (FAZ 23) ───────────────────────
+
+    #[test]
+    fn test_export_empty_state() {
+        clear();
+        let json = export_state();
+        assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn test_export_i64() {
+        clear();
+        set("count", 42i64);
+        let json = export_state();
+        let entries: Vec<StateEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "count");
+        assert_eq!(entries[0].ty, "i64");
+        assert_eq!(entries[0].value, serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_export_bool() {
+        clear();
+        set("active", true);
+        let json = export_state();
+        let entries: Vec<StateEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(entries[0].ty, "bool");
+        assert_eq!(entries[0].value, serde_json::json!(true));
+    }
+
+    #[test]
+    fn test_export_string() {
+        clear();
+        set("name", "hello".to_string());
+        let json = export_state();
+        let entries: Vec<StateEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(entries[0].ty, "string");
+        assert_eq!(entries[0].value, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn test_export_f64() {
+        clear();
+        set("ratio", 3.14f64);
+        let json = export_state();
+        let entries: Vec<StateEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(entries[0].ty, "f64");
+        // f64 JSON precision
+        let val = entries[0].value.as_f64().unwrap();
+        assert!((val - 3.14).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_import_roundtrip() {
+        clear();
+        set("count", 7i64);
+        set("name", "test".to_string());
+        set("active", true);
+
+        let json = export_state();
+        clear();
+
+        import_state(&json);
+        assert_eq!(get("count", 0i64), 7);
+        assert_eq!(get("name", "".to_string()), "test");
+        assert_eq!(get("active", false), true);
+    }
+
+    #[test]
+    fn test_import_overwrites_existing() {
+        clear();
+        set("x", 1i64);
+        let json = r#"[{"key":"x","ty":"i64","value":99}]"#;
+        import_state(json);
+        assert_eq!(get("x", 0i64), 99);
+    }
+
+    #[test]
+    fn test_import_ignores_invalid_json() {
+        clear();
+        import_state("not json {{{");
+        // should not panic, state unchanged
+    }
+
+    #[test]
+    fn test_import_ignores_unknown_type() {
+        clear();
+        let json = r#"[{"key":"x","ty":"custom","value":42}]"#;
+        import_state(json);
+        assert!(!contains("x"));
     }
 }

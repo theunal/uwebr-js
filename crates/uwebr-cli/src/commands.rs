@@ -89,6 +89,12 @@ impl HotSwapComponent {
         *lib = new_lib;
     }
 
+    /// Current library'den script state'ini JSON olarak export eder.
+    fn export_state(&self) -> Option<String> {
+        let lib = self.library.lock().unwrap();
+        lib.export_state()
+    }
+
     /// Get a clone of the Arc for the file watcher thread.
     fn shared(&self) -> Arc<Mutex<uwebr_dynlib::LoadedLibrary>> {
         self.library.clone()
@@ -1257,10 +1263,18 @@ impl HotSwapState {
         let reload_start = Instant::now();
         match uwebr_dynlib::compile_shared_library(&content, &self.component_name, &opts) {
             Ok(result) => {
+                // State'i eski library'den export et
+                let old_state_json = self.component.export_state();
+
                 match uwebr_dynlib::LoadedLibrary::load(&result.library_path) {
                     Ok(new_lib) => {
                         // Hata overlay'i temizle — başarılı compile
                         self.error = None;
+
+                        // State'i yeni library'ye import et
+                        if let Some(json) = &old_state_json {
+                            new_lib.import_state(json);
+                        }
 
                         // Update CSS
                         if let Some(new_css) = new_lib.css() {
@@ -1276,7 +1290,12 @@ impl HotSwapState {
                         }
                         // Swap library
                         self.component.swap(new_lib);
-                        println!("  hot-reloaded in {:?}", reload_start.elapsed());
+                        let state_msg = if old_state_json.is_some() {
+                            " (state preserved)"
+                        } else {
+                            ""
+                        };
+                        println!("  hot-reloaded in {:?}{state_msg}", reload_start.elapsed());
                     }
                     Err(e) => {
                         self.error = Some(format!("Load failed: {e}"));

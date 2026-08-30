@@ -212,6 +212,7 @@ pub extern "C" fn css() -> *const std::ffi::c_char {
         r#"#![allow(unused, non_snake_case)]
 
 use uwebr_core::component::{{Element, NodeType, PropValue}};
+use std::ffi::{{CString, CStr}};
 
 {css_static}{transpiled}
 
@@ -223,6 +224,23 @@ pub extern "C" fn render() -> *mut Element {{
 
 #[no_mangle]
 pub extern "C" fn cleanup() {{
+}}
+
+#[no_mangle]
+pub extern "C" fn export_state() -> *const std::ffi::c_char {{
+    let json = uwebr_core::state::export_state();
+    let c = CString::new(json).unwrap_or_else(|_| CString::new("[]").unwrap());
+    c.into_raw()
+}}
+
+#[no_mangle]
+pub extern "C" fn import_state(ptr: *const std::ffi::c_char) {{
+    if ptr.is_null() {{ return; }}
+    unsafe {{
+        let cstr = CStr::from_ptr(ptr);
+        let json = cstr.to_string_lossy();
+        uwebr_core::state::import_state(&json);
+    }}
 }}
 
 {css_export}

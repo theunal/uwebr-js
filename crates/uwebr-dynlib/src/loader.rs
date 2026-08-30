@@ -1,4 +1,4 @@
-use crate::abi::{CleanupFn, CssFn, RenderFn};
+use crate::abi::{CleanupFn, CssFn, ExportStateFn, ImportStateFn, RenderFn};
 use anyhow::{Context, Result};
 use libloading::Library;
 use std::path::Path;
@@ -12,6 +12,8 @@ pub struct LoadedLibrary {
     render: RenderFn,
     css: Option<CssFn>,
     cleanup: Option<CleanupFn>,
+    export_state: Option<ExportStateFn>,
+    import_state: Option<ImportStateFn>,
 }
 
 // SAFETY: libloading::Library Send+Sync; extern "C" fonksiyon pointer'ları da öyle.
@@ -33,12 +35,18 @@ impl LoadedLibrary {
 
             let css_fn: Option<CssFn> = lib.get::<CssFn>(b"css").ok().map(|s| *s);
             let cleanup_fn: Option<CleanupFn> = lib.get::<CleanupFn>(b"cleanup").ok().map(|s| *s);
+            let export_state_fn: Option<ExportStateFn> =
+                lib.get::<ExportStateFn>(b"export_state").ok().map(|s| *s);
+            let import_state_fn: Option<ImportStateFn> =
+                lib.get::<ImportStateFn>(b"import_state").ok().map(|s| *s);
 
             Ok(Self {
                 _lib: lib,
                 render: render_fn,
                 css: css_fn,
                 cleanup: cleanup_fn,
+                export_state: export_state_fn,
+                import_state: import_state_fn,
             })
         }
     }
@@ -68,6 +76,23 @@ impl LoadedLibrary {
             let css_fn = self.css?;
             let ptr = css_fn();
             crate::abi::ptr_to_string(ptr)
+        }
+    }
+
+    /// Script state'ini JSON olarak export eder (varsa).
+    pub fn export_state(&self) -> Option<String> {
+        unsafe {
+            let export_fn = self.export_state?;
+            let ptr = export_fn();
+            crate::abi::ptr_to_string(ptr)
+        }
+    }
+
+    /// Script state'ini JSON'dan import eder (varsa).
+    pub fn import_state(&self, json: &str) {
+        if let Some(import_fn) = self.import_state {
+            let c = std::ffi::CString::new(json).unwrap_or_default();
+            unsafe { import_fn(c.as_ptr()) };
         }
     }
 
