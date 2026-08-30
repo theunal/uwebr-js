@@ -441,4 +441,59 @@ mod tests {
         assert_eq!(el.children.len(), 1);
         assert_eq!(el.children[0].node_type, NodeType::Text("Bold".into()));
     }
+
+    // ── Quality tests (test_q_*) ────────────────────────────────
+
+    #[test]
+    fn test_q_parse_html_empty_angle_brackets() {
+        assert!(parse_runtime_html("<>").is_none());
+    }
+
+    #[test]
+    fn test_q_parse_html_closing_tag_only() {
+        assert!(parse_runtime_html("</div>").is_none());
+    }
+
+    #[test]
+    fn test_q_parse_html_unclosed_quote_attr() {
+        let result = parse_runtime_html(r#"<div class="open>"#);
+        assert!(
+            result.is_none() || result.is_some(),
+            "unclosed quote must not panic"
+        );
+    }
+
+    #[test]
+    fn test_q_parse_html_malformed_nested() {
+        let result = parse_runtime_html("<div><span></div></span>");
+        assert!(
+            result.is_none() || result.is_some(),
+            "malformed nesting must not panic"
+        );
+    }
+
+    #[test]
+    fn test_q_html_parse_deeply_nested_20_levels() {
+        let mut html = String::from("<div>");
+        for i in 0..20 {
+            html.push_str(&format!("<div class=\"level{i}\">"));
+        }
+        html.push_str("leaf");
+        for _ in 0..20 {
+            html.push_str("</div>");
+        }
+        html.push_str("</div>");
+        let el = parse_runtime_html(&html).unwrap();
+        assert_eq!(el.node_type, NodeType::Element("div".into()));
+        let mut current = &el;
+        for i in 0..21 {
+            assert_eq!(
+                current.children.len(),
+                1,
+                "level {i} should have exactly 1 child"
+            );
+            current = &current.children[0];
+        }
+        assert_eq!(current.node_type, NodeType::Text("leaf".into()));
+    }
 }

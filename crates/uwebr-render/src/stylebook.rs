@@ -2103,4 +2103,284 @@ mod tests {
             "disabled='false' should not be treated as disabled"
         );
     }
+
+    // ── Quality tests (test_q_*) ────────────────────────────────
+
+    #[test]
+    fn test_q_stylebook_parse_invalid_css_returns_err() {
+        let result = StyleBook::parse("{ { { broken {");
+        assert!(result.is_err(), "truly broken CSS must return Err, got Ok");
+    }
+
+    #[test]
+    fn test_q_stylebook_empty_class_no_match() {
+        let sb = StyleBook::parse(".active { color: red; }").unwrap();
+        let el = make_element("div", vec![("class".into(), PropValue::String("".into()))]);
+        let m = sb.match_full(&el, &[], 0);
+        assert!(
+            !m.paint.color.is_some(),
+            "empty class must not match .active"
+        );
+    }
+
+    #[test]
+    fn test_q_stylebook_reparse_replaces_rules() {
+        let mut sb = StyleBook::parse("div { width: 100px; }").unwrap();
+        let el = make_element("div", vec![]);
+        sb.reparse("div { width: 300px; }", 800.0, 600.0).unwrap();
+        let (style, _) = sb.match_element(&el);
+        assert_eq!(style.size.width, taffy::Dimension::length(300.0));
+    }
+
+    #[test]
+    fn test_q_style_mask_or_assign_union() {
+        use uwebr_css::codegen::StyleMask;
+        let mut a = StyleMask::default();
+        a.width = true;
+        a.display = true;
+        let mut b = StyleMask::default();
+        b.height = true;
+        b.padding = true;
+        a.or_assign(&b);
+        assert!(a.width);
+        assert!(a.display);
+        assert!(a.height);
+        assert!(a.padding);
+        assert!(!a.margin);
+    }
+
+    #[test]
+    fn test_q_stylebook_specificity_id_over_class() {
+        let sb = StyleBook::parse(".box { width: 100px; } #main { width: 500px; }").unwrap();
+        let el = make_element(
+            "div",
+            vec![
+                ("class".into(), PropValue::String("box".into())),
+                ("id".into(), PropValue::String("main".into())),
+            ],
+        );
+        let (style, _) = sb.match_element(&el);
+        assert_eq!(
+            style.size.width,
+            taffy::Dimension::length(500.0),
+            "#id must beat .class"
+        );
+    }
+
+    #[test]
+    fn test_q_stylebook_important_overrides_id() {
+        let sb = StyleBook::parse(".a { width: 100px !important; } #b { width: 500px; }").unwrap();
+        let el = make_element(
+            "div",
+            vec![
+                ("class".into(), PropValue::String("a".into())),
+                ("id".into(), PropValue::String("b".into())),
+            ],
+        );
+        let (style, _) = sb.match_element(&el);
+        assert_eq!(
+            style.size.width,
+            taffy::Dimension::length(100.0),
+            "!important must override higher-specificity #id"
+        );
+    }
+
+    #[test]
+    fn test_q_reparse_different_css_changes_match() {
+        let mut sb = StyleBook::parse("div { width: 100px; }").unwrap();
+        let el = make_element("div", vec![]);
+        let (style1, _) = sb.match_element(&el);
+        assert_eq!(style1.size.width, taffy::Dimension::length(100.0));
+
+        sb.reparse("div { height: 250px; }", 800.0, 600.0).unwrap();
+        let (style2, _) = sb.match_element(&el);
+        assert_eq!(
+            style2.size.height,
+            taffy::Dimension::length(250.0),
+            "reparse must replace all rules"
+        );
+    }
+
+    #[test]
+    fn test_q_parse_then_match_then_layout() {
+        let sb = StyleBook::parse("div { width: 150px; height: 75px; }").unwrap();
+        let el = make_element("div", vec![]);
+        let (style, matched) = sb.match_element(&el);
+        assert!(matched);
+        assert_eq!(style.size.width, taffy::Dimension::length(150.0));
+        assert_eq!(style.size.height, taffy::Dimension::length(75.0));
+    }
+
+    #[test]
+    fn test_q_paint_inherits_three_levels() {
+        use crate::paint::ResolvedPaint;
+        // grandparent sets color + font_size, parent overrides font_size, child inherits both
+        use uwebr_css::codegen::PaintProps;
+        let grandparent = ResolvedPaint {
+            color: vello::peniko::Color::from_rgb8(0, 0, 255),
+            font_size: 32.0,
+            ..Default::default()
+        };
+        let parent_css = PaintProps {
+            font_size: Some(24.0),
+            ..Default::default()
+        };
+        let parent =
+            ResolvedPaint::resolve(&grandparent, &parent_css, &make_element("div", vec![]));
+        let child_el = make_element("span", vec![]);
+        let child = ResolvedPaint::resolve(&parent, &PaintProps::default(), &child_el);
+        assert_eq!(child.color, vello::peniko::Color::from_rgb8(0, 0, 255));
+        assert_eq!(child.font_size, 24.0);
+    }
+
+    #[test]
+    fn test_q_layout_inline_color_overrides_css() {
+        let sb = StyleBook::parse("div { width: 100px; }").unwrap();
+        let mut engine = crate::layout::LayoutEngine::new();
+        let el = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("color".into(), PropValue::String("blue".into()))],
+            children: vec![],
+        };
+        let root = engine.build_tree(&el, &sb).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &el, &sb);
+        assert_eq!(
+            nodes[0].paint.color,
+            vello::peniko::Color::from_rgb8(0, 0, 255),
+            "inline color must override default"
+        );
+    }
+
+    #[test]
+    fn test_q_layout_apply_prop_unknown_noop() {
+        let mut engine = crate::layout::LayoutEngine::new();
+        let el = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![],
+        };
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let info = engine.get_layout_info(root).unwrap();
+        assert!(info.width >= 0.0, "unknown props must not break layout");
+    }
+
+    #[test]
+    fn test_q_layout_flex_grow_three_way() {
+        let css = ".row { display: flex; flex-direction: row; width: 300px; } .a { flex-grow: 1; height: 20px; } .b { flex-grow: 2; height: 20px; } .c { flex-grow: 1; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("a".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("b".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("c".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = crate::layout::LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 400.0, 200.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(items.len(), 3);
+        assert!(
+            items[1].width > items[0].width,
+            "flex-grow:2 must be wider than flex-grow:1"
+        );
+    }
+
+    #[test]
+    fn test_q_layout_border_color_from_css() {
+        let sb = StyleBook::parse("div { border-color: #ff0000; border-width: 2px; }").unwrap();
+        let el = make_element("div", vec![]);
+        let mut engine = crate::layout::LayoutEngine::new();
+        let root = engine.build_tree(&el, &sb).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &el, &sb);
+        assert_eq!(
+            nodes[0].paint.border_color,
+            vello::peniko::Color::from_rgba8(255, 0, 0, 255),
+            "border-color must resolve from CSS"
+        );
+        assert_eq!(nodes[0].paint.border_width, 2.0);
+    }
+
+    #[test]
+    fn test_q_layout_percentage_width_relative_to_parent() {
+        let css = ".parent { width: 400px; display: flex; } .child { width: 50%; height: 100px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("parent".into()))],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("child".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = crate::layout::LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            (child.layout.width - 200.0).abs() < 2.0,
+            "50% of 400px should be ~200, got {}",
+            child.layout.width
+        );
+    }
+
+    #[test]
+    fn test_q_stress_stylebook_500_rules() {
+        let mut css = String::new();
+        for i in 0..500 {
+            css.push_str(&format!(".rule{i} {{ width: {i}px; }} "));
+        }
+        let sb = StyleBook::parse(&css).unwrap();
+        assert_eq!(sb.len(), 500);
+        let el = make_element(
+            "div",
+            vec![("class".into(), PropValue::String("rule250".into()))],
+        );
+        let (style, matched) = sb.match_element(&el);
+        assert!(matched);
+        assert_eq!(style.size.width, taffy::Dimension::length(250.0));
+    }
+
+    #[test]
+    fn test_q_stress_many_css_classes_per_element() {
+        let mut css = String::new();
+        for i in 0..20 {
+            css.push_str(&format!(".c{i} {{ flex-direction: row; }} "));
+        }
+        let sb = StyleBook::parse(&css).unwrap();
+        let classes: Vec<String> = (0..20).map(|i| format!("c{i}")).collect();
+        let class_str = classes.join(" ");
+        let el = make_element("div", vec![("class".into(), PropValue::String(class_str))]);
+        let m = sb.match_full(&el, &[], 0);
+        assert!(m.matched);
+        assert_eq!(
+            m.style.flex_direction,
+            taffy::FlexDirection::Row,
+            "must inherit flex-direction from matching class"
+        );
+    }
 }

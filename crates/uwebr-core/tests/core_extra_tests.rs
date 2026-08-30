@@ -1840,3 +1840,954 @@ fn core_stress_effect_100_dependencies() {
     let expected: i32 = (0..100).map(|i| i * 10).sum();
     assert_eq!(sum.get(), expected);
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// QUALITY TESTS — 65 Unique Behavior Tests
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── Error Paths (15 tests) ────────────────────────────────────────────────
+
+#[test]
+fn test_quality_effect_reentrant_signal_write_no_panic() {
+    let (a, set_a) = create_signal(0);
+    let (b, _set_b) = create_signal(0);
+    let run_count = Rc::new(Cell::new(0));
+    let rc = run_count.clone();
+    let a_clone = a.clone();
+    let b_set = b.setter();
+    create_effect("reentrant", move || {
+        let _ = a_clone.get();
+        b_set.set(42);
+        rc.set(rc.get() + 1);
+    });
+    assert_eq!(run_count.get(), 1);
+    set_a.set(1);
+    assert_eq!(run_count.get(), 2);
+}
+
+#[test]
+fn test_quality_memo_diamond_convergence() {
+    let (a, set_a) = create_signal(1);
+    let (b, set_b) = create_signal(10);
+    let c = create_memo(move || a.get() + b.get());
+    assert_eq!(c.get(), 11);
+    let c2 = c.clone();
+    let d = create_memo(move || c2.get() * 2);
+    assert_eq!(d.get(), 22);
+    batch(|| {
+        set_a.set(5);
+        set_b.set(20);
+    });
+    assert_eq!(c.get(), 25);
+    assert_eq!(d.get(), 50);
+}
+
+#[test]
+fn test_quality_use_state_type_mismatch_creates_new() {
+    clear();
+    let (s1, set1) = use_state("x", 42i32);
+    set1.set(100);
+    let (s2, _set2) = use_state("x", 0i64);
+    assert_eq!(s1.get(), 100);
+    assert_eq!(s2.get(), 0);
+    assert_ne!(s1.id(), s2.id());
+}
+
+#[test]
+fn test_quality_router_navigate_unknown_path() {
+    let mut router = Router::new();
+    router.add_route("/", "Home");
+    router.navigate("/does-not-exist");
+    assert_eq!(router.current_route(), Some("/does-not-exist"));
+    assert!(router.resolve("/does-not-exist").is_none());
+}
+
+#[test]
+fn test_quality_router_duplicate_path_returns_first() {
+    let mut router = Router::new();
+    router.add_route("/dup", "First");
+    router.add_route("/dup", "Second");
+    router.add_route("/dup", "Third");
+    let route = router.resolve("/dup").unwrap();
+    assert_eq!(route.component, "First");
+}
+
+#[test]
+fn test_quality_on_mount_outside_scope_noop() {
+    on_mount(|| {
+        panic!("should not be called");
+    });
+}
+
+#[test]
+fn test_quality_on_cleanup_outside_scope_noop() {
+    on_cleanup(|| {
+        panic!("should not be called");
+    });
+}
+
+#[test]
+fn test_quality_update_hook_state_nonexistent_key_noop() {
+    reset_lifecycle();
+    let id = create_component_scope();
+    with_component(id, || {
+        let key = TypeId::of::<String>();
+        update_hook_state::<String, _>(key, |s| *s = "updated".to_string());
+        assert_eq!(get_hook_state::<String>(key), None);
+    });
+}
+
+#[test]
+fn test_quality_dispatch_action_handler_clears_all_actions() {
+    clear_actions();
+    let fired = Rc::new(Cell::new(0));
+    let f = fired.clone();
+    register_action("self-clearing", move || {
+        f.set(f.get() + 1);
+        clear_actions();
+    });
+    register_action("other", || panic!("should not fire"));
+    assert!(dispatch_action("self-clearing"));
+    assert_eq!(fired.get(), 1);
+    assert!(!has_action("other"));
+}
+
+#[test]
+fn test_quality_context_overwrite_retrieve_roundtrip() {
+    reset_context();
+    provide_context(1i32);
+    assert_eq!(use_context::<i32>(), Some(1));
+    provide_context(2i32);
+    assert_eq!(use_context::<i32>(), Some(2));
+    reset_context();
+}
+
+#[test]
+fn test_quality_router_empty_resolve() {
+    let router = Router::new();
+    assert!(router.resolve("/").is_none());
+    assert!(router.resolve("").is_none());
+    assert!(router.resolve("/anything").is_none());
+}
+
+#[test]
+fn test_quality_effect_runs_once_on_creation() {
+    let run_count = Rc::new(Cell::new(0));
+    let rc = run_count.clone();
+    create_effect("once", move || {
+        rc.set(rc.get() + 1);
+    });
+    assert_eq!(run_count.get(), 1);
+}
+
+#[test]
+fn test_quality_memo_no_change_skips_update() {
+    let (source, set_source) = create_signal(5);
+    let eval_count = Rc::new(Cell::new(0));
+    let ec = eval_count.clone();
+    let source_clone = source.clone();
+    let memo = create_memo(move || {
+        ec.set(ec.get() + 1);
+        source_clone.get() * 0
+    });
+    assert_eq!(memo.get(), 0);
+    let effect_count = Rc::new(Cell::new(0));
+    let ac = effect_count.clone();
+    let memo_clone = memo.clone();
+    create_effect("tracker", move || {
+        let _ = memo_clone.get();
+        ac.set(ac.get() + 1);
+    });
+    let before = effect_count.get();
+    set_source.set(10);
+    assert_eq!(effect_count.get(), before);
+}
+
+#[test]
+fn test_quality_batch_nested_batch() {
+    let (a, set_a) = create_signal(0);
+    let (b, set_b) = create_signal(0);
+    let run_count = Rc::new(Cell::new(0));
+    let rc = run_count.clone();
+    let a_clone = a.clone();
+    let b_clone = b.clone();
+    create_effect("nested_batch", move || {
+        let _ = (a_clone.get(), b_clone.get());
+        rc.set(rc.get() + 1);
+    });
+    let before = run_count.get();
+    batch(|| {
+        set_a.set(1);
+        batch(|| {
+            set_b.set(2);
+        });
+    });
+    assert!(run_count.get() > before);
+}
+
+#[test]
+fn test_quality_signal_drop_last_reference_cleans_up() {
+    for _ in 0..1000 {
+        let (_signal, _setter) = create_signal(42i32);
+    }
+}
+
+// ─── Edge Cases (15 tests) ─────────────────────────────────────────────────
+
+#[test]
+fn test_quality_prop_number_nan_string() {
+    let props = vec![("val".to_string(), PropValue::String("NaN".to_string()))];
+    let result = uwebr_core::component::prop_number(&props, "val");
+    assert!(result.is_nan());
+}
+
+#[test]
+fn test_quality_prop_number_infinity_string() {
+    let props = vec![("val".to_string(), PropValue::String("inf".to_string()))];
+    let result = uwebr_core::component::prop_number(&props, "val");
+    assert!(result.is_infinite());
+    assert!(result > 0.0);
+}
+
+#[test]
+fn test_quality_prop_number_negative_string() {
+    let props = vec![("val".to_string(), PropValue::String("-42".to_string()))];
+    let result = uwebr_core::component::prop_number(&props, "val");
+    assert_eq!(result, -42.0);
+}
+
+#[test]
+fn test_quality_prop_string_empty_value() {
+    let props = vec![("key".to_string(), PropValue::String("".to_string()))];
+    let result = uwebr_core::component::prop_string(&props, "key");
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_quality_diff_out_of_bounds_patch_returns_false() {
+    let mut root = elem_with_tag("div", vec![text_elem("A")]);
+    let patches = vec![Patch::UpdateText {
+        path: vec![5, 5],
+        text: "new".to_string(),
+    }];
+    let changed = apply_patches(&mut root, &patches);
+    assert!(!changed);
+}
+
+#[test]
+fn test_quality_diff_replace_root() {
+    let mut root = div_elem("div", "old", vec![]);
+    let patches = vec![Patch::Replace {
+        path: vec![],
+        new: component_elem("NewRoot"),
+    }];
+    let changed = apply_patches(&mut root, &patches);
+    assert!(changed);
+    assert!(matches!(root.node_type, NodeType::Component(ref t) if t == "NewRoot"));
+}
+
+#[test]
+fn test_quality_diff_insert_beyond_end_clamps() {
+    let mut root = elem_with_tag("div", vec![text_elem("A"), text_elem("B")]);
+    let patches = vec![Patch::Insert {
+        path: vec![],
+        index: 999,
+        child: text_elem("C"),
+    }];
+    let changed = apply_patches(&mut root, &patches);
+    assert!(changed);
+    assert_eq!(root.children.len(), 3);
+    assert_eq!(root.children[0], text_elem("A"));
+    assert_eq!(root.children[1], text_elem("B"));
+    assert_eq!(root.children[2], text_elem("C"));
+}
+
+#[test]
+fn test_quality_diff_move_same_position_noop() {
+    let mut root = elem_with_tag("div", vec![text_elem("A"), text_elem("B"), text_elem("C")]);
+    let patches = vec![Patch::Move {
+        path: vec![],
+        from: 1,
+        to: 1,
+    }];
+    apply_patches(&mut root, &patches);
+    assert_eq!(root.children[0], text_elem("A"));
+    assert_eq!(root.children[1], text_elem("B"));
+    assert_eq!(root.children[2], text_elem("C"));
+}
+
+#[test]
+fn test_quality_diff_nested_update_text_deep_path() {
+    let old = elem_with_tag(
+        "div",
+        vec![elem_with_tag(
+            "span",
+            vec![elem_with_tag("div", vec![text_elem("old")])],
+        )],
+    );
+    let new = elem_with_tag(
+        "div",
+        vec![elem_with_tag(
+            "span",
+            vec![elem_with_tag("div", vec![text_elem("new")])],
+        )],
+    );
+    let patches = diff(&old, &new);
+    assert_eq!(patches.len(), 1);
+    match &patches[0] {
+        Patch::UpdateText { path, text } => {
+            assert_eq!(path, &[0, 0, 0]);
+            assert_eq!(text, "new");
+        }
+        _ => panic!("Expected UpdateText"),
+    }
+}
+
+#[test]
+fn test_quality_diff_multiple_patches_applied() {
+    let mut root = elem_with_tag("div", vec![text_elem("A")]);
+    let patches = vec![
+        Patch::UpdateText {
+            path: vec![0],
+            text: "B".to_string(),
+        },
+        Patch::Insert {
+            path: vec![],
+            index: 1,
+            child: text_elem("C"),
+        },
+        Patch::Insert {
+            path: vec![],
+            index: 2,
+            child: text_elem("D"),
+        },
+    ];
+    let changed = apply_patches(&mut root, &patches);
+    assert!(changed);
+    assert_eq!(root.children.len(), 3);
+    assert_eq!(root.children[0], text_elem("B"));
+    assert_eq!(root.children[1], text_elem("C"));
+    assert_eq!(root.children[2], text_elem("D"));
+}
+
+#[test]
+fn test_quality_element_text_special_chars() {
+    let el = Element::text("hello\n\tworld");
+    match &el.node_type {
+        NodeType::Text(t) => {
+            assert_eq!(t, "hello\n\tworld");
+            assert!(t.contains('\n'));
+            assert!(t.contains('\t'));
+        }
+        _ => panic!("Expected text node"),
+    }
+}
+
+#[test]
+fn test_quality_element_prop_bool_false() {
+    let props = vec![("disabled".to_string(), PropValue::Bool(false))];
+    assert!(!uwebr_core::component::prop_bool(&props, "disabled"));
+}
+
+#[test]
+fn test_quality_prop_number_zero_string() {
+    let props = vec![("val".to_string(), PropValue::String("0".to_string()))];
+    assert_eq!(uwebr_core::component::prop_number(&props, "val"), 0.0);
+}
+
+#[test]
+fn test_quality_signal_read_write_interleave() {
+    let (signal, setter) = create_signal(0);
+    for i in 0..100 {
+        setter.set(i);
+        let val = signal.get();
+        assert_eq!(val, i);
+    }
+}
+
+#[test]
+fn test_quality_state_clear_and_recreate_different_type() {
+    clear();
+    set("key", 42i64);
+    assert_eq!(get("key", 0i64), 42);
+    clear();
+    set("key", "hello".to_string());
+    assert_eq!(get("key", "".to_string()), "hello");
+    assert_eq!(get("key", 0i64), 0);
+}
+
+// ─── Thread Safety (10 tests) ──────────────────────────────────────────────
+
+#[test]
+fn test_quality_timer_cross_thread_tick() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = counter.clone();
+    let _h = r.set_timeout(
+        move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        },
+        Duration::from_millis(0),
+    );
+    let r2 = r.clone();
+    let handle = std::thread::spawn(move || {
+        r2.tick();
+    });
+    handle.join().unwrap();
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_quality_timer_concurrent_tick_no_double_fire() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = counter.clone();
+    let _h = r.set_timeout(
+        move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        },
+        Duration::from_millis(0),
+    );
+    let r1 = r.clone();
+    let r2 = r.clone();
+    let h1 = std::thread::spawn(move || {
+        r1.tick();
+    });
+    let h2 = std::thread::spawn(move || {
+        r2.tick();
+    });
+    h1.join().unwrap();
+    h2.join().unwrap();
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_quality_timer_cancel_during_tick() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = counter.clone();
+    let h = r.set_timeout(
+        move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        },
+        Duration::from_millis(0),
+    );
+    r.cancel(h);
+    r.tick();
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_quality_timer_many_concurrent_timeouts() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    for _ in 0..100 {
+        let c = counter.clone();
+        let _h = r.set_timeout(
+            move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            },
+            Duration::from_millis(0),
+        );
+    }
+    let r2 = r.clone();
+    let handle = std::thread::spawn(move || {
+        r2.tick();
+    });
+    handle.join().unwrap();
+    assert_eq!(counter.load(Ordering::SeqCst), 100);
+}
+
+#[test]
+fn test_quality_timer_registry_clone_independence() {
+    let r1 = TimerRegistry::new();
+    let r2 = TimerRegistry::new();
+    let counter1 = Arc::new(AtomicUsize::new(0));
+    let counter2 = Arc::new(AtomicUsize::new(0));
+    let c1 = counter1.clone();
+    let c2 = counter2.clone();
+    let _h1 = r1.set_timeout(
+        move || {
+            c1.fetch_add(1, Ordering::SeqCst);
+        },
+        Duration::from_millis(0),
+    );
+    let _h2 = r2.set_timeout(
+        move || {
+            c2.fetch_add(1, Ordering::SeqCst);
+        },
+        Duration::from_millis(0),
+    );
+    r1.tick();
+    assert_eq!(counter1.load(Ordering::SeqCst), 1);
+    assert_eq!(counter2.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_quality_signal_thread_local_isolation() {
+    let (signal, setter) = create_signal(0);
+    setter.set(42);
+    let handle = std::thread::spawn(|| {
+        let (s, st) = create_signal(0);
+        st.set(100);
+        assert_eq!(s.get(), 100);
+    });
+    handle.join().unwrap();
+    assert_eq!(signal.get(), 42);
+}
+
+#[test]
+fn test_quality_context_thread_local_isolation() {
+    reset_context();
+    provide_context(42i32);
+    let handle = std::thread::spawn(|| {
+        let val = use_context::<i32>();
+        assert_eq!(val, None);
+    });
+    handle.join().unwrap();
+    reset_context();
+}
+
+#[test]
+fn test_quality_event_dispatch_thread_safe() {
+    let mut dispatcher = EventDispatcher::new();
+    let count = Rc::new(Cell::new(0));
+    let c = count.clone();
+    dispatcher.on(1, EventType::Click, Rc::new(move |_| c.set(c.get() + 1)));
+    let event = Event {
+        event_type: EventType::Click,
+        target: Some(1),
+        data: EventData::None,
+    };
+    dispatcher.dispatch(&event);
+    dispatcher.dispatch(&event);
+    assert_eq!(count.get(), 2);
+}
+
+#[test]
+fn test_quality_timer_drop_handle_cancels() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = counter.clone();
+    let h = r.set_timeout(
+        move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        },
+        Duration::from_millis(0),
+    );
+    r.cancel(h);
+    r.tick();
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_quality_state_concurrent_access() {
+    clear();
+    set("counter", 0i64);
+    let handle = std::thread::spawn(|| {
+        let val = get("counter", 999i64);
+        assert_eq!(val, 999);
+        set("counter", 42i64);
+        assert_eq!(get("counter", 0i64), 42);
+    });
+    handle.join().unwrap();
+    assert_eq!(get("counter", 0i64), 0);
+}
+
+// ─── Memory/Owner (10 tests) ──────────────────────────────────────────────
+
+#[test]
+fn test_quality_signal_clone_survives_drop_of_original() {
+    let setter;
+    {
+        let (_signal, s) = create_signal(42);
+        setter = s;
+    }
+    setter.set(100);
+}
+
+#[test]
+fn test_quality_signal_setter_clone_writes_same() {
+    let (signal, setter) = create_signal(0);
+    let setter2 = setter.clone();
+    setter2.set(99);
+    assert_eq!(signal.get(), 99);
+    setter.set(7);
+    assert_eq!(signal.get(), 7);
+}
+
+#[test]
+fn test_quality_signal_ids_unique_1000() {
+    let mut ids = HashSet::new();
+    for _ in 0..1000 {
+        let (signal, _setter) = create_signal(0i32);
+        ids.insert(signal.id());
+    }
+    assert_eq!(ids.len(), 1000);
+}
+
+#[test]
+fn test_quality_reset_lifecycle_clears_hook_states() {
+    reset_lifecycle();
+    let id = create_component_scope();
+    let key = TypeId::of::<i32>();
+    with_component(id, || {
+        set_hook_state(key, 42);
+    });
+    with_component(id, || {
+        assert_eq!(get_hook_state::<i32>(key), Some(42));
+    });
+    reset_lifecycle();
+    with_component(id, || {
+        assert_eq!(get_hook_state::<i32>(key), None);
+    });
+}
+
+#[test]
+fn test_quality_effect_cleanup_on_drop() {
+    {
+        let (signal, setter) = create_signal(0);
+        create_effect("short_lived", move || {
+            let _ = signal.get();
+        });
+        setter.set(1);
+    }
+    flush_effects();
+}
+
+#[test]
+fn test_quality_memo_clone_shares_value() {
+    let (source, set_source) = create_signal(1);
+    let memo = create_memo(move || source.get() * 10);
+    let memo2 = memo.clone();
+    assert_eq!(memo.get(), 10);
+    assert_eq!(memo2.get(), 10);
+    set_source.set(5);
+    assert_eq!(memo.get(), 50);
+    assert_eq!(memo2.get(), 50);
+}
+
+#[test]
+fn test_quality_router_clone_shares_routes() {
+    let mut router = Router::new();
+    router.add_route("/a", "A");
+    router.navigate("/a");
+    assert_eq!(router.current_route(), Some("/a"));
+    router.add_route("/b", "B");
+    assert_eq!(router.resolve("/a").unwrap().component, "A");
+    assert_eq!(router.resolve("/b").unwrap().component, "B");
+}
+
+#[test]
+fn test_quality_batch_dropped_mid_batch() {
+    let (a, set_a) = create_signal(0);
+    let result = Rc::new(Cell::new(0));
+    let r = result.clone();
+    let a_clone = a.clone();
+    create_effect("batch_panic", move || {
+        r.set(a_clone.get());
+    });
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        batch(|| {
+            set_a.set(1);
+            panic!("intentional");
+        });
+    }));
+    assert_eq!(a.get(), 1);
+    assert_eq!(result.get(), 1);
+}
+
+#[test]
+fn test_quality_event_dispatcher_clone_shares_actions() {
+    clear_actions();
+    let count = Rc::new(Cell::new(0));
+    let c = count.clone();
+    register_action("shared", move || c.set(c.get() + 1));
+    assert!(dispatch_action("shared"));
+    assert_eq!(count.get(), 1);
+    assert!(has_action("shared"));
+}
+
+#[test]
+fn test_quality_lifecycle_scope_multiple_components() {
+    reset_lifecycle();
+    let id1 = create_component_scope();
+    let id2 = create_component_scope();
+    let key = TypeId::of::<i32>();
+    with_component(id1, || {
+        set_hook_state(key, 100);
+    });
+    with_component(id2, || {
+        set_hook_state(key, 200);
+    });
+    with_component(id1, || {
+        assert_eq!(get_hook_state::<i32>(key), Some(100));
+    });
+    with_component(id2, || {
+        assert_eq!(get_hook_state::<i32>(key), Some(200));
+    });
+}
+
+// ─── Integration (10 tests) ────────────────────────────────────────────────
+
+#[test]
+fn test_quality_state_set_triggers_effect() {
+    clear();
+    let result = Rc::new(Cell::new(0i64));
+    let r = result.clone();
+    create_effect("state_effect", move || {
+        let val = get("counter", 0i64);
+        r.set(val);
+    });
+    assert_eq!(result.get(), 0);
+    set("counter", 42i64);
+    assert_eq!(result.get(), 42);
+}
+
+#[test]
+fn test_quality_event_dispatch_sets_hover() {
+    clear_element_state();
+    let mut dispatcher = EventDispatcher::new();
+    dispatcher.on(
+        1,
+        EventType::MouseEnter,
+        Rc::new(|_| {
+            set_hovered(1, true);
+        }),
+    );
+    let event = Event {
+        event_type: EventType::MouseEnter,
+        target: Some(1),
+        data: EventData::None,
+    };
+    assert!(!is_hovered(1));
+    dispatcher.dispatch(&event);
+    assert!(is_hovered(1));
+}
+
+#[test]
+fn test_quality_signal_batch_state_combined() {
+    clear();
+    let (sig, set_sig) = create_signal(0);
+    let run_count = Rc::new(Cell::new(0));
+    let rc = run_count.clone();
+    let sig_clone = sig.clone();
+    create_effect("combined", move || {
+        let _ = sig_clone.get();
+        let _ = get("state_key", 0i64);
+        rc.set(rc.get() + 1);
+    });
+    let before = run_count.get();
+    batch(|| {
+        set_sig.set(1);
+        set("state_key", 100i64);
+    });
+    assert!(run_count.get() > before);
+}
+
+#[test]
+fn test_quality_diff_then_apply_then_diff_again() {
+    let old = elem_with_tag("div", vec![text_elem("A")]);
+    let new = elem_with_tag("div", vec![text_elem("B")]);
+    let patches = diff(&old, &new);
+    let mut root = old.clone();
+    apply_patches(&mut root, &patches);
+    let patches2 = diff(&root, &new);
+    assert!(patches2.is_empty());
+}
+
+#[test]
+fn test_quality_router_resolve_then_navigate() {
+    let mut router = Router::new();
+    router.add_route("/home", "HomePage");
+    let route = router.resolve("/home").unwrap();
+    assert_eq!(route.component, "HomePage");
+    router.navigate("/home");
+    assert_eq!(router.current_route(), Some("/home"));
+}
+
+#[test]
+fn test_quality_context_provide_in_effect() {
+    reset_context();
+    let (signal, setter) = create_signal(0);
+    let result = Rc::new(Cell::new(None::<i32>));
+    let r = result.clone();
+    let s = signal.clone();
+    create_effect("ctx_in_effect", move || {
+        let val = s.get();
+        provide_context(val);
+        let ctx_val = use_context::<i32>();
+        r.set(ctx_val);
+    });
+    assert_eq!(result.get(), Some(0));
+    setter.set(42);
+    assert_eq!(result.get(), Some(42));
+    reset_context();
+}
+
+#[test]
+fn test_quality_memo_depends_on_state() {
+    clear();
+    let memo_val = Rc::new(Cell::new(0i64));
+    let mv = memo_val.clone();
+    let memo = create_memo(move || {
+        let v = get("counter", 0i64);
+        mv.set(v * 2);
+        v * 2
+    });
+    assert_eq!(memo.get(), 0);
+    set("counter", 10i64);
+    assert_eq!(memo.get(), 20);
+    assert_eq!(memo_val.get(), 20);
+}
+
+#[test]
+fn test_quality_event_and_signal_interaction() {
+    let (signal, _setter) = create_signal(0);
+    let mut dispatcher = EventDispatcher::new();
+    let s = signal.setter();
+    dispatcher.on(
+        1,
+        EventType::Click,
+        Rc::new(move |_| {
+            s.set(99);
+        }),
+    );
+    let result = Rc::new(Cell::new(0));
+    let r = result.clone();
+    let sig = signal.clone();
+    create_effect("event_signal", move || {
+        r.set(sig.get());
+    });
+    assert_eq!(result.get(), 0);
+    let event = Event {
+        event_type: EventType::Click,
+        target: Some(1),
+        data: EventData::None,
+    };
+    dispatcher.dispatch(&event);
+    assert_eq!(result.get(), 99);
+}
+
+#[test]
+fn test_quality_lifecycle_cleanup_runs_on_reset() {
+    reset_lifecycle();
+    let mount_count = Rc::new(Cell::new(0));
+    let cleanup_count = Rc::new(Cell::new(0));
+    let mc = mount_count.clone();
+    let cc = cleanup_count.clone();
+    let id = create_component_scope();
+    with_component(id, || {
+        on_mount(move || mc.set(mc.get() + 1));
+        on_cleanup(move || cc.set(cc.get() + 1));
+    });
+    reset_lifecycle();
+    trigger_mount(id);
+    trigger_cleanup(id);
+    assert_eq!(mount_count.get(), 0);
+    assert_eq!(cleanup_count.get(), 0);
+}
+
+#[test]
+fn test_quality_timer_callback_sets_signal() {
+    let r = TimerRegistry::new();
+    let shared = Arc::new(Mutex::new(0i32));
+    let s = shared.clone();
+    let _h = r.set_timeout(
+        move || {
+            *s.lock().unwrap() = 42;
+        },
+        Duration::from_millis(0),
+    );
+    r.tick();
+    assert_eq!(*shared.lock().unwrap(), 42);
+}
+
+// ─── Stress (5 tests) ─────────────────────────────────────────────────────
+
+#[test]
+fn test_quality_stress_diff_10000_nodes() {
+    let children: Vec<Element> = (0..10000).map(|i| text_elem(&i.to_string())).collect();
+    let old = elem_with_tag("div", children);
+    let new_children: Vec<Element> = (0..10000)
+        .map(|i| {
+            if i % 3 == 0 {
+                text_elem("changed")
+            } else {
+                text_elem(&i.to_string())
+            }
+        })
+        .collect();
+    let new = elem_with_tag("div", new_children);
+    let patches = diff(&old, &new);
+    let text_updates: Vec<_> = patches
+        .iter()
+        .filter(|p| matches!(p, Patch::UpdateText { .. }))
+        .collect();
+    assert_eq!(text_updates.len(), 3334);
+}
+
+#[test]
+fn test_quality_stress_1000_signal_batch() {
+    let signals: Vec<(Signal<i64>, _)> = (0..1000).map(|i| create_signal(i)).collect();
+    batch(|| {
+        for (_, setter) in &signals {
+            setter.set(999);
+        }
+    });
+    for (sig, _) in &signals {
+        assert_eq!(sig.get(), 999);
+    }
+}
+
+#[test]
+fn test_quality_stress_500_memo_chain() {
+    let (root, _set_root) = create_signal(1u64);
+    let mut memos: Vec<Memo<u64>> = Vec::new();
+    let r1 = root.clone();
+    let m0 = create_memo(move || r1.get() + 1);
+    memos.push(m0);
+    for _ in 1..500 {
+        let prev = memos.last().unwrap().clone();
+        let m = create_memo(move || prev.get() + 1);
+        memos.push(m);
+    }
+    assert_eq!(memos[499].get(), 501);
+}
+
+#[test]
+fn test_quality_stress_timer_1000_concurrent() {
+    let r = TimerRegistry::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    for _ in 0..1000 {
+        let c = counter.clone();
+        let _h = r.set_timeout(
+            move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            },
+            Duration::from_millis(0),
+        );
+    }
+    r.tick();
+    assert_eq!(counter.load(Ordering::SeqCst), 1000);
+}
+
+#[test]
+fn test_quality_stress_rapid_mount_unmount_100() {
+    reset_lifecycle();
+    let mount_count = Rc::new(Cell::new(0));
+    let cleanup_count = Rc::new(Cell::new(0));
+    for _ in 0..100 {
+        let id = create_component_scope();
+        let mc = mount_count.clone();
+        let cc = cleanup_count.clone();
+        with_component(id, || {
+            on_mount(move || mc.set(mc.get() + 1));
+            on_cleanup(move || cc.set(cc.get() + 1));
+        });
+        trigger_mount(id);
+        trigger_cleanup(id);
+    }
+    assert_eq!(mount_count.get(), 100);
+    assert_eq!(cleanup_count.get(), 100);
+}

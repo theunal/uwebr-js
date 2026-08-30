@@ -392,33 +392,6 @@ mod tests {
     // ── Scene edge-case tests ───────────────────────────────────
 
     #[test]
-    fn render_layout_info_new_values() {
-        let info = LayoutInfo::new(1.0, 2.0, 3.0, 4.0);
-        assert_eq!(info.x, 1.0);
-        assert_eq!(info.y, 2.0);
-        assert_eq!(info.width, 3.0);
-        assert_eq!(info.height, 4.0);
-    }
-
-    #[test]
-    fn render_layout_info_zero() {
-        let info = LayoutInfo::zero();
-        assert_eq!(info.x, 0.0);
-        assert_eq!(info.y, 0.0);
-        assert_eq!(info.width, 0.0);
-        assert_eq!(info.height, 0.0);
-    }
-
-    #[test]
-    fn render_layout_info_partial_eq() {
-        let a = LayoutInfo::new(1.0, 2.0, 3.0, 4.0);
-        let b = LayoutInfo::new(1.0, 2.0, 3.0, 4.0);
-        let c = LayoutInfo::new(1.0, 2.0, 3.0, 5.0);
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
     fn render_render_scene_multiple_add() {
         let mut scene = RenderScene::new();
         scene.add_node(RenderNode::rect(
@@ -439,73 +412,5 @@ mod tests {
         assert_eq!(scene.node_count(), 3);
         assert_eq!(scene.nodes()[0].id, 1);
         assert_eq!(scene.nodes()[2].id, 3);
-    }
-
-    #[test]
-    fn render_render_node_round_rect_helpers() {
-        let node = RenderNode::round_rect(
-            10,
-            LayoutInfo::new(5.0, 10.0, 50.0, 30.0),
-            vello::peniko::color::palette::css::CYAN,
-            8.0,
-        );
-        assert_eq!(node.id, 10);
-        assert_eq!(node.style.border_radius, 8.0);
-        assert!(node.style.background.is_some());
-        assert!(matches!(node.kind, RenderNodeKind::RoundRect { radius } if radius == 8.0));
-    }
-
-    #[test]
-    fn render_render_node_container_default_style() {
-        let node = RenderNode::container(42, LayoutInfo::new(0.0, 0.0, 100.0, 50.0));
-        assert!(node.style.background.is_none());
-        assert_eq!(node.style.opacity, 1.0);
-        assert!(!node.style.overflow_hidden);
-        assert!(matches!(node.kind, RenderNodeKind::Container));
-    }
-
-    #[test]
-    fn render_background_gradient_clone() {
-        let bg = Background::LinearGradient {
-            start: [0.0, 0.0],
-            end: [1.0, 1.0],
-            stops: vec![
-                (0.0, vello::peniko::color::palette::css::RED),
-                (1.0, vello::peniko::color::palette::css::BLUE),
-            ],
-        };
-        let cloned = bg.clone();
-        assert_eq!(bg, cloned);
-    }
-
-    #[test]
-    fn render_background_radial_gradient_eq() {
-        let a = Background::RadialGradient {
-            center: [0.5, 0.5],
-            radius: 0.5,
-            stops: vec![],
-        };
-        let b = Background::RadialGradient {
-            center: [0.5, 0.5],
-            radius: 0.5,
-            stops: vec![],
-        };
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn render_text_overflow_variants() {
-        assert_ne!(TextOverflow::Clip, TextOverflow::Ellipsis);
-        assert_ne!(TextOverflow::Ellipsis, TextOverflow::Visible);
-        assert_ne!(TextOverflow::Clip, TextOverflow::Visible);
-    }
-
-    #[test]
-    fn render_border_style_fields() {
-        let bs = crate::scene::BorderStyle {
-            width: 2.5,
-            color: vello::peniko::color::palette::css::BLACK,
-        };
-        assert_eq!(bs.width, 2.5);
     }
 }

@@ -1056,4 +1056,69 @@ mod tests {
         let brush = SceneBuilder::make_brush(&style);
         assert!(matches!(brush, peniko::Brush::Solid(_)));
     }
+
+    // ── Quality tests (test_q_*) ────────────────────────────────
+
+    #[test]
+    fn test_q_scene_builder_gradient_background() {
+        let mut scene = RenderScene::new();
+        let mut node = RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 200.0, 200.0),
+            palette::css::RED,
+        );
+        node.style.background = Some(Background::LinearGradient {
+            start: [0.0, 0.0],
+            end: [1.0, 0.0],
+            stops: vec![(0.0, palette::css::RED), (1.0, palette::css::BLUE)],
+        });
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 2,
+            "gradient must encode at least 1 path + surface bg"
+        );
+    }
+
+    #[test]
+    fn test_q_stress_many_gradients() {
+        let mut scene = RenderScene::new();
+        for i in 0..100 {
+            let mut node = RenderNode::rect(
+                i,
+                LayoutInfo::new(0.0, 0.0, 100.0, 100.0),
+                palette::css::RED,
+            );
+            node.style.background = Some(Background::LinearGradient {
+                start: [0.0, 0.0],
+                end: [1.0, 0.0],
+                stops: vec![(0.0, palette::css::RED), (1.0, palette::css::BLUE)],
+            });
+            scene.add_node(node);
+        }
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 101,
+            "100 gradients + surface bg must encode, got {}",
+            path_count(&vello_scene)
+        );
+    }
+
+    #[test]
+    fn test_q_stress_scene_builder_500_nodes() {
+        let mut scene = RenderScene::new();
+        for i in 0..500 {
+            scene.add_node(RenderNode::rect(
+                i,
+                LayoutInfo::new(0.0, 0.0, 10.0, 10.0),
+                palette::css::RED,
+            ));
+        }
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 501,
+            "500 rects + surface bg, got {}",
+            path_count(&vello_scene)
+        );
+    }
 }

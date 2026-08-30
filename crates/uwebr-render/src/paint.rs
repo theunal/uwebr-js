@@ -541,4 +541,78 @@ mod tests {
         let child = parent.inherited();
         assert_eq!(child.font_family.as_deref(), Some("monospace"));
     }
+
+    // ── Quality tests (test_q_*) ────────────────────────────────
+
+    #[test]
+    fn test_q_prop_to_f32_px_suffix() {
+        let v = prop_to_f32(&PropValue::String("16px".into()));
+        assert_eq!(v, Some(16.0));
+    }
+
+    #[test]
+    fn test_q_prop_to_f32_px_decimal() {
+        let v = prop_to_f32(&PropValue::String("16.5px".into()));
+        assert_eq!(v, Some(16.5));
+    }
+
+    #[test]
+    fn test_q_prop_to_f32_just_px() {
+        let v = prop_to_f32(&PropValue::String("px".into()));
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn test_q_gradient_direction_none_default() {
+        let (start, end) = parse_gradient_direction(&None);
+        assert_eq!(start, [0.0, 0.0]);
+        assert_eq!(end, [0.0, 1.0], "None must default to top-to-bottom");
+    }
+
+    #[test]
+    fn test_q_gradient_direction_90deg() {
+        let (start, end) = parse_gradient_direction(&Some("90deg".to_string()));
+        // 90deg: rad = PI/2, sin=1, cos=0 → start=[0.5-0, 0.5+0]=[0.5,0.5], end=[0.5+0,0.5-0]=[0.5,0.5]
+        // Actually: start=[0.5-0.5*sin, 0.5+0.5*cos], end=[0.5+0.5*sin, 0.5-0.5*cos]
+        // sin(90°)=1, cos(90°)=0 → start=[0.0, 0.5], end=[1.0, 0.5]
+        assert!(
+            (start[0] - 0.0).abs() < 0.01,
+            "90deg start.x should be ~0, got {}",
+            start[0]
+        );
+        assert!(
+            (end[0] - 1.0).abs() < 0.01,
+            "90deg end.x should be ~1, got {}",
+            end[0]
+        );
+    }
+
+    #[test]
+    fn test_q_color_transparent_alpha() {
+        let c = parse_color_to_peniko("transparent");
+        assert!(c.is_some(), "transparent is a named color");
+        let c = c.unwrap();
+        // transparent maps to (0,0,0) with full opacity in our impl;
+        // the alpha channel semantics are handled at the CSS layer.
+        assert_eq!(c, peniko::Color::from_rgb8(0, 0, 0));
+    }
+
+    #[test]
+    fn test_q_color_8char_hex_rgba() {
+        let c = parse_color_to_peniko("#ff000080").unwrap();
+        // 0x80 = 128 → alpha = 128/255 ≈ 0.502
+        assert_eq!(c, peniko::Color::from_rgba8(255, 0, 0, 128));
+    }
+
+    #[test]
+    fn test_q_paint_border_color_from_css() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            border_color: Some(CssColor::rgb(0xff, 0x00, 0x00)),
+            border_width: Some(3.0),
+            ..Default::default()
+        });
+        assert_eq!(p.border_color, peniko::Color::from_rgba8(255, 0, 0, 255));
+        assert_eq!(p.border_width, 3.0);
+    }
 }

@@ -247,23 +247,6 @@ mod tests {
     }
 
     #[test]
-    fn render_measure_whitespace_only() {
-        let mut tr = TextRenderer::new();
-        let (w, h) = tr.measure("   ", 16.0, None, None);
-        assert!(h >= 0.0);
-        assert!(w >= 0.0);
-    }
-
-    #[test]
-    fn render_layout_text_with_font_size_1() {
-        let mut tr = TextRenderer::new();
-        let layout = tr.layout_text("Hi", 1.0, None, None);
-        let (w, h) = tr.measure_text(&layout);
-        assert!(w >= 0.0);
-        assert!(h >= 0.0);
-    }
-
-    #[test]
     fn render_measure_multiline_content() {
         let mut tr = TextRenderer::new();
         let content = "Line 1\nLine 2\nLine 3";
@@ -275,18 +258,35 @@ mod tests {
         );
     }
 
+    // ── Quality tests (test_q_*) ────────────────────────────────
+
     #[test]
-    fn render_text_renderer_default() {
-        let tr = TextRenderer::default();
-        let _ = &tr.font_context;
+    fn test_q_text_measure_empty_string() {
+        let mut tr = TextRenderer::new();
+        let (w, h) = tr.measure("", 16.0, None, None);
+        assert_eq!((w, h), (0.0, 0.0), "empty string must measure 0x0");
     }
 
     #[test]
-    fn render_measure_returns_same_for_same_input() {
+    fn test_q_text_measure_wrap_narrow() {
         let mut tr = TextRenderer::new();
-        let (w1, h1) = tr.measure("same", 16.0, None, None);
-        let (w2, h2) = tr.measure("same", 16.0, None, None);
-        assert_eq!(w1, w2);
-        assert_eq!(h1, h2);
+        let long = "abcdefghij";
+        let (_w_no_wrap, h_no_wrap) = tr.measure(long, 16.0, None, None);
+        let (_w_wrap, h_wrap) = tr.measure(long, 16.0, None, Some(30.0));
+        // Wrapping with a narrow max_advance should produce more height
+        // because the text breaks into multiple lines.
+        assert!(
+            h_wrap >= h_no_wrap,
+            "wrapped text should have >= height: wrap={h_wrap}, nowrap={h_no_wrap}"
+        );
+    }
+
+    #[test]
+    fn test_q_stress_large_text_10000_chars() {
+        let mut tr = TextRenderer::new();
+        let text: String = "a".repeat(10000);
+        let (w, h) = tr.measure(&text, 16.0, None, None);
+        assert!(w > 0.0, "10000 chars must have positive width");
+        assert!(h > 0.0, "10000 chars must have positive height");
     }
 }

@@ -159,4 +159,220 @@ mod tests {
             _ => {}
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Quality tests — Part 2
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_q_html_entities_all() {
+        let html = r#"<p>&amp; &lt; &gt; &#65; &quot;</p>"#;
+        let node = parse_html(html).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    HtmlNode::Text(text) => {
+                        assert!(text.contains('&'), "should contain &");
+                        assert!(text.contains('<'), "should contain <");
+                        assert!(text.contains('>'), "should contain >");
+                        assert!(
+                            text.contains('A') || text.contains("65"),
+                            "should decode &#65; to A"
+                        );
+                    }
+                    other => panic!("expected Text node, got {other:?}"),
+                }
+            }
+            other => panic!("expected Element, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_html_deeply_nested_50_levels() {
+        let mut html = String::from("<div>");
+        for i in 0..50 {
+            html.push_str(&format!("<span id=\"level-{i}\">"));
+        }
+        html.push_str("deep");
+        for _ in 0..50 {
+            html.push_str("</span>");
+        }
+        html.push_str("</div>");
+        let node = parse_html(&html).unwrap();
+        let rsx = codegen::generate_rsx(&node, 0);
+        assert!(rsx.contains("div("), "outermost div present");
+        assert!(rsx.contains("deep"), "innermost text preserved");
+        assert!(rsx.contains("span("), "span tags present");
+    }
+
+    #[test]
+    fn test_q_html_script_content_preserved() {
+        let html = r#"<div><script>console.log("hello");</script></div>"#;
+        let node = parse_html(html).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    HtmlNode::Element(script) => {
+                        assert_eq!(script.tag, "script");
+                        let text: String = script
+                            .children
+                            .iter()
+                            .filter_map(|c| match c {
+                                HtmlNode::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect();
+                        assert!(
+                            text.contains("console.log"),
+                            "script content should be preserved, got: {text}"
+                        );
+                    }
+                    other => panic!("expected script Element, got {other:?}"),
+                }
+            }
+            other => panic!("expected Element, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_html_style_content_preserved() {
+        let html = r#"<div><style>.foo { color: red; }</style></div>"#;
+        let node = parse_html(html).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    HtmlNode::Element(style) => {
+                        assert_eq!(style.tag, "style");
+                        let text: String = style
+                            .children
+                            .iter()
+                            .filter_map(|c| match c {
+                                HtmlNode::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect();
+                        assert!(
+                            text.contains("color"),
+                            "style content should be preserved, got: {text}"
+                        );
+                    }
+                    other => panic!("expected style Element, got {other:?}"),
+                }
+            }
+            other => panic!("expected Element, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_html_codegen_indentation_3_levels() {
+        let html = r#"<div><ul><li>item</li></ul></div>"#;
+        let node = parse_html(html).unwrap();
+        let rsx = codegen::generate_rsx(&node, 0);
+        let lines: Vec<&str> = rsx.lines().collect();
+        let li_line = lines.iter().find(|l| l.contains("li(")).unwrap();
+        let leading_spaces = li_line.len() - li_line.trim_start().len();
+        assert!(
+            leading_spaces >= 8,
+            "3 levels deep should have at least 8 spaces indentation, got {leading_spaces}"
+        );
+    }
+
+    #[test]
+    fn test_q_html_directive_each_with_index() {
+        let html = r#"<ul>{#each items as item, i}<li>{item}</li>{/each}</ul>"#;
+        let mut node = parse_html(html).unwrap();
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Element(el) => {
+                let has_each = el
+                    .children
+                    .iter()
+                    .any(|c| matches!(c, HtmlNode::EachLoop(_)));
+                assert!(has_each, "should contain an EachLoop directive");
+                if let Some(HtmlNode::EachLoop(each)) = el
+                    .children
+                    .iter()
+                    .find(|c| matches!(c, HtmlNode::EachLoop(_)))
+                {
+                    assert!(
+                        each.item_name.contains("item"),
+                        "item_name should contain 'item', got: {}",
+                        each.item_name
+                    );
+                }
+            }
+            other => panic!("expected Element, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_html_directive_if_else_if_chain() {
+        let html =
+            r#"<div>{#if a}<p>first</p>{:else if b}<p>second</p>{:else}<p>third</p>{/if}</div>"#;
+        let mut node = parse_html(html).unwrap();
+        expand_directives(&mut node);
+        let rsx = codegen::generate_rsx(&node, 0);
+        assert!(
+            rsx.contains("if a"),
+            "should contain if condition, got: {rsx}"
+        );
+        assert!(
+            rsx.contains("else"),
+            "should contain else branch, got: {rsx}"
+        );
+    }
+
+    #[test]
+    fn test_q_html_directive_nested_each_in_if() {
+        let html =
+            r#"<div>{#if show}<ul>{#each items as item}<li>{item}</li>{/each}</ul>{/if}</div>"#;
+        let mut node = parse_html(html).unwrap();
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Element(el) => {
+                let has_if = el
+                    .children
+                    .iter()
+                    .any(|c| matches!(c, HtmlNode::IfBlock(_)));
+                assert!(has_if, "should contain an IfBlock directive");
+            }
+            other => panic!("expected Element, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_html_e2e_component_with_props() {
+        let html =
+            r#"<Button label="Click me" disabled={isDisabled} on:click={handler}>Child</Button>"#;
+        let mut node = parse_html(html).unwrap();
+        expand_directives(&mut node);
+        let rsx = codegen::generate_rsx(&node, 0);
+        assert!(
+            rsx.contains("Button("),
+            "component name present, got: {rsx}"
+        );
+        assert!(rsx.contains("label:"), "should have label prop, got: {rsx}");
+        assert!(
+            rsx.contains("disabled:"),
+            "should have disabled prop, got: {rsx}"
+        );
+        assert!(
+            rsx.contains("Child"),
+            "should contain child text, got: {rsx}"
+        );
+    }
+
+    #[test]
+    fn test_q_html_e2e_fragment_children() {
+        let nodes =
+            parse_fragment_with_directives(r#"<p>first</p><p>second</p><p>third</p>"#).unwrap();
+        assert_eq!(nodes.len(), 3);
+        let rsx = codegen::generate_rsx(&HtmlNode::Fragment(nodes), 0);
+        assert!(rsx.contains("rsx!"), "fragment should produce rsx!");
+        let p_count = rsx.matches("p(").count();
+        assert_eq!(p_count, 3, "should contain 3 p elements, got: {rsx}");
+    }
 }

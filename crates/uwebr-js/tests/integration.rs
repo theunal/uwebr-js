@@ -1615,3 +1615,138 @@ fn js_transpile_many_statements() {
         result
     );
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  Quality tests — Part 3
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn test_q_js_arrow_single_param() {
+    let js = r#"const f = x => x + 1;"#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("|"),
+        "single-param arrow should become closure: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_template_literal() {
+    let js = r#"const msg = `count: ${n}`;"#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("format!") || result.code.contains("count:"),
+        "template literal with interpolation: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_destructuring_params() {
+    let js = r#"function f({a, b}) { return a + b; }"#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("fn f"),
+        "destructuring params: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_optional_chaining() {
+    let js = r#"function f(obj) { return obj?.name?.toString(); }"#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("fn f"),
+        "optional chaining in function: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_nullish_coalescing() {
+    let js = r#"function f(x) { return x ?? "fallback"; }"#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("unwrap_or") || result.code.contains("fn f"),
+        "nullish coalescing in function: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_class_extends() {
+    let js = r#"
+        class Base { constructor(v) { this.v = v; } }
+        class Derived extends Base { get() { return this.v; } }
+    "#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("struct Derived"),
+        "class extends should produce struct: {}",
+        result.code
+    );
+    assert!(
+        result.code.contains("impl Derived"),
+        "class extends should produce impl: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_switch_case() {
+    let js = r#"
+        function describe(x) {
+            switch(x) {
+                case 1: return "one";
+                case 2: return "two";
+                default: return "other";
+            }
+        }
+    "#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("match"),
+        "switch should transpile to match: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_async_await() {
+    let js = r#"
+        async function loadData() {
+            const data = await fetchAll();
+            return data;
+        }
+    "#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("async fn"),
+        "async function should produce async fn: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_spread_object() {
+    let js = r#"const merged = { ...defaults, ...user, active: true };"#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("HashMap::from_iter") || result.code.contains("collect"),
+        "spread in object literal: {}",
+        result.code
+    );
+}
+
+#[test]
+fn test_q_js_rest_params() {
+    let js = r#"function sum(...nums) { return nums; }"#;
+    let result = transpile(js).unwrap();
+    assert!(
+        result.code.contains("fn sum"),
+        "rest params should produce function: {}",
+        result.code
+    );
+}

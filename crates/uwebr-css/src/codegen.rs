@@ -1013,7 +1013,7 @@ fn generate_length_prop(prop: &str, val: &CssValue) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_css;
+    use crate::parser::{parse_css, parse_nth};
 
     #[test]
     fn test_generate_flex_style() {
@@ -2485,5 +2485,195 @@ mod tests {
         a.or_assign(&b);
         assert!(a.width);
         assert!(a.height);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Quality tests — Part 1
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_q_color_from_hex_invalid_chars() {
+        let c = Color::from_hex("#gggggg");
+        assert_eq!(c.r, 0);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+    }
+
+    #[test]
+    fn test_q_color_from_hex_no_hash() {
+        let c = Color::from_hex("ff0000");
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+        assert!((c.a - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_q_color_rgb_constructor() {
+        let c = Color::rgb(255, 128, 0);
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 128);
+        assert_eq!(c.b, 0);
+        assert!((c.a - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_q_color_rgba_constructor() {
+        let c = Color::rgba(255, 0, 0, 0.5);
+        assert_eq!(c.r, 255);
+        assert_eq!(c.g, 0);
+        assert_eq!(c.b, 0);
+        assert!((c.a - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_q_parse_nth_odd_even() {
+        assert_eq!(parse_nth("odd"), Some((2, 1)));
+        assert_eq!(parse_nth("even"), Some((2, 0)));
+    }
+
+    #[test]
+    fn test_q_shorthand_1_value_expansion() {
+        let css = ".a { padding: 10px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(10.0));
+        assert_eq!(
+            entries[0].style.padding.right,
+            LengthPercentage::length(10.0)
+        );
+        assert_eq!(
+            entries[0].style.padding.bottom,
+            LengthPercentage::length(10.0)
+        );
+        assert_eq!(
+            entries[0].style.padding.left,
+            LengthPercentage::length(10.0)
+        );
+    }
+
+    #[test]
+    fn test_q_shorthand_2_value_expansion() {
+        let css = ".a { padding: 10px 20px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(10.0));
+        assert_eq!(
+            entries[0].style.padding.right,
+            LengthPercentage::length(20.0)
+        );
+        assert_eq!(
+            entries[0].style.padding.bottom,
+            LengthPercentage::length(10.0)
+        );
+        assert_eq!(
+            entries[0].style.padding.left,
+            LengthPercentage::length(20.0)
+        );
+    }
+
+    #[test]
+    fn test_q_shorthand_3_value_expansion() {
+        let css = ".a { padding: 10px 20px 30px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(10.0));
+        assert_eq!(
+            entries[0].style.padding.right,
+            LengthPercentage::length(20.0)
+        );
+        assert_eq!(
+            entries[0].style.padding.bottom,
+            LengthPercentage::length(30.0)
+        );
+        assert_eq!(
+            entries[0].style.padding.left,
+            LengthPercentage::length(20.0)
+        );
+    }
+
+    #[test]
+    fn test_q_calc_expression() {
+        let css = ".a { width: calc(100% - 20px); }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].properties[0].value {
+            CssValue::Keyword(k) => assert!(k.contains("calc")),
+            other => panic!("expected Keyword fallback for calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_var_custom_property() {
+        let css = ".a { padding: var(--spacing); }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].properties[0].value {
+            CssValue::Keyword(k) => assert!(k.contains("var")),
+            other => panic!("expected Keyword fallback for var(), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_clamp_function() {
+        let css = ".a { width: clamp(10px, 5vw, 100px); }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].properties[0].value {
+            CssValue::Keyword(k) => assert!(k.contains("clamp")),
+            other => panic!("expected Keyword fallback for clamp(), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_media_query_nested_returns_empty() {
+        let css = "@media (min-width: 768px) { }";
+        let rules = parse_css(css).unwrap();
+        assert!(
+            rules.is_empty(),
+            "empty @media body should produce no rules"
+        );
+    }
+
+    #[test]
+    fn test_q_specificity_later_wins_same() {
+        let css = ".a { color: red; } .a { color: blue; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries.len(), 2);
+        let first_color = entries[0].paint.color.clone().unwrap();
+        let second_color = entries[1].paint.color.clone().unwrap();
+        assert_eq!((first_color.r, first_color.g, first_color.b), (255, 0, 0));
+        assert_eq!(
+            (second_color.r, second_color.g, second_color.b),
+            (0, 0, 255)
+        );
+    }
+
+    #[test]
+    fn test_q_gradient_multi_stop() {
+        let css = ".bg { background: linear-gradient(to bottom, red 0%, yellow 50%, green 100%); }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::LinearGradient { direction, stops } => {
+                assert_eq!(direction.as_deref(), Some("to bottom"));
+                assert_eq!(stops.len(), 3);
+                assert_eq!(stops[0].position, Some(0.0));
+                assert_eq!(stops[1].position, Some(0.5));
+                assert_eq!(stops[2].position, Some(1.0));
+            }
+            other => panic!("expected LinearGradient with 3 stops, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_q_font_shorthand_parse() {
+        let css = ".a { font: bold 16px/1.5 Arial; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].properties[0].value {
+            CssValue::Keyword(k) => assert!(!k.is_empty()),
+            other => panic!("expected Keyword fallback for font shorthand, got {other:?}"),
+        }
     }
 }

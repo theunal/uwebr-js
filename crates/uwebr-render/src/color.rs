@@ -203,4 +203,24 @@ mod tests {
     fn render_parse_hex_without_hash() {
         assert!(parse_color_to_peniko("ff0000").is_none());
     }
+
+    // ── Quality tests (test_q_*) ────────────────────────────────
+
+    #[test]
+    fn test_q_color_from_hex_invalid_chars() {
+        let c = parse_color_to_peniko("#gggggg");
+        assert!(
+            c.is_none(),
+            "invalid hex chars must return None (falls back to black in caller)"
+        );
+    }
+
+    #[test]
+    fn test_q_color_from_hex_no_hash_prefix() {
+        // parse_color_to_peniko requires '#' prefix; without it returns None.
+        // This test documents the contract and verifies the caller can handle it.
+        let c = parse_color_to_peniko("ff0000");
+        assert!(c.is_none(), "no-hash hex must return None");
+        // The fallback (black) is handled by the caller, not this function.
+    }
 }

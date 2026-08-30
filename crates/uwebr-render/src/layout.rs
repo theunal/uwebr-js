@@ -1611,4 +1611,60 @@ mod tests {
             child.layout.x
         );
     }
+
+    // ── Quality tests (test_q_*) ────────────────────────────────
+
+    #[test]
+    fn test_q_stress_layout_1000_nodes() {
+        fn build(depth: usize, max_depth: usize) -> Element {
+            if depth >= max_depth {
+                return make_text_element("leaf");
+            }
+            let children: Vec<Element> = (0..3).map(|_| build(depth + 1, max_depth)).collect();
+            make_div_element(children)
+        }
+        // 3^6 = 729 elements + 729 text = 1458 nodes (close to 1000)
+        let el = build(0, 6);
+        let mut engine = LayoutEngine::new();
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &el, &StyleBook::empty());
+        assert!(
+            nodes.len() >= 1000,
+            "expected >= 1000 nodes, got {}",
+            nodes.len()
+        );
+    }
+
+    #[test]
+    fn test_q_stress_rapid_relayout_100() {
+        let mut engine = LayoutEngine::new();
+        let el = make_div_element(vec![
+            make_div_element(vec![make_text_element("Hello")]),
+            make_text_element("World"),
+        ]);
+        for _ in 0..100 {
+            let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
+            engine.compute(root, 800.0, 600.0).unwrap();
+            engine.reset();
+        }
+    }
+
+    #[test]
+    fn test_q_stress_nested_flex_50_levels() {
+        let mut el = make_text_element("leaf");
+        for _ in 0..50 {
+            el = Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![],
+                children: vec![el],
+            };
+        }
+        let mut engine = LayoutEngine::new();
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &el, &StyleBook::empty());
+        assert_eq!(nodes.len(), 51, "50 nested divs + 1 leaf = 51 nodes");
+        assert_eq!(nodes.last().unwrap().depth, 50);
+    }
 }
