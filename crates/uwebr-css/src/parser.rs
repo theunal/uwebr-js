@@ -546,12 +546,30 @@ fn parse_value(prop_name: &str, raw: &str) -> Result<CssValue> {
     let raw = raw.trim();
 
     // Handle shorthand properties like "10px 20px"
-    if raw.contains(' ') && (prop_name == "padding" || prop_name == "margin") {
+    if raw.contains(' ')
+        && (prop_name == "padding"
+            || prop_name == "margin"
+            || prop_name == "grid-template-columns"
+            || prop_name == "grid-template-rows")
+    {
         let parts: Vec<CssValue> = raw
             .split_whitespace()
             .filter_map(|s| parse_single_value(s).ok())
             .collect();
         if parts.len() > 1 {
+            return Ok(CssValue::Shorthand(parts));
+        }
+    }
+
+    // Handle "1 / 3" syntax for grid-column / grid-row
+    if raw.contains('/') && (prop_name == "grid-column" || prop_name == "grid-row") {
+        let parts: Vec<CssValue> = raw
+            .split('/')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| parse_single_value(s).ok())
+            .collect();
+        if !parts.is_empty() {
             return Ok(CssValue::Shorthand(parts));
         }
     }
@@ -654,6 +672,10 @@ fn parse_length(raw: &str) -> Option<CssValue> {
     if raw.ends_with("vh") {
         let num: f32 = raw.trim_end_matches("vh").parse().ok()?;
         return Some(CssValue::Length(num, LengthUnit::Vh));
+    }
+    if raw.ends_with("fr") {
+        let num: f32 = raw.trim_end_matches("fr").parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Fr));
     }
 
     // Plain number → treat as px

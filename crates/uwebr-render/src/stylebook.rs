@@ -585,6 +585,7 @@ const ALL_FIELDS_MASK: StyleMask = StyleMask {
     justify_content: true,
     align_items: true,
     align_self: true,
+    align_content: true,
     flex_grow: true,
     flex_shrink: true,
     flex_basis: true,
@@ -602,6 +603,10 @@ const ALL_FIELDS_MASK: StyleMask = StyleMask {
     overflow: true,
     gap_width: true,
     gap_height: true,
+    grid_template_columns: true,
+    grid_template_rows: true,
+    grid_column: true,
+    grid_row: true,
 };
 
 /// Merge `source` into `target`, writing only the fields flagged in `mask`.
@@ -674,6 +679,21 @@ fn merge_style(target: &mut Style, source: &Style, mask: &StyleMask) {
     }
     if mask.gap_height {
         target.gap.height = source.gap.height;
+    }
+    if mask.align_content {
+        target.align_content = source.align_content;
+    }
+    if mask.grid_template_columns {
+        target.grid_template_columns = source.grid_template_columns.clone();
+    }
+    if mask.grid_template_rows {
+        target.grid_template_rows = source.grid_template_rows.clone();
+    }
+    if mask.grid_column {
+        target.grid_column = source.grid_column.clone();
+    }
+    if mask.grid_row {
+        target.grid_row = source.grid_row.clone();
     }
 }
 

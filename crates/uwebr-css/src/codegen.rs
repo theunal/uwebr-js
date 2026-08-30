@@ -3,6 +3,7 @@ use anyhow::Result;
 use taffy::geometry::Point;
 use taffy::prelude::*;
 use taffy::style::Overflow;
+use taffy::{GridPlacement, Line, TrackSizingFunction};
 
 /// Tracks which taffy `Style` fields a CSS rule actually specified.
 ///
@@ -17,6 +18,7 @@ pub struct StyleMask {
     pub justify_content: bool,
     pub align_items: bool,
     pub align_self: bool,
+    pub align_content: bool,
     pub flex_grow: bool,
     pub flex_shrink: bool,
     pub flex_basis: bool,
@@ -34,6 +36,11 @@ pub struct StyleMask {
     pub overflow: bool,
     pub gap_width: bool,
     pub gap_height: bool,
+    // Grid
+    pub grid_template_columns: bool,
+    pub grid_template_rows: bool,
+    pub grid_column: bool,
+    pub grid_row: bool,
 }
 
 impl StyleMask {
@@ -45,6 +52,7 @@ impl StyleMask {
         self.justify_content |= other.justify_content;
         self.align_items |= other.align_items;
         self.align_self |= other.align_self;
+        self.align_content |= other.align_content;
         self.flex_grow |= other.flex_grow;
         self.flex_shrink |= other.flex_shrink;
         self.flex_basis |= other.flex_basis;
@@ -62,6 +70,10 @@ impl StyleMask {
         self.overflow |= other.overflow;
         self.gap_width |= other.gap_width;
         self.gap_height |= other.gap_height;
+        self.grid_template_columns |= other.grid_template_columns;
+        self.grid_template_rows |= other.grid_template_rows;
+        self.grid_column |= other.grid_column;
+        self.grid_row |= other.grid_row;
     }
 
     /// True when the rule specified no layout property at all.
@@ -98,6 +110,7 @@ pub struct PaintProps {
     pub border_radius: Option<f32>,
     pub opacity: Option<f32>,
     pub text_overflow: Option<String>,
+    pub z_index: Option<i32>,
 }
 
 impl PaintProps {
@@ -134,6 +147,9 @@ impl PaintProps {
         }
         if other.text_overflow.is_some() {
             self.text_overflow = other.text_overflow.clone();
+        }
+        if other.z_index.is_some() {
+            self.z_index = other.z_index;
         }
     }
 }
@@ -260,6 +276,11 @@ pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
             "text-overflow" => {
                 if let CssValue::Keyword(k) = &prop.value {
                     paint.text_overflow = Some(k.clone());
+                }
+            }
+            "z-index" => {
+                if let CssValue::Length(n, _) = &prop.value {
+                    paint.z_index = Some(*n as i32);
                 }
             }
             _ => {}
@@ -400,6 +421,18 @@ fn apply_property(
             if let CssValue::Length(n, _) = value {
                 style.flex_shrink = *n;
                 mask.flex_shrink = true;
+            }
+        }
+        "flex-basis" => {
+            if let Some(d) = to_dimension(value, vw, vh) {
+                style.flex_basis = d;
+                mask.flex_basis = true;
+            }
+        }
+        "align-content" => {
+            if let Some(v) = to_align_content(value) {
+                style.align_content = Some(v);
+                mask.align_content = true;
             }
         }
         "gap" => {
@@ -568,6 +601,31 @@ fn apply_property(
                 mask.border = true;
             }
         }
+        // ── Grid ──
+        "grid-template-columns" => {
+            if let Some(tracks) = parse_grid_tracks(value, vw, vh) {
+                style.grid_template_columns = tracks;
+                mask.grid_template_columns = true;
+            }
+        }
+        "grid-template-rows" => {
+            if let Some(tracks) = parse_grid_tracks(value, vw, vh) {
+                style.grid_template_rows = tracks;
+                mask.grid_template_rows = true;
+            }
+        }
+        "grid-column" => {
+            if let Some(placement) = parse_grid_line(value) {
+                style.grid_column = placement;
+                mask.grid_column = true;
+            }
+        }
+        "grid-row" => {
+            if let Some(placement) = parse_grid_line(value) {
+                style.grid_row = placement;
+                mask.grid_row = true;
+            }
+        }
         _ => {}
     }
 }
@@ -638,11 +696,31 @@ fn to_align_items(val: &CssValue) -> Option<AlignItems> {
     }
 }
 
+fn to_align_content(val: &CssValue) -> Option<AlignContent> {
+    match val {
+        CssValue::Keyword(k) => match k.as_str() {
+            "flex-start" | "start" => Some(AlignContent::FLEX_START),
+            "flex-end" | "end" => Some(AlignContent::FLEX_END),
+            "center" => Some(AlignContent::CENTER),
+            "stretch" => Some(AlignContent::STRETCH),
+            "space-between" => Some(AlignContent::SPACE_BETWEEN),
+            "space-around" => Some(AlignContent::SPACE_AROUND),
+            "space-evenly" => Some(AlignContent::SPACE_EVENLY),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn to_position(val: &CssValue) -> Option<Position> {
     match val {
         CssValue::Keyword(k) => match k.as_str() {
             "relative" => Some(Position::Relative),
             "absolute" => Some(Position::Absolute),
+            // fixed = viewport-relative absolute (scroll offset uygulanmaz)
+            "fixed" => Some(Position::Absolute),
+            // sticky = scroll-aware relative (fallback: relative olarak davranır)
+            "sticky" => Some(Position::Relative),
             _ => None,
         },
         _ => None,
@@ -658,6 +736,87 @@ fn to_overflow(val: &CssValue) -> Option<Overflow> {
             "clip" => Some(Overflow::Clip),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+// ── Grid helpers ──
+
+/// Parse `grid-template-columns: 1fr 2fr 1fr` → `vec![TrackSizingFunction::from_fr(1), ...]`
+fn parse_grid_tracks(
+    value: &CssValue,
+    vw: f32,
+    vh: f32,
+) -> Option<Vec<GridTemplateComponent<String>>> {
+    match value {
+        CssValue::Keyword(k) if k == "none" => Some(vec![]),
+        CssValue::Shorthand(parts) => {
+            let tracks: Vec<GridTemplateComponent<String>> = parts
+                .iter()
+                .filter_map(|p| to_track_sizing(p, vw, vh))
+                .collect();
+            if tracks.is_empty() {
+                None
+            } else {
+                Some(tracks)
+            }
+        }
+        _ => {
+            let track = to_track_sizing(value, vw, vh)?;
+            Some(vec![track])
+        }
+    }
+}
+
+fn to_track_sizing(val: &CssValue, vw: f32, vh: f32) -> Option<GridTemplateComponent<String>> {
+    match val {
+        CssValue::Length(n, LengthUnit::Fr) => Some(GridTemplateComponent::Single(
+            TrackSizingFunction::from_fr(*n),
+        )),
+        CssValue::Length(n, unit) => {
+            let lp = match unit {
+                LengthUnit::Vw => LengthPercentage::length(*n / 100.0 * vw),
+                LengthUnit::Vh => LengthPercentage::length(*n / 100.0 * vh),
+                LengthUnit::Percent => LengthPercentage::percent(*n / 100.0),
+                _ => LengthPercentage::length(*n),
+            };
+            Some(GridTemplateComponent::Single(TrackSizingFunction::from(lp)))
+        }
+        CssValue::Keyword(k) if k == "auto" => {
+            Some(GridTemplateComponent::Single(TrackSizingFunction::AUTO))
+        }
+        _ => None,
+    }
+}
+
+/// Parse `grid-column: 1 / 3` → `Line { start: GridPlacement::Line(1), end: GridPlacement::Line(3) }`
+fn parse_grid_line(value: &CssValue) -> Option<Line<GridPlacement<String>>> {
+    match value {
+        CssValue::Keyword(k) if k == "auto" => Some(Line {
+            start: GridPlacement::Auto,
+            end: GridPlacement::Auto,
+        }),
+        CssValue::Length(n, _) => {
+            let line = *n as i16;
+            Some(Line {
+                start: GridPlacement::from_line_index(line),
+                end: GridPlacement::Auto,
+            })
+        }
+        CssValue::Shorthand(parts) if parts.len() == 2 => {
+            let start = match &parts[0] {
+                CssValue::Length(n, _) => *n as i16,
+                _ => return None,
+            };
+            let end = match &parts[1] {
+                CssValue::Length(n, _) => *n as i16,
+                _ => return None,
+            };
+            Some(Line {
+                start: GridPlacement::from_line_index(start),
+                end: GridPlacement::from_line_index(end),
+            })
+        }
         _ => None,
     }
 }
@@ -1396,19 +1555,23 @@ mod tests {
     }
 
     #[test]
-    fn css_position_fixed_ignored() {
+    fn css_position_fixed_maps_to_absolute() {
         let css = ".a { position: fixed; }";
         let rules = parse_css(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
-        assert!(!entries[0].mask.position, "fixed is not a taffy position");
+        assert!(entries[0].mask.position);
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.position, Position::Absolute);
     }
 
     #[test]
-    fn css_position_sticky_ignored() {
+    fn css_position_sticky_maps_to_relative() {
         let css = ".a { position: sticky; }";
         let rules = parse_css(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
-        assert!(!entries[0].mask.position, "sticky is not a taffy position");
+        assert!(entries[0].mask.position);
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.position, Position::Relative);
     }
 
     #[test]
@@ -2674,6 +2837,118 @@ mod tests {
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(!k.is_empty()),
             other => panic!("expected Keyword fallback for font shorthand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_flex_basis_px() {
+        let css = ".a { flex-basis: 120px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.flex_basis);
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.flex_basis, taffy::Dimension::length(120.0));
+    }
+
+    #[test]
+    fn css_flex_basis_percent() {
+        let css = ".a { flex-basis: 50%; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.flex_basis, taffy::Dimension::percent(0.5));
+    }
+
+    #[test]
+    fn css_align_content_center() {
+        let css = ".a { align-content: center; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.align_content);
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.align_content, Some(taffy::AlignContent::CENTER));
+    }
+
+    #[test]
+    fn css_align_content_space_between() {
+        let css = ".a { align-content: space-between; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(
+            styles[0].1.align_content,
+            Some(taffy::AlignContent::SPACE_BETWEEN)
+        );
+    }
+
+    #[test]
+    fn css_z_index_in_paint() {
+        let css = ".a { z-index: 10; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.z_index, Some(10));
+    }
+
+    #[test]
+    fn css_z_index_negative() {
+        let css = ".a { z-index: -5; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.z_index, Some(-5));
+    }
+
+    #[test]
+    fn css_grid_template_columns() {
+        let css = ".a { grid-template-columns: 1fr 2fr 1fr; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.grid_template_columns);
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.grid_template_columns.len(), 3);
+    }
+
+    #[test]
+    fn css_grid_template_columns_px() {
+        let css = ".a { grid-template-columns: 100px 200px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.grid_template_columns);
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.grid_template_columns.len(), 2);
+    }
+
+    #[test]
+    fn css_grid_column_placement() {
+        let css = ".a { grid-column: 1; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.grid_column);
+    }
+
+    #[test]
+    fn css_grid_column_span() {
+        let css = ".a { grid-column: 1 / 3; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.grid_column);
+    }
+
+    #[test]
+    fn css_grid_row_placement() {
+        let css = ".a { grid-row: 2; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.grid_row);
+    }
+
+    #[test]
+    fn css_fr_unit_parsed() {
+        let css = ".a { grid-template-columns: 1fr; }";
+        let rules = parse_css(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Length(n, unit) => {
+                assert_eq!(*n, 1.0);
+                assert!(matches!(unit, LengthUnit::Fr));
+            }
+            other => panic!("expected Length(1, Fr), got {other:?}"),
         }
     }
 }

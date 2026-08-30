@@ -131,6 +131,7 @@ pub enum LengthUnit {
     Percent,
     Vw,
     Vh,
+    Fr,
     Auto,
 }
 
