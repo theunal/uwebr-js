@@ -744,4 +744,316 @@ mod tests {
         // Should not panic during measurement/truncation.
         let _ = SceneBuilder::build_scene(&scene, 800, 600);
     }
+
+    // ── Scene builder edge-case tests ───────────────────────────
+
+    #[test]
+    fn render_multistop_gradient_background() {
+        let mut scene = RenderScene::new();
+        let mut node = RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 200.0, 200.0),
+            palette::css::RED,
+        );
+        node.style.background = Some(Background::LinearGradient {
+            start: [0.0, 0.0],
+            end: [1.0, 0.0],
+            stops: vec![
+                (0.0, palette::css::RED),
+                (0.33, palette::css::GREEN),
+                (0.66, palette::css::BLUE),
+                (1.0, palette::css::YELLOW),
+            ],
+        });
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 2,
+            "gradient should encode a path"
+        );
+    }
+
+    #[test]
+    fn render_round_rect_different_radius() {
+        let mut scene = RenderScene::new();
+        let node = RenderNode::round_rect(
+            1,
+            LayoutInfo::new(10.0, 10.0, 100.0, 60.0),
+            palette::css::BLUE,
+            16.0,
+        );
+        let radius = node.style.border_radius;
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert_eq!(path_count(&vello_scene), 2);
+        assert_eq!(radius, 16.0);
+    }
+
+    #[test]
+    fn render_zero_opacity_element() {
+        let mut scene = RenderScene::new();
+        let mut node = RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 100.0, 100.0),
+            palette::css::RED,
+        );
+        node.style.opacity = 0.0;
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 1,
+            "zero opacity still draws (opacity layer pushed)"
+        );
+    }
+
+    #[test]
+    fn render_empty_text_node() {
+        let mut scene = RenderScene::new();
+        scene.add_node(RenderNode::text(
+            1,
+            LayoutInfo::new(0.0, 0.0, 100.0, 20.0),
+            "",
+            16.0,
+            palette::css::WHITE,
+        ));
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert_eq!(
+            glyph_count(&vello_scene),
+            0,
+            "empty text should not emit glyphs"
+        );
+    }
+
+    #[test]
+    fn render_deeply_nested_clip_layers() {
+        let mut scene = RenderScene::new();
+        for i in 0..5 {
+            let mut node = RenderNode::rect(
+                i,
+                LayoutInfo::new(10.0 * i as f64 as f32, 10.0 * i as f64 as f32, 200.0, 200.0),
+                palette::css::GREEN,
+            );
+            node.style.overflow_hidden = true;
+            scene.add_node(node);
+        }
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            vello_scene.encoding().n_clips >= 5,
+            "5 nested clip layers should produce at least 5 clips"
+        );
+    }
+
+    #[test]
+    fn render_multiple_gradient_backgrounds() {
+        let mut scene = RenderScene::new();
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 100.0, 100.0),
+            palette::css::RED,
+        ));
+        let mut node2 = RenderNode::rect(
+            2,
+            LayoutInfo::new(50.0, 50.0, 100.0, 100.0),
+            palette::css::BLUE,
+        );
+        node2.style.background = Some(Background::LinearGradient {
+            start: [0.0, 0.0],
+            end: [0.0, 1.0],
+            stops: vec![(0.0, palette::css::RED), (1.0, palette::css::BLUE)],
+        });
+        scene.add_node(node2);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 3,
+            "two nodes with backgrounds + surface bg"
+        );
+    }
+
+    #[test]
+    fn render_radial_gradient_brush() {
+        let style = RenderStyle {
+            background: Some(Background::RadialGradient {
+                center: [0.5, 0.5],
+                radius: 0.5,
+                stops: vec![
+                    (0.0, palette::css::RED),
+                    (0.5, palette::css::GREEN),
+                    (1.0, palette::css::BLUE),
+                ],
+            }),
+            ..Default::default()
+        };
+        let brush = SceneBuilder::make_brush(&style);
+        assert!(matches!(brush, peniko::Brush::Gradient(_)));
+    }
+
+    #[test]
+    fn render_negative_position_element() {
+        let mut scene = RenderScene::new();
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(-50.0, -50.0, 100.0, 100.0),
+            palette::css::RED,
+        ));
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 2,
+            "negative position should still draw"
+        );
+    }
+
+    #[test]
+    fn render_very_large_dimensions() {
+        let mut scene = RenderScene::new();
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 10000.0, 10000.0),
+            palette::css::RED,
+        ));
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 2,
+            "very large rect should still draw"
+        );
+    }
+
+    #[test]
+    fn render_container_border_radius_and_background() {
+        let mut scene = RenderScene::new();
+        let mut node = RenderNode::container(1, LayoutInfo::new(0.0, 0.0, 200.0, 100.0));
+        node.style.background = Some(Background::Solid(palette::css::BLUE));
+        node.style.border_radius = 20.0;
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert_eq!(
+            path_count(&vello_scene),
+            2,
+            "rounded container bg + surface bg"
+        );
+    }
+
+    #[test]
+    fn render_multiple_borders() {
+        let mut scene = RenderScene::new();
+        let mut node1 = RenderNode::rect(
+            1,
+            LayoutInfo::new(10.0, 10.0, 100.0, 50.0),
+            palette::css::RED,
+        );
+        node1.style.border = Some(crate::scene::BorderStyle {
+            width: 2.0,
+            color: palette::css::BLACK,
+        });
+        let mut node2 = RenderNode::rect(
+            2,
+            LayoutInfo::new(120.0, 10.0, 100.0, 50.0),
+            palette::css::BLUE,
+        );
+        node2.style.border = Some(crate::scene::BorderStyle {
+            width: 3.0,
+            color: palette::css::WHITE,
+        });
+        scene.add_node(node1);
+        scene.add_node(node2);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 5,
+            "2 fills + 2 strokes + surface bg"
+        );
+    }
+
+    #[test]
+    fn render_opacity_and_overflow_hidden_combo() {
+        let mut scene = RenderScene::new();
+        let mut node = RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 100.0, 100.0),
+            palette::css::GREEN,
+        );
+        node.style.opacity = 0.5;
+        node.style.overflow_hidden = true;
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            vello_scene.encoding().n_clips > 0,
+            "overflow_hidden should push clip"
+        );
+        assert!(path_count(&vello_scene) >= 2);
+    }
+
+    #[test]
+    fn render_gradient_many_stops() {
+        let mut scene = RenderScene::new();
+        let mut node = RenderNode::rect(
+            1,
+            LayoutInfo::new(0.0, 0.0, 400.0, 400.0),
+            palette::css::RED,
+        );
+        node.style.background = Some(Background::LinearGradient {
+            start: [0.0, 0.0],
+            end: [1.0, 0.0],
+            stops: vec![
+                (0.0, palette::css::RED),
+                (0.1, palette::css::ORANGE),
+                (0.2, palette::css::YELLOW),
+                (0.3, palette::css::GREEN),
+                (0.4, palette::css::CYAN),
+                (0.5, palette::css::BLUE),
+                (0.6, palette::css::MAGENTA),
+                (0.7, palette::css::RED),
+                (0.8, palette::css::GREEN),
+                (0.9, palette::css::BLUE),
+                (1.0, palette::css::WHITE),
+            ],
+        });
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 2,
+            "11-stop gradient should encode without panic"
+        );
+    }
+
+    #[test]
+    fn render_container_with_border_no_background() {
+        let mut scene = RenderScene::new();
+        let mut node = RenderNode::container(1, LayoutInfo::new(10.0, 10.0, 200.0, 100.0));
+        node.style.border = Some(crate::scene::BorderStyle {
+            width: 1.0,
+            color: palette::css::RED,
+        });
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert_eq!(
+            path_count(&vello_scene),
+            2,
+            "container without bg but with border = stroke + surface bg"
+        );
+    }
+
+    #[test]
+    fn render_zero_size_negative_position_skipped() {
+        let mut scene = RenderScene::new();
+        scene.add_node(RenderNode::rect(
+            1,
+            LayoutInfo::new(-10.0, -10.0, 0.0, 0.0),
+            palette::css::RED,
+        ));
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert_eq!(
+            path_count(&vello_scene),
+            1,
+            "zero-size node should be skipped"
+        );
+    }
+
+    #[test]
+    fn render_make_brush_transparent_background() {
+        let style = RenderStyle {
+            background: None,
+            ..Default::default()
+        };
+        let brush = SceneBuilder::make_brush(&style);
+        assert!(matches!(brush, peniko::Brush::Solid(_)));
+    }
 }

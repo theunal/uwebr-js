@@ -288,6 +288,7 @@ fn parse_mixed_content(text: &str) -> HtmlNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{HtmlComponent, HtmlElement};
 
     #[test]
     fn test_simple_expression() {
@@ -349,6 +350,335 @@ mod tests {
                 assert!(if_block.else_body.is_some());
             }
             _ => panic!("Expected if block"),
+        }
+    }
+
+    // --- Directive edge case tests ---
+
+    #[test]
+    fn test_directive_raw_html() {
+        let mut node = HtmlNode::Text("{@html raw_content}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::RawHtml(expr) => assert_eq!(expr, "raw_content"),
+            _ => panic!("Expected RawHtml"),
+        }
+    }
+
+    #[test]
+    fn test_directive_raw_html_complex_expr() {
+        let mut node = HtmlNode::Text("{@html get_html()}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::RawHtml(expr) => assert_eq!(expr, "get_html()"),
+            _ => panic!("Expected RawHtml"),
+        }
+    }
+
+    #[test]
+    fn test_directive_each_with_index() {
+        let mut node = HtmlNode::Text("{#each items as item, idx}{item}{/each}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::EachLoop(each) => {
+                assert_eq!(each.iterable, "items");
+                assert_eq!(each.item_name, "item, idx");
+            }
+            _ => panic!("Expected each loop"),
+        }
+    }
+
+    #[test]
+    fn test_directive_empty_each_body() {
+        let mut node = HtmlNode::Text("{#each items as item}{/each}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::EachLoop(each) => {
+                assert_eq!(each.iterable, "items");
+                assert!(!each.body.is_empty());
+            }
+            _ => panic!("Expected each loop"),
+        }
+    }
+
+    #[test]
+    fn test_directive_each_complex_iterable() {
+        let mut node =
+            HtmlNode::Text("{#each state.items as item}<p>{item}</p>{/each}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::EachLoop(each) => {
+                assert_eq!(each.iterable, "state.items");
+                assert_eq!(each.item_name, "item");
+            }
+            _ => panic!("Expected each loop"),
+        }
+    }
+
+    #[test]
+    fn test_directive_if_complex_condition() {
+        let mut node = HtmlNode::Text("{#if items.length > 0}has items{/if}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::IfBlock(if_block) => {
+                assert_eq!(if_block.condition, "items.length > 0");
+            }
+            _ => panic!("Expected if block"),
+        }
+    }
+
+    #[test]
+    fn test_directive_if_negated_condition() {
+        let mut node = HtmlNode::Text("{#if !loading}content{/if}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::IfBlock(if_block) => {
+                assert_eq!(if_block.condition, "!loading");
+            }
+            _ => panic!("Expected if block"),
+        }
+    }
+
+    #[test]
+    fn test_directive_nested_each_inside_if() {
+        let mut node = HtmlNode::Element(HtmlElement {
+            tag: "div".to_string(),
+            attributes: vec![],
+            children: vec![
+                HtmlNode::Text("{#if show}".to_string()),
+                HtmlNode::Element(HtmlElement {
+                    tag: "ul".to_string(),
+                    attributes: vec![],
+                    children: vec![HtmlNode::Text("{#each items as item}".to_string())],
+                    self_closing: false,
+                }),
+                HtmlNode::Text("{/if}".to_string()),
+            ],
+            self_closing: false,
+        });
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    HtmlNode::IfBlock(if_block) => {
+                        assert_eq!(if_block.condition, "show");
+                    }
+                    _ => panic!("Expected if block"),
+                }
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_directive_nested_if_inside_each() {
+        let mut node = HtmlNode::Text(
+            "{#each items as item}{#if item.active}{item.name}{/if}{/each}".to_string(),
+        );
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::EachLoop(each) => {
+                assert_eq!(each.iterable, "items");
+                assert_eq!(each.body.len(), 1);
+                match &each.body[0] {
+                    HtmlNode::IfBlock(if_block) => {
+                        assert_eq!(if_block.condition, "item.active");
+                    }
+                    _ => panic!("Expected if inside each"),
+                }
+            }
+            _ => panic!("Expected each loop"),
+        }
+    }
+
+    #[test]
+    fn test_directive_multiple_expressions() {
+        let mut node = HtmlNode::Text("{a} {b} {c}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Expression(_) => {}
+            HtmlNode::Fragment(nodes) => {
+                assert!(nodes.len() >= 1);
+            }
+            HtmlNode::Text(_) => {}
+            _ => panic!("Expected expression, fragment, or text"),
+        }
+    }
+
+    #[test]
+    fn test_directive_text_before_and_after_expression() {
+        let mut node = HtmlNode::Text("Hello, {name}!".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Fragment(nodes) => {
+                assert_eq!(nodes.len(), 3);
+                assert_eq!(nodes[0], HtmlNode::Text("Hello,".to_string()));
+                assert_eq!(nodes[1], HtmlNode::Expression("name".to_string()));
+                assert_eq!(nodes[2], HtmlNode::Text("!".to_string()));
+            }
+            _ => panic!("Expected fragment"),
+        }
+    }
+
+    #[test]
+    fn test_directive_nested_braces_in_expression() {
+        let mut node = HtmlNode::Text("{fn({a: 1})}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Expression(expr) => {
+                assert!(expr.contains("fn"));
+                assert!(expr.contains("{a: 1}"));
+            }
+            _ => panic!("Expected expression"),
+        }
+    }
+
+    #[test]
+    fn test_directive_no_expansion_for_element() {
+        let mut node = HtmlNode::Element(HtmlElement {
+            tag: "div".to_string(),
+            attributes: vec![],
+            children: vec![HtmlNode::Text("plain text".to_string())],
+            self_closing: false,
+        });
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.children.len(), 1);
+                assert_eq!(el.children[0], HtmlNode::Text("plain text".to_string()));
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_directive_each_with_nested_elements() {
+        let mut node = HtmlNode::Element(HtmlElement {
+            tag: "ul".to_string(),
+            attributes: vec![],
+            children: vec![
+                HtmlNode::Text("{#each users as user}".to_string()),
+                HtmlNode::Element(HtmlElement {
+                    tag: "div".to_string(),
+                    attributes: vec![],
+                    children: vec![HtmlNode::Element(HtmlElement {
+                        tag: "span".to_string(),
+                        attributes: vec![],
+                        children: vec![HtmlNode::Text("{user.name}".to_string())],
+                        self_closing: false,
+                    })],
+                    self_closing: false,
+                }),
+                HtmlNode::Text("{/each}".to_string()),
+            ],
+            self_closing: false,
+        });
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "ul");
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    HtmlNode::EachLoop(each) => {
+                        assert_eq!(each.iterable, "users");
+                        assert_eq!(each.body.len(), 1);
+                        match &each.body[0] {
+                            HtmlNode::Element(div) => {
+                                assert_eq!(div.tag, "div");
+                            }
+                            _ => panic!("Expected div"),
+                        }
+                    }
+                    _ => panic!("Expected each"),
+                }
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_directive_if_else_if_not_supported_treated_as_text() {
+        let mut node = HtmlNode::Text("{#if a}x{:else if b}y{/if}".to_string());
+        expand_directives(&mut node);
+        // {:else if} is not a supported construct; it should be parsed as if/else
+        match node {
+            HtmlNode::IfBlock(if_block) => {
+                assert_eq!(if_block.condition, "a");
+            }
+            HtmlNode::Text(t) => {
+                assert!(t.contains("{#if a}"));
+            }
+            HtmlNode::Fragment(nodes) => {
+                assert!(!nodes.is_empty());
+            }
+            _ => panic!("Unexpected node type"),
+        }
+    }
+
+    #[test]
+    fn test_directive_empty_expression() {
+        let mut node = HtmlNode::Text("{}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Text(t) => assert_eq!(t, "{}"),
+            HtmlNode::Expression(_) => {}
+            HtmlNode::Fragment(_) => {}
+            _ => panic!("Unexpected node type for empty expression"),
+        }
+    }
+
+    #[test]
+    fn test_directive_preserves_element_children() {
+        let mut node = HtmlNode::Element(HtmlElement {
+            tag: "div".to_string(),
+            attributes: vec![],
+            children: vec![
+                HtmlNode::Text("before".to_string()),
+                HtmlNode::Expression("count".to_string()),
+                HtmlNode::Text("after".to_string()),
+            ],
+            self_closing: false,
+        });
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.children.len(), 3);
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_directive_component_children_expanded() {
+        let mut node = HtmlNode::Component(HtmlComponent {
+            name: "Card".to_string(),
+            attributes: vec![],
+            children: vec![HtmlNode::Text("{title}".to_string())],
+        });
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Component(comp) => {
+                assert_eq!(comp.children.len(), 1);
+                match &comp.children[0] {
+                    HtmlNode::Expression(expr) => assert_eq!(expr, "title"),
+                    _ => panic!("Expected expression"),
+                }
+            }
+            _ => panic!("Expected component"),
+        }
+    }
+
+    #[test]
+    fn test_directive_string_literal_with_braces() {
+        let mut node = HtmlNode::Text("{fn(\"}\")}".to_string());
+        expand_directives(&mut node);
+        match node {
+            HtmlNode::Expression(expr) => {
+                assert!(expr.contains("fn"));
+            }
+            HtmlNode::Fragment(_) => {}
+            _ => panic!("Expected expression"),
         }
     }
 }

@@ -105,4 +105,102 @@ mod tests {
     fn test_parse_invalid_color() {
         assert!(parse_color_to_peniko("notacolor").is_none());
     }
+
+    // ── Color edge-case tests ───────────────────────────────────
+
+    #[test]
+    fn render_parse_hex_color_uppercase() {
+        let c = parse_color_to_peniko("#FF8000").unwrap();
+        assert_eq!(c, peniko::Color::from_rgb8(255, 128, 0));
+    }
+
+    #[test]
+    fn render_parse_hex_color_mixed_case() {
+        let c = parse_color_to_peniko("#aAbBcC").unwrap();
+        assert_eq!(c, peniko::Color::from_rgb8(0xaa, 0xbb, 0xcc));
+    }
+
+    #[test]
+    fn render_parse_named_color_blue() {
+        let c = parse_color_to_peniko("blue").unwrap();
+        assert_eq!(c, peniko::Color::from_rgb8(0, 0, 255));
+    }
+
+    #[test]
+    fn render_parse_named_color_green() {
+        let c = parse_color_to_peniko("green").unwrap();
+        assert_eq!(c, peniko::Color::from_rgb8(0, 128, 0));
+    }
+
+    #[test]
+    fn render_parse_named_color_transparent() {
+        let c = parse_color_to_peniko("transparent").unwrap();
+        assert_eq!(c, peniko::Color::from_rgb8(0, 0, 0));
+    }
+
+    #[test]
+    fn render_parse_named_color_with_whitespace() {
+        let c = parse_color_to_peniko("  red  ").unwrap();
+        assert_eq!(c, peniko::Color::from_rgb8(255, 0, 0));
+    }
+
+    #[test]
+    fn render_parse_hex_color_invalid_length() {
+        assert!(parse_color_to_peniko("#1234").is_none());
+        assert!(parse_color_to_peniko("#12345").is_none());
+        assert!(parse_color_to_peniko("#1234567").is_none());
+        assert!(parse_color_to_peniko("#123456789").is_none());
+    }
+
+    #[test]
+    fn render_parse_hex_color_invalid_chars() {
+        assert!(parse_color_to_peniko("#gggggg").is_none());
+        assert!(parse_color_to_peniko("#zzzzzzzz").is_none());
+    }
+
+    #[test]
+    fn render_css_color_alpha_half() {
+        let css = CssColor {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 0.5,
+        };
+        let c = css_color_to_peniko(css);
+        assert_eq!(c, peniko::Color::from_rgba8(255, 0, 0, 127));
+    }
+
+    #[test]
+    fn render_css_color_alpha_zero() {
+        let css = CssColor {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0.0,
+        };
+        let c = css_color_to_peniko(css);
+        assert_eq!(c, peniko::Color::from_rgba8(0, 0, 0, 0));
+    }
+
+    #[test]
+    fn render_css_color_alpha_full() {
+        let css = CssColor {
+            r: 100,
+            g: 200,
+            b: 50,
+            a: 1.0,
+        };
+        let c = css_color_to_peniko(css);
+        assert_eq!(c, peniko::Color::from_rgba8(100, 200, 50, 255));
+    }
+
+    #[test]
+    fn render_parse_empty_string_color() {
+        assert!(parse_color_to_peniko("").is_none());
+    }
+
+    #[test]
+    fn render_parse_hex_without_hash() {
+        assert!(parse_color_to_peniko("ff0000").is_none());
+    }
 }

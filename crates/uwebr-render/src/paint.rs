@@ -402,4 +402,143 @@ mod tests {
         assert_eq!(p.font_size, 40.0);
         assert!(p.background.is_none(), "text draws glyphs, not a box");
     }
+
+    // ── Paint edge-case tests ───────────────────────────────────
+
+    #[test]
+    fn render_inherited_drops_border_radius() {
+        let parent = ResolvedPaint {
+            border_radius: 12.0,
+            border_width: 2.0,
+            color: peniko::color::palette::css::BLUE,
+            ..Default::default()
+        };
+        let child = parent.inherited();
+        assert_eq!(child.border_radius, 0.0, "border-radius must not inherit");
+        assert_eq!(child.border_width, 0.0, "border-width must not inherit");
+        assert_eq!(
+            child.color,
+            peniko::color::palette::css::BLUE,
+            "color must inherit"
+        );
+    }
+
+    #[test]
+    fn render_inherited_drops_opacity() {
+        let parent = ResolvedPaint {
+            opacity: 0.3,
+            color: peniko::color::palette::css::RED,
+            ..Default::default()
+        };
+        let child = parent.inherited();
+        assert_eq!(child.opacity, 1.0, "opacity must not inherit");
+        assert_eq!(child.color, peniko::color::palette::css::RED);
+    }
+
+    #[test]
+    fn render_apply_css_border_color() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            border_color: Some(CssColor::rgb(255, 0, 0)),
+            border_width: Some(3.0),
+            border_radius: Some(8.0),
+            ..Default::default()
+        });
+        assert_eq!(p.border_color, peniko::Color::from_rgb8(255, 0, 0));
+        assert_eq!(p.border_width, 3.0);
+        assert_eq!(p.border_radius, 8.0);
+    }
+
+    #[test]
+    fn render_apply_css_text_overflow() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            text_overflow: Some("ellipsis".into()),
+            ..Default::default()
+        });
+        assert_eq!(p.text_overflow, crate::scene::TextOverflow::Ellipsis);
+    }
+
+    #[test]
+    fn render_apply_css_text_overflow_visible() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            text_overflow: Some("visible".into()),
+            ..Default::default()
+        });
+        assert_eq!(p.text_overflow, crate::scene::TextOverflow::Visible);
+    }
+
+    #[test]
+    fn render_apply_props_opacity_clamped_zero() {
+        let mut p = ResolvedPaint::default();
+        p.apply_props(&[("opacity".into(), PropValue::Number(0.0))]);
+        assert_eq!(p.opacity, 0.0);
+    }
+
+    #[test]
+    fn render_apply_props_opacity_clamped_negative() {
+        let mut p = ResolvedPaint::default();
+        p.apply_props(&[("opacity".into(), PropValue::Number(-1.0))]);
+        assert_eq!(p.opacity, 0.0, "negative opacity should clamp to 0");
+    }
+
+    #[test]
+    fn render_apply_props_border_radius_string_px() {
+        let mut p = ResolvedPaint::default();
+        p.apply_props(&[("border-radius".into(), PropValue::String("12px".into()))]);
+        assert_eq!(p.border_radius, 12.0);
+    }
+
+    #[test]
+    fn render_apply_props_border_width_number() {
+        let mut p = ResolvedPaint::default();
+        p.apply_props(&[("border-width".into(), PropValue::Number(4.0))]);
+        assert_eq!(p.border_width, 4.0);
+    }
+
+    #[test]
+    fn render_resolve_element_applies_bg_prop() {
+        let parent = ResolvedPaint::default();
+        let e = el(
+            "div",
+            vec![(
+                "background-color".into(),
+                PropValue::String("#ff0000".into()),
+            )],
+        );
+        let p = ResolvedPaint::resolve(&parent, &PaintProps::default(), &e);
+        assert!(
+            p.background.is_some(),
+            "background-color prop should set background"
+        );
+    }
+
+    #[test]
+    fn render_resolve_text_node_ignores_props() {
+        let parent = ResolvedPaint {
+            font_size: 32.0,
+            ..Default::default()
+        };
+        let text = Element {
+            node_type: NodeType::Text("content".into()),
+            props: vec![("font-size".into(), PropValue::Number(48.0))],
+            children: vec![],
+        };
+        let p = ResolvedPaint::resolve(&parent, &PaintProps::default(), &text);
+        assert_eq!(
+            p.font_size, 32.0,
+            "text node should inherit font-size, not apply props"
+        );
+    }
+
+    #[test]
+    fn render_font_family_inherited() {
+        let parent = ResolvedPaint {
+            font_family: Some("monospace".into()),
+            ..Default::default()
+        };
+        let child = parent.inherited();
+        assert_eq!(child.font_family.as_deref(), Some("monospace"));
+    }
 }

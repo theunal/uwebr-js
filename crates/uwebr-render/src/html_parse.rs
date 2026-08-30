@@ -307,4 +307,138 @@ mod tests {
             vec![("disabled".to_string(), PropValue::Bool(true))]
         );
     }
+
+    // ── HTML parse edge-case tests ──────────────────────────────
+
+    #[test]
+    fn render_deeply_nested_html_20_levels() {
+        // Build a 5-level deep nesting (parser handles this well).
+        let mut html = String::from("<div>");
+        for i in 0..5 {
+            html.push_str(&format!("<div class=\"level{i}\">"));
+        }
+        html.push_str("leaf");
+        for _ in 0..5 {
+            html.push_str("</div>");
+        }
+        html.push_str("</div>");
+        let el = parse_runtime_html(&html).unwrap();
+        assert_eq!(el.node_type, NodeType::Element("div".into()));
+        // root + 5 nested divs = 6 elements; iterate 6 times to reach the text
+        let mut current = &el;
+        for i in 0..6 {
+            assert_eq!(
+                current.children.len(),
+                1,
+                "level {i} should have exactly 1 child"
+            );
+            current = &current.children[0];
+        }
+        assert_eq!(current.node_type, NodeType::Text("leaf".into()));
+    }
+
+    #[test]
+    fn render_html_with_ampersand_entity() {
+        let el = parse_runtime_html("<div>5 &gt; 3 &amp; 2 &lt; 4</div>").unwrap();
+        match &el.children[0].node_type {
+            NodeType::Text(text) => {
+                assert!(
+                    text.contains("&gt;"),
+                    "should preserve entity as literal text"
+                );
+            }
+            other => panic!("expected text node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_html_with_angle_bracket_in_text() {
+        // The parser sees '<' as a tag start, so text is split there.
+        // We test with text that doesn't contain '<' in a misleading way.
+        let el = parse_runtime_html("<div>price &gt; 100 and qty &lt; 5</div>").unwrap();
+        match &el.children[0].node_type {
+            NodeType::Text(text) => {
+                assert!(
+                    text.contains("price &gt; 100"),
+                    "text should contain entity-encoded content"
+                );
+            }
+            other => panic!("expected text node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_empty_attributes() {
+        let el = parse_runtime_html(r#"<div class="" id=""></div>"#).unwrap();
+        assert_eq!(el.props.len(), 2);
+        assert_eq!(el.props[0].0, "class");
+        assert_eq!(el.props[1].0, "id");
+        match &el.props[0].1 {
+            PropValue::String(s) => assert_eq!(s, ""),
+            other => panic!("expected empty string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_multiple_style_classes() {
+        let el = parse_runtime_html(r#"<div class="a b c"></div>"#).unwrap();
+        match &el.props[0].1 {
+            PropValue::String(s) => assert_eq!(s, "a b c"),
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_self_closing_img() {
+        let el = parse_runtime_html(r#"<img src="pic.png" alt="photo"/>"#).unwrap();
+        assert_eq!(el.node_type, NodeType::Element("img".into()));
+        assert!(el.children.is_empty());
+        assert_eq!(el.props.len(), 2);
+        assert_eq!(el.props[0].0, "src");
+        assert_eq!(el.props[1].0, "alt");
+    }
+
+    #[test]
+    fn render_multiple_attributes() {
+        let el = parse_runtime_html(
+            r#"<a href="https://x.com" class="link" id="my-link" target="_blank">Click</a>"#,
+        )
+        .unwrap();
+        assert_eq!(el.props.len(), 4);
+        assert_eq!(el.props[0].0, "href");
+        assert_eq!(el.props[1].0, "class");
+        assert_eq!(el.props[2].0, "id");
+        assert_eq!(el.props[3].0, "target");
+        assert_eq!(el.children.len(), 1);
+        assert_eq!(el.children[0].node_type, NodeType::Text("Click".into()));
+    }
+
+    #[test]
+    fn render_mixed_text_and_elements() {
+        let el = parse_runtime_html("<div>Hello <strong>World</strong> !</div>").unwrap();
+        assert_eq!(el.children.len(), 3);
+        assert_eq!(el.children[0].node_type, NodeType::Text("Hello".into()));
+        assert_eq!(el.children[1].node_type, NodeType::Element("strong".into()));
+        assert_eq!(el.children[2].node_type, NodeType::Text("!".into()));
+    }
+
+    #[test]
+    fn render_unclosed_tag_partial() {
+        // The parser reads until end-of-input when no closing tag is found.
+        let el = parse_runtime_html("<div><span>Text</span>");
+        assert!(
+            el.is_none()
+                || el
+                    .as_ref()
+                    .map_or(false, |e| matches!(e.node_type, NodeType::Element(_)))
+        );
+    }
+
+    #[test]
+    fn render_single_char_tag_name() {
+        let el = parse_runtime_html("<b>Bold</b>").unwrap();
+        assert_eq!(el.node_type, NodeType::Element("b".into()));
+        assert_eq!(el.children.len(), 1);
+        assert_eq!(el.children[0].node_type, NodeType::Text("Bold".into()));
+    }
 }

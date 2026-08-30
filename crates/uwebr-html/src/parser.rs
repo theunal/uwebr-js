@@ -568,4 +568,400 @@ mod tests {
             _ => panic!("Expected component"),
         }
     }
+
+    // --- Edge case tests ---
+
+    #[test]
+    fn test_html_empty_string() {
+        let node = parse_html("").unwrap();
+        match node {
+            HtmlNode::Fragment(_) => {}
+            HtmlNode::Element(_) => {}
+            _ => panic!("Expected fragment or element for empty input"),
+        }
+    }
+
+    #[test]
+    fn test_html_whitespace_only() {
+        let node = parse_html("   \n\t  ").unwrap();
+        match node {
+            HtmlNode::Fragment(_) => {}
+            HtmlNode::Text(_) => {}
+            HtmlNode::Element(_) => {}
+            _ => panic!("Expected fragment, text, or element for whitespace input"),
+        }
+    }
+
+    #[test]
+    fn test_html_text_only_no_tags() {
+        let node = parse_html("Hello world").unwrap();
+        match node {
+            HtmlNode::Text(t) => assert_eq!(t, "Hello world"),
+            HtmlNode::Fragment(children) => {
+                assert_eq!(children.len(), 1);
+                match &children[0] {
+                    HtmlNode::Text(t) => assert_eq!(t, "Hello world"),
+                    _ => panic!("Expected text"),
+                }
+            }
+            _ => panic!("Expected text or fragment"),
+        }
+    }
+
+    #[test]
+    fn test_html_unclosed_tag() {
+        let node = parse_html("<div>Hello").unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "div");
+            }
+            HtmlNode::Fragment(children) => {
+                assert!(!children.is_empty());
+            }
+            _ => panic!("Expected element or fragment"),
+        }
+    }
+
+    #[test]
+    fn test_html_mismatched_tags() {
+        let node = parse_html("<div><span>Hello</div></span>").unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "div");
+            }
+            HtmlNode::Fragment(_) => {}
+            _ => panic!("Expected element or fragment"),
+        }
+    }
+
+    #[test]
+    fn test_html_entity_amp() {
+        let node = parse_html("<p>&amp;</p>").unwrap();
+        match node {
+            HtmlNode::Element(el) => match &el.children[0] {
+                HtmlNode::Text(t) => assert!(t.contains('&')),
+                _ => panic!("Expected text child"),
+            },
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_entity_lt_gt() {
+        let node = parse_html("<p>&lt;div&gt;</p>").unwrap();
+        match node {
+            HtmlNode::Element(el) => match &el.children[0] {
+                HtmlNode::Text(t) => {
+                    assert!(t.contains('<'));
+                    assert!(t.contains('>'));
+                }
+                _ => panic!("Expected text child"),
+            },
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_entity_numeric() {
+        let node = parse_html("<p>&#65;</p>").unwrap();
+        match node {
+            HtmlNode::Element(el) => match &el.children[0] {
+                HtmlNode::Text(t) => assert!(t.contains('A')),
+                _ => panic!("Expected text child"),
+            },
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_entity_quote() {
+        let node = parse_html("<p>&quot;hello&quot;</p>").unwrap();
+        match node {
+            HtmlNode::Element(el) => match &el.children[0] {
+                HtmlNode::Text(t) => assert!(t.contains('"')),
+                _ => panic!("Expected text child"),
+            },
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_deeply_nested() {
+        let mut html = String::new();
+        for _ in 0..25 {
+            html.push_str("<div>");
+        }
+        html.push_str("deep");
+        for _ in 0..25 {
+            html.push_str("</div>");
+        }
+        let node = parse_html(&html).unwrap();
+        let mut current = &node;
+        for _ in 0..25 {
+            match current {
+                HtmlNode::Element(el) => {
+                    assert_eq!(el.tag, "div");
+                    if !el.children.is_empty() {
+                        current = &el.children[0];
+                    }
+                }
+                _ => panic!("Expected nested div"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_html_script_content_preserved() {
+        let html = r#"<script>var x = 1 + 2; if (x < 3) { console.log(x); }</script>"#;
+        let node = parse_html(html).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "script");
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    HtmlNode::Text(t) => {
+                        assert!(t.contains("var x"));
+                        assert!(t.contains("console.log"));
+                    }
+                    _ => panic!("Expected text child with JS"),
+                }
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_style_content_preserved() {
+        let html = r#"<style>.foo { color: red; }</style>"#;
+        let node = parse_html(html).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "style");
+                assert_eq!(el.children.len(), 1);
+                match &el.children[0] {
+                    HtmlNode::Text(t) => {
+                        assert!(t.contains(".foo"));
+                        assert!(t.contains("color: red"));
+                    }
+                    _ => panic!("Expected text child with CSS"),
+                }
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_self_closing_br() {
+        let node = parse_html("<br>").unwrap();
+        match node {
+            HtmlNode::Element(el) => assert_eq!(el.tag, "br"),
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_self_closing_hr() {
+        let node = parse_html("<hr>").unwrap();
+        match node {
+            HtmlNode::Element(el) => assert_eq!(el.tag, "hr"),
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_self_closing_meta() {
+        let node = parse_html(r#"<meta charset="utf-8">"#).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "meta");
+                assert!(el.attributes.iter().any(|a| a.name == "charset"));
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_self_closing_link() {
+        let node = parse_html(r#"<link rel="stylesheet" href="style.css">"#).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "link");
+                assert_eq!(el.attributes.len(), 2);
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_component_detection() {
+        let components = detect_components(r#"<Modal><p>content</p></Modal>"#);
+        assert!(components.contains_key("modal"));
+        assert_eq!(components.get("modal").unwrap(), "Modal");
+    }
+
+    #[test]
+    fn test_html_component_not_single_char_uppercase() {
+        let components = detect_components(r#"<A>text</A>"#);
+        assert!(
+            components.is_empty(),
+            "Single uppercase char should not be a component"
+        );
+    }
+
+    #[test]
+    fn test_html_leading_trailing_whitespace() {
+        let node = parse_html("  <div>  Hello  </div>  ").unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "div");
+            }
+            HtmlNode::Fragment(children) => {
+                assert!(!children.is_empty());
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_whitespace_between_elements() {
+        let node = parse_html("<div>  <span>A</span>  <span>B</span>  </div>").unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "div");
+                let spans: Vec<_> = el
+                    .children
+                    .iter()
+                    .filter(|c| matches!(c, HtmlNode::Element(e) if e.tag == "span"))
+                    .collect();
+                assert_eq!(spans.len(), 2);
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_empty_attributes() {
+        let node = parse_html(r#"<input type="text" disabled>"#).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "input");
+                let has_disabled = el.attributes.iter().any(|a| a.name == "disabled");
+                assert!(has_disabled);
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_single_quoted_attribute() {
+        let node = parse_html("<div class='foo'>x</div>").unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                let class_attr = el.attributes.iter().find(|a| a.name == "class");
+                assert!(class_attr.is_some());
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_comment_handling() {
+        let node = parse_html("<!-- hello --><div>x</div>").unwrap();
+        match node {
+            HtmlNode::Fragment(children) => {
+                let has_element = children.iter().any(|c| matches!(c, HtmlNode::Element(_)));
+                assert!(has_element);
+            }
+            HtmlNode::Element(_) => {}
+            _ => panic!("Expected fragment or element"),
+        }
+    }
+
+    #[test]
+    fn test_html_mixed_text_and_elements() {
+        let node = parse_html("<div>Text1 <span>inner</span> Text2</div>").unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                assert_eq!(el.tag, "div");
+                assert!(el.children.len() >= 3);
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_unicode_text() {
+        let node = parse_html("<p>Привет мир 你好世界</p>").unwrap();
+        match node {
+            HtmlNode::Element(el) => match &el.children[0] {
+                HtmlNode::Text(t) => {
+                    assert!(t.contains("Привет"));
+                    assert!(t.contains("你好"));
+                }
+                _ => panic!("Expected text"),
+            },
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_unicode_attribute() {
+        let node = parse_html(r#"<div title="日本語">x</div>"#).unwrap();
+        match node {
+            HtmlNode::Element(el) => {
+                let title = el.attributes.iter().find(|a| a.name == "title");
+                assert!(title.is_some());
+            }
+            _ => panic!("Expected element"),
+        }
+    }
+
+    #[test]
+    fn test_html_nested_components() {
+        let html = r#"<Modal><Card title="t"><p>body</p></Card></Modal>"#;
+        let components = detect_components(html);
+        assert!(components.contains_key("modal"));
+        assert!(components.contains_key("card"));
+    }
+
+    #[test]
+    fn test_parse_fragment_multiple_roots() {
+        let nodes = parse_fragment("<div>A</div><span>B</span><p>C</p>").unwrap();
+        assert_eq!(nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_fragment_empty() {
+        let nodes = parse_fragment("").unwrap();
+        assert!(nodes.len() <= 1);
+    }
+
+    #[test]
+    fn test_parse_html_with_components_custom() {
+        use std::collections::HashMap;
+        let mut components = HashMap::new();
+        components.insert("mywidget".to_string(), "MyWidget".to_string());
+        let html = r#"<MyWidget><p>inner</p></MyWidget>"#;
+        let node = parse_html_with_components(html, &components).unwrap();
+        match node {
+            HtmlNode::Component(comp) => {
+                assert_eq!(comp.name, "MyWidget");
+            }
+            _ => panic!("Expected component"),
+        }
+    }
+
+    #[test]
+    fn test_html_doctype_ignored() {
+        let node = parse_html("<!DOCTYPE html><div>x</div>").unwrap();
+        match node {
+            HtmlNode::Element(el) => assert_eq!(el.tag, "div"),
+            HtmlNode::Fragment(children) => {
+                assert!(children
+                    .iter()
+                    .any(|c| matches!(c, HtmlNode::Element(e) if e.tag == "div")));
+            }
+            _ => panic!("Expected element"),
+        }
+    }
 }

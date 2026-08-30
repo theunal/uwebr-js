@@ -200,4 +200,93 @@ mod tests {
         // Must not panic on a CSS-style family list.
         let _ = tr.measure("Hello", 16.0, Some("system-ui, sans-serif"), None);
     }
+
+    // ── Text edge-case tests ────────────────────────────────────
+
+    #[test]
+    fn render_measure_single_char() {
+        let mut tr = TextRenderer::new();
+        let (w, h) = tr.measure("X", 16.0, None, None);
+        assert!(w > 0.0, "single char should have positive width");
+        assert!(h > 0.0, "single char should have positive height");
+    }
+
+    #[test]
+    fn render_measure_very_large_font() {
+        let mut tr = TextRenderer::new();
+        let (_, h) = tr.measure("Hello", 200.0, None, None);
+        assert!(
+            h > 100.0,
+            "200px font should produce tall text, got height {h}"
+        );
+    }
+
+    #[test]
+    fn render_measure_max_advance_wrapping() {
+        let mut tr = TextRenderer::new();
+        let (_, h1) = tr.measure("abcdefghij", 16.0, None, Some(50.0));
+        let (_, h2) = tr.measure("abcdefghij", 16.0, None, None);
+        assert!(
+            h1 >= h2,
+            "wrapped text should have at least as much height as single-line, h1={h1}, h2={h2}"
+        );
+    }
+
+    #[test]
+    fn render_estimate_text_size_zero_font() {
+        let (w, h) = estimate_text_size("abc", 0.0, None);
+        assert_eq!(w, 0.0, "zero font size should produce zero width");
+        assert_eq!(h, 0.0, "zero font size should produce zero height");
+    }
+
+    #[test]
+    fn render_estimate_max_advance_one_char_per_line() {
+        let (w, h) = estimate_text_size("abc", 16.0, Some(5.0));
+        assert_eq!(w, 5.0, "width should be clamped");
+        assert!(h > 16.0 * 1.25, "should wrap to multiple lines");
+    }
+
+    #[test]
+    fn render_measure_whitespace_only() {
+        let mut tr = TextRenderer::new();
+        let (w, h) = tr.measure("   ", 16.0, None, None);
+        assert!(h >= 0.0);
+        assert!(w >= 0.0);
+    }
+
+    #[test]
+    fn render_layout_text_with_font_size_1() {
+        let mut tr = TextRenderer::new();
+        let layout = tr.layout_text("Hi", 1.0, None, None);
+        let (w, h) = tr.measure_text(&layout);
+        assert!(w >= 0.0);
+        assert!(h >= 0.0);
+    }
+
+    #[test]
+    fn render_measure_multiline_content() {
+        let mut tr = TextRenderer::new();
+        let content = "Line 1\nLine 2\nLine 3";
+        let (w, h) = tr.measure(content, 16.0, None, None);
+        assert!(w > 0.0, "multiline text should have positive width");
+        assert!(
+            h > 16.0 * 1.25,
+            "multiline text should be taller than single line"
+        );
+    }
+
+    #[test]
+    fn render_text_renderer_default() {
+        let tr = TextRenderer::default();
+        let _ = &tr.font_context;
+    }
+
+    #[test]
+    fn render_measure_returns_same_for_same_input() {
+        let mut tr = TextRenderer::new();
+        let (w1, h1) = tr.measure("same", 16.0, None, None);
+        let (w2, h2) = tr.measure("same", 16.0, None, None);
+        assert_eq!(w1, w2);
+        assert_eq!(h1, h2);
+    }
 }

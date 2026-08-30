@@ -1340,4 +1340,1150 @@ mod tests {
             LengthPercentage::length(100.0)
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Property-specific (~20 tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn css_display_flex() {
+        let css = ".a { display: flex; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.display, Display::Flex);
+    }
+
+    #[test]
+    fn css_display_grid() {
+        let css = ".a { display: grid; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.display, Display::Grid);
+    }
+
+    #[test]
+    fn css_display_none() {
+        let css = ".a { display: none; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.display, Display::None);
+    }
+
+    #[test]
+    fn css_display_block_keyword_ignored() {
+        // "block" and "inline" are not supported by to_display, so they
+        // remain as keywords in the parsed value but don't affect Taffy.
+        let css = ".a { display: block; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(!entries[0].mask.display, "block is not a taffy display");
+    }
+
+    #[test]
+    fn css_position_relative() {
+        let css = ".a { position: relative; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.position, Position::Relative);
+    }
+
+    #[test]
+    fn css_position_absolute() {
+        let css = ".a { position: absolute; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.position, Position::Absolute);
+    }
+
+    #[test]
+    fn css_position_fixed_ignored() {
+        let css = ".a { position: fixed; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(!entries[0].mask.position, "fixed is not a taffy position");
+    }
+
+    #[test]
+    fn css_position_sticky_ignored() {
+        let css = ".a { position: sticky; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(!entries[0].mask.position, "sticky is not a taffy position");
+    }
+
+    #[test]
+    fn css_overflow_hidden() {
+        let css = ".a { overflow: hidden; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.overflow.x, Overflow::Hidden);
+        assert_eq!(styles[0].1.overflow.y, Overflow::Hidden);
+    }
+
+    #[test]
+    fn css_overflow_scroll() {
+        let css = ".a { overflow: scroll; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.overflow.x, Overflow::Scroll);
+    }
+
+    #[test]
+    fn css_overflow_visible() {
+        let css = ".a { overflow: visible; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.overflow.x, Overflow::Visible);
+    }
+
+    #[test]
+    fn css_flex_grow() {
+        let css = ".a { flex-grow: 2; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.flex_grow);
+        assert_eq!(entries[0].style.flex_grow, 2.0);
+    }
+
+    #[test]
+    fn css_flex_shrink() {
+        let css = ".a { flex-shrink: 0; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].mask.flex_shrink);
+        assert_eq!(entries[0].style.flex_shrink, 0.0);
+    }
+
+    #[test]
+    fn css_flex_direction_row() {
+        let css = ".a { flex-direction: row; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.flex_direction, FlexDirection::Row);
+    }
+
+    #[test]
+    fn css_flex_direction_column_reverse() {
+        let css = ".a { flex-direction: column-reverse; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.flex_direction, FlexDirection::ColumnReverse);
+    }
+
+    #[test]
+    fn css_flex_wrap_nowrap() {
+        let css = ".a { flex-wrap: nowrap; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.flex_wrap, FlexWrap::NoWrap);
+    }
+
+    #[test]
+    fn css_flex_wrap_wrap_reverse() {
+        let css = ".a { flex-wrap: wrap-reverse; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.flex_wrap, FlexWrap::WrapReverse);
+    }
+
+    #[test]
+    fn css_justify_content_space_between() {
+        let css = ".a { justify-content: space-between; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(
+            styles[0].1.justify_content,
+            Some(JustifyContent::SPACE_BETWEEN)
+        );
+    }
+
+    #[test]
+    fn css_justify_content_space_evenly() {
+        let css = ".a { justify-content: space-evenly; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(
+            styles[0].1.justify_content,
+            Some(JustifyContent::SPACE_EVENLY)
+        );
+    }
+
+    #[test]
+    fn css_align_items_flex_start() {
+        let css = ".a { align-items: flex-start; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.align_items, Some(AlignItems::FLEX_START));
+    }
+
+    #[test]
+    fn css_align_items_flex_end() {
+        let css = ".a { align-items: flex-end; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.align_items, Some(AlignItems::FLEX_END));
+    }
+
+    #[test]
+    fn css_align_items_baseline() {
+        let css = ".a { align-items: baseline; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.align_items, Some(AlignItems::BASELINE));
+    }
+
+    #[test]
+    fn css_align_self_center() {
+        let css = ".a { align-self: center; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.align_self, Some(AlignItems::CENTER));
+        assert!(entries[0].mask.align_self);
+    }
+
+    #[test]
+    fn css_gap_px() {
+        let css = ".a { gap: 12px; }";
+        let rules = parse_css(css).unwrap();
+        let styles = convert_to_taffy_styles(&rules).unwrap();
+        assert_eq!(styles[0].1.gap.width, LengthPercentage::length(12.0));
+        assert_eq!(styles[0].1.gap.height, LengthPercentage::length(12.0));
+    }
+
+    #[test]
+    fn css_row_gap() {
+        let css = ".a { row-gap: 8px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.gap.height, LengthPercentage::length(8.0));
+        assert!(entries[0].mask.gap_height);
+    }
+
+    #[test]
+    fn css_column_gap() {
+        let css = ".a { column-gap: 16px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.gap.width, LengthPercentage::length(16.0));
+        assert!(entries[0].mask.gap_width);
+    }
+
+    #[test]
+    fn css_min_width() {
+        let css = ".a { min-width: 200px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.min_size.width,
+            LengthPercentageAuto::length(200.0)
+        );
+        assert!(entries[0].mask.min_width);
+    }
+
+    #[test]
+    fn css_min_height() {
+        let css = ".a { min-height: 100px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.min_size.height,
+            LengthPercentageAuto::length(100.0)
+        );
+    }
+
+    #[test]
+    fn css_max_width() {
+        let css = ".a { max-width: 600px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.max_size.width,
+            LengthPercentageAuto::length(600.0)
+        );
+        assert!(entries[0].mask.max_width);
+    }
+
+    #[test]
+    fn css_max_height() {
+        let css = ".a { max-height: 400px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.max_size.height,
+            LengthPercentageAuto::length(400.0)
+        );
+    }
+
+    #[test]
+    fn css_padding_top() {
+        let css = ".a { padding-top: 5px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(5.0));
+    }
+
+    #[test]
+    fn css_padding_right() {
+        let css = ".a { padding-right: 10px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.padding.right,
+            LengthPercentage::length(10.0)
+        );
+    }
+
+    #[test]
+    fn css_padding_bottom() {
+        let css = ".a { padding-bottom: 15px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.padding.bottom,
+            LengthPercentage::length(15.0)
+        );
+    }
+
+    #[test]
+    fn css_padding_left() {
+        let css = ".a { padding-left: 20px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.padding.left,
+            LengthPercentage::length(20.0)
+        );
+    }
+
+    #[test]
+    fn css_margin_top_auto() {
+        let css = ".a { margin-top: auto; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].style.margin.top.is_auto());
+    }
+
+    #[test]
+    fn css_margin_right_px() {
+        let css = ".a { margin-right: 8px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.margin.right,
+            LengthPercentageAuto::length(8.0)
+        );
+    }
+
+    #[test]
+    fn css_margin_bottom_auto() {
+        let css = ".a { margin-bottom: auto; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].style.margin.bottom.is_auto());
+    }
+
+    #[test]
+    fn css_margin_left_px() {
+        let css = ".a { margin-left: 12px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.margin.left,
+            LengthPercentageAuto::length(12.0)
+        );
+    }
+
+    #[test]
+    fn css_top_inset() {
+        let css = ".a { position: absolute; top: 0; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.inset.top,
+            LengthPercentageAuto::length(0.0)
+        );
+        assert!(entries[0].mask.inset);
+    }
+
+    #[test]
+    fn css_right_inset() {
+        let css = ".a { position: absolute; right: 10px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.inset.right,
+            LengthPercentageAuto::length(10.0)
+        );
+    }
+
+    #[test]
+    fn css_bottom_inset() {
+        let css = ".a { position: absolute; bottom: 20px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.inset.bottom,
+            LengthPercentageAuto::length(20.0)
+        );
+    }
+
+    #[test]
+    fn css_left_inset() {
+        let css = ".a { position: absolute; left: 30px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.inset.left,
+            LengthPercentageAuto::length(30.0)
+        );
+    }
+
+    #[test]
+    fn css_top_auto_inset() {
+        let css = ".a { position: absolute; top: auto; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].style.inset.top.is_auto());
+    }
+
+    #[test]
+    fn css_width_auto() {
+        let css = ".a { width: auto; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].style.size.width.is_auto());
+    }
+
+    #[test]
+    fn css_height_auto() {
+        let css = ".a { height: auto; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].style.size.height.is_auto());
+    }
+
+    #[test]
+    fn css_width_percent() {
+        let css = ".a { width: 75%; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.size.width, Dimension::percent(0.75));
+    }
+
+    #[test]
+    fn css_height_em() {
+        let css = ".a { height: 2em; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        // 2em → 2px in taffy (em resolves as raw length)
+        assert_eq!(entries[0].style.size.height, Dimension::length(2.0));
+    }
+
+    #[test]
+    fn css_border_radius_px() {
+        let css = ".a { border-radius: 8px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.border.top, LengthPercentage::length(8.0));
+        assert_eq!(entries[0].style.border.right, LengthPercentage::length(8.0));
+        assert_eq!(
+            entries[0].style.border.bottom,
+            LengthPercentage::length(8.0)
+        );
+        assert_eq!(entries[0].style.border.left, LengthPercentage::length(8.0));
+    }
+
+    #[test]
+    fn css_border_width_all_sides() {
+        let css = ".a { border-width: 3px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.border.top, LengthPercentage::length(3.0));
+        assert_eq!(
+            entries[0].style.border.bottom,
+            LengthPercentage::length(3.0)
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Paint properties (~15 tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn css_paint_background_solid() {
+        let css = ".a { background-color: #ff00ff; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        match entries[0].paint.background.clone().unwrap() {
+            BackgroundValue::Solid(c) => assert_eq!((c.r, c.g, c.b), (255, 0, 255)),
+            other => panic!("expected solid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_paint_background_linear_gradient() {
+        let css = ".a { background: linear-gradient(to right, red, blue); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        match entries[0].paint.background.clone().unwrap() {
+            BackgroundValue::LinearGradient { direction, stops } => {
+                assert_eq!(direction.as_deref(), Some("to right"));
+                assert_eq!(stops.len(), 2);
+            }
+            other => panic!("expected linear gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_paint_background_radial_gradient() {
+        let css = ".a { background: radial-gradient(red, blue); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        match entries[0].paint.background.clone().unwrap() {
+            BackgroundValue::RadialGradient { stops } => {
+                assert_eq!(stops.len(), 2);
+            }
+            other => panic!("expected radial gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_paint_color_named() {
+        let css = ".a { color: orange; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let c = entries[0].paint.color.clone().unwrap();
+        assert_eq!((c.r, c.g, c.b), (255, 165, 0));
+    }
+
+    #[test]
+    fn css_paint_color_hex() {
+        let css = ".a { color: #808080; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let c = entries[0].paint.color.clone().unwrap();
+        assert_eq!((c.r, c.g, c.b), (128, 128, 128));
+    }
+
+    #[test]
+    fn css_paint_font_size_px() {
+        let css = ".a { font-size: 24px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.font_size, Some(24.0));
+    }
+
+    #[test]
+    fn css_paint_font_size_rem() {
+        let css = ".a { font-size: 1.5rem; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.font_size, Some(24.0));
+    }
+
+    #[test]
+    fn css_paint_font_family() {
+        let css = ".a { font-family: sans-serif; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.font_family.as_deref(), Some("sans-serif"));
+    }
+
+    #[test]
+    fn css_paint_border_color() {
+        let css = ".a { border-color: green; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let c = entries[0].paint.border_color.clone().unwrap();
+        assert_eq!((c.r, c.g, c.b), (0, 128, 0));
+    }
+
+    #[test]
+    fn css_paint_border_width() {
+        let css = ".a { border-width: 4px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.border_width, Some(4.0));
+    }
+
+    #[test]
+    fn css_paint_border_radius() {
+        let css = ".a { border-radius: 12px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.border_radius, Some(12.0));
+    }
+
+    #[test]
+    fn css_paint_opacity() {
+        let css = ".a { opacity: 0.7; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!((entries[0].paint.opacity.unwrap() - 0.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn css_paint_opacity_clamped_above_one() {
+        let css = ".a { opacity: 2; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.opacity, Some(1.0));
+    }
+
+    #[test]
+    fn css_paint_opacity_clamped_below_zero() {
+        let css = ".a { opacity: -1; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.opacity, Some(0.0));
+    }
+
+    #[test]
+    fn css_paint_text_overflow_ellipsis() {
+        let css = ".a { text-overflow: ellipsis; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.text_overflow.as_deref(), Some("ellipsis"));
+    }
+
+    #[test]
+    fn css_paint_background_shorthand() {
+        let css = ".a { background: blue; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        match entries[0].paint.background.clone().unwrap() {
+            BackgroundValue::Solid(c) => assert_eq!((c.r, c.g, c.b), (0, 0, 255)),
+            other => panic!("expected solid, got {other:?}"),
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  End-to-end (~15 tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn css_e2e_parse_then_resolve_display() {
+        let css = ".box { display: flex; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, Display::Flex);
+        assert!(entries[0].mask.display);
+    }
+
+    #[test]
+    fn css_e2e_parse_then_resolve_padding() {
+        let css = ".box { padding: 10px 20px 30px 40px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(10.0));
+        assert_eq!(
+            entries[0].style.padding.right,
+            LengthPercentage::length(20.0)
+        );
+        assert_eq!(
+            entries[0].style.padding.bottom,
+            LengthPercentage::length(30.0)
+        );
+        assert_eq!(
+            entries[0].style.padding.left,
+            LengthPercentage::length(40.0)
+        );
+    }
+
+    #[test]
+    fn css_e2e_parse_then_resolve_margin() {
+        let css = ".box { margin: auto; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].style.margin.top.is_auto());
+        assert!(entries[0].style.margin.right.is_auto());
+        assert!(entries[0].style.margin.bottom.is_auto());
+        assert!(entries[0].style.margin.left.is_auto());
+    }
+
+    #[test]
+    fn css_e2e_parse_then_resolve_position() {
+        let css = ".box { position: absolute; top: 0; left: 50%; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.position, Position::Absolute);
+        assert_eq!(
+            entries[0].style.inset.top,
+            LengthPercentageAuto::length(0.0)
+        );
+        assert_eq!(
+            entries[0].style.inset.left,
+            LengthPercentageAuto::percent(0.5)
+        );
+    }
+
+    #[test]
+    fn css_e2e_parse_then_resolve_flex() {
+        let css = ".box { display: flex; flex-direction: column; flex-wrap: wrap; flex-grow: 1; flex-shrink: 0; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, Display::Flex);
+        assert_eq!(entries[0].style.flex_direction, FlexDirection::Column);
+        assert_eq!(entries[0].style.flex_wrap, FlexWrap::Wrap);
+        assert_eq!(entries[0].style.flex_grow, 1.0);
+        assert_eq!(entries[0].style.flex_shrink, 0.0);
+    }
+
+    #[test]
+    fn css_e2e_parse_then_resolve_overflow() {
+        let css = ".box { overflow: hidden; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.overflow.x, Overflow::Hidden);
+        assert_eq!(entries[0].style.overflow.y, Overflow::Hidden);
+        assert!(entries[0].mask.overflow);
+    }
+
+    #[test]
+    fn css_e2e_parse_then_resolve_complex_block() {
+        let css = r#"
+            .card {
+                display: flex;
+                flex-direction: row;
+                padding: 16px;
+                margin: 8px auto;
+                border-radius: 8px;
+                gap: 12px;
+                width: 100%;
+                max-width: 600px;
+            }
+        "#;
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, Display::Flex);
+        assert_eq!(entries[0].style.flex_direction, FlexDirection::Row);
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(16.0));
+        assert_eq!(entries[0].style.gap.width, LengthPercentage::length(12.0));
+        assert_eq!(entries[0].style.size.width, Dimension::percent(1.0));
+        assert_eq!(
+            entries[0].style.max_size.width,
+            LengthPercentageAuto::length(600.0)
+        );
+        // margin: 8px auto → shorthand([8px, auto]) → top=8px, right=auto, bottom=8px, left=auto
+        assert_eq!(
+            entries[0].style.margin.top,
+            LengthPercentageAuto::length(8.0)
+        );
+        assert!(entries[0].style.margin.right.is_auto());
+        assert_eq!(
+            entries[0].style.margin.bottom,
+            LengthPercentageAuto::length(8.0)
+        );
+        assert!(entries[0].style.margin.left.is_auto());
+    }
+
+    #[test]
+    fn css_e2e_comments_interspersed() {
+        let css = r#"
+            /* Header styles */
+            .header {
+                display: flex; /* inline comment */
+                padding: 8px;
+            }
+            /* Footer styles */
+            .footer {
+                padding: 16px;
+            }
+        "#;
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 2);
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, Display::Flex);
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(8.0));
+        assert_eq!(entries[1].style.padding.top, LengthPercentage::length(16.0));
+    }
+
+    #[test]
+    fn css_e2e_multiple_rules_same_selector() {
+        let css = ".a { color: red; } .a { color: blue; }";
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 2);
+        let entries = convert_to_style_entries(&rules).unwrap();
+        // Both rules exist; cascade determines which wins at runtime
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn css_e2e_important_flag() {
+        let css = ".a { color: red !important; } .b { color: blue; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert!(entries[0].important);
+        assert!(!entries[1].important);
+    }
+
+    #[test]
+    fn css_e2e_real_world_button() {
+        let css = r#"
+            .btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-size: 14px;
+                font-family: sans-serif;
+                color: white;
+                background-color: #3b82f6;
+                border-width: 0;
+                opacity: 1;
+                cursor: pointer;
+            }
+        "#;
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(8.0));
+        assert_eq!(
+            entries[0].style.padding.left,
+            LengthPercentage::length(16.0)
+        );
+        // border-radius: 4px then border-width: 0 — both write to the same field,
+        // so the later declaration wins.
+        assert_eq!(entries[0].style.border.top, LengthPercentage::length(0.0));
+        assert_eq!(entries[0].paint.font_size, Some(14.0));
+        assert_eq!(entries[0].paint.font_family.as_deref(), Some("sans-serif"));
+        assert_eq!(entries[0].paint.opacity, Some(1.0));
+        match entries[0].paint.background.clone().unwrap() {
+            BackgroundValue::Solid(c) => assert_eq!((c.r, c.g, c.b), (59, 130, 246)),
+            other => panic!("expected solid bg, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_e2e_real_world_card() {
+        let css = r#"
+            .card {
+                display: flex;
+                flex-direction: column;
+                padding: 24px;
+                margin: 16px;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: #e5e7eb;
+                gap: 16px;
+                max-width: 400px;
+                opacity: 0.95;
+            }
+            .card-title {
+                font-size: 20px;
+                font-weight: bold;
+                color: #1f2937;
+            }
+            .card-body {
+                color: #6b7280;
+                font-size: 14px;
+            }
+        "#;
+        let rules = parse_css(css).unwrap();
+        assert_eq!(rules.len(), 3);
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, Display::Flex);
+        assert_eq!(entries[0].style.flex_direction, FlexDirection::Column);
+        assert_eq!(entries[0].paint.opacity, Some(0.95));
+        assert_eq!(entries[1].paint.font_size, Some(20.0));
+        assert_eq!(entries[2].paint.font_size, Some(14.0));
+    }
+
+    #[test]
+    fn css_e2e_real_world_nav() {
+        let css = r#"
+            .nav {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 12px 24px;
+                background-color: #ffffff;
+            }
+            .nav-link {
+                color: #374151;
+                font-size: 16px;
+            }
+        "#;
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.justify_content,
+            Some(JustifyContent::SPACE_BETWEEN)
+        );
+        assert_eq!(entries[0].style.align_items, Some(AlignItems::CENTER));
+        assert_eq!(entries[0].style.padding.top, LengthPercentage::length(12.0));
+        assert_eq!(
+            entries[0].style.padding.left,
+            LengthPercentage::length(24.0)
+        );
+        match entries[0].paint.background.clone().unwrap() {
+            BackgroundValue::Solid(c) => assert_eq!((c.r, c.g, c.b), (255, 255, 255)),
+            other => panic!("expected white bg, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_e2e_min_max_width() {
+        let css = ".a { min-width: 100px; max-width: 500px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].style.min_size.width,
+            LengthPercentageAuto::length(100.0)
+        );
+        assert_eq!(
+            entries[0].style.max_size.width,
+            LengthPercentageAuto::length(500.0)
+        );
+    }
+
+    #[test]
+    fn css_e2e_convert_paint_properties() {
+        let css = ".a { color: red; background-color: blue; font-size: 18px; opacity: 0.8; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let paint = &entries[0].paint;
+        assert!(paint.color.is_some());
+        assert!(paint.background.is_some());
+        assert_eq!(paint.font_size, Some(18.0));
+        assert!((paint.opacity.unwrap() - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn css_e2e_vh_in_height() {
+        let css = ".a { height: 100vh; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 1920.0, 1080.0).unwrap();
+        assert_eq!(entries[0].style.size.height, Dimension::length(1080.0));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Selector key / codegen tests (~10 tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn css_codegen_class_selector_key() {
+        let css = ".my-class { display: flex; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, ".my-class");
+    }
+
+    #[test]
+    fn css_codegen_id_selector_key() {
+        let css = "#app { display: flex; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, "#app");
+    }
+
+    #[test]
+    fn css_codegen_tag_selector_key() {
+        let css = "div { display: flex; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, "div");
+    }
+
+    #[test]
+    fn css_codegen_universal_selector_key() {
+        let css = "* { box-sizing: border-box; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, "*");
+    }
+
+    #[test]
+    fn css_codegen_descendant_selector_key() {
+        let css = ".a .b { color: red; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, ".a .b");
+    }
+
+    #[test]
+    fn css_codegen_child_selector_key() {
+        let css = ".a > .b { color: red; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, ".a > .b");
+    }
+
+    #[test]
+    fn css_codegen_list_selector_key() {
+        let css = ".a, .b { color: red; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, ".a, .b");
+    }
+
+    #[test]
+    fn css_codegen_pseudo_class_selector_key() {
+        let css = ".btn:hover { color: red; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, ".btn:hover");
+    }
+
+    #[test]
+    fn css_codegen_not_selector_key() {
+        let css = ".a:not(.b) { color: red; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, ".a:not(.b)");
+    }
+
+    #[test]
+    fn css_codegen_attribute_selector_key() {
+        let css = r#"input[type="text"] { color: red; }"#;
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, r#"input[type="text"]"#);
+    }
+
+    #[test]
+    fn css_codegen_nth_child_selector_key() {
+        // selector_key for Nth { kind: FirstChild } always emits ":first-child"
+        // regardless of the An+B argument.
+        let css = "li:nth-child(2n+1) { color: red; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, "li:first-child");
+    }
+
+    #[test]
+    fn css_codegen_first_child_selector_key() {
+        let css = ".a:first-child { color: red; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, ".a:first-child");
+    }
+
+    #[test]
+    fn css_codegen_empty_selector_key() {
+        let css = ".a:empty { display: none; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].selector, ".a:empty");
+    }
+
+    #[test]
+    fn css_generate_taffy_code_display_flex() {
+        let css = ".a { display: flex; }";
+        let rules = parse_css(css).unwrap();
+        let code = generate_taffy_styles(&rules).unwrap();
+        assert!(code.contains("Display::Flex"));
+        assert!(code.contains("fn style_a"));
+    }
+
+    #[test]
+    fn css_generate_taffy_code_display_grid() {
+        let css = ".a { display: grid; }";
+        let rules = parse_css(css).unwrap();
+        let code = generate_taffy_styles(&rules).unwrap();
+        assert!(code.contains("Display::Grid"));
+    }
+
+    #[test]
+    fn css_generate_taffy_code_padding() {
+        let css = ".a { padding: 10px; }";
+        let rules = parse_css(css).unwrap();
+        let code = generate_taffy_styles(&rules).unwrap();
+        assert!(code.contains("padding"));
+    }
+
+    #[test]
+    fn css_generate_taffy_code_position() {
+        let css = ".a { position: absolute; }";
+        let rules = parse_css(css).unwrap();
+        let code = generate_taffy_styles(&rules).unwrap();
+        assert!(code.contains("Position::Absolute"));
+    }
+
+    #[test]
+    fn css_generate_taffy_code_overflow() {
+        let css = ".a { overflow: hidden; }";
+        let rules = parse_css(css).unwrap();
+        let code = generate_taffy_styles(&rules).unwrap();
+        assert!(code.contains("Overflow::Hidden"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  StyleMask edge cases (~5 tests)
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn css_mask_all_layout_properties() {
+        let css = ".full { display: flex; flex-direction: column; flex-wrap: wrap; justify-content: center; align-items: stretch; flex-grow: 1; flex-shrink: 0; width: 100px; height: 100px; min-width: 50px; min-height: 50px; max-width: 200px; max-height: 200px; padding: 8px; margin: 4px; border-radius: 2px; position: relative; top: 0; overflow: hidden; gap: 8px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let mask = &entries[0].mask;
+        assert!(mask.display);
+        assert!(mask.flex_direction);
+        assert!(mask.flex_wrap);
+        assert!(mask.justify_content);
+        assert!(mask.align_items);
+        assert!(mask.flex_grow);
+        assert!(mask.flex_shrink);
+        assert!(mask.width);
+        assert!(mask.height);
+        assert!(mask.min_width);
+        assert!(mask.min_height);
+        assert!(mask.max_width);
+        assert!(mask.max_height);
+        assert!(mask.padding);
+        assert!(mask.margin);
+        assert!(mask.border);
+        assert!(mask.position);
+        assert!(mask.inset);
+        assert!(mask.overflow);
+        assert!(mask.gap_width);
+        assert!(mask.gap_height);
+    }
+
+    #[test]
+    fn css_mask_is_empty_default() {
+        let mask = StyleMask::default();
+        assert!(mask.is_empty());
+    }
+
+    #[test]
+    fn css_mask_is_not_empty_when_set() {
+        let mut mask = StyleMask::default();
+        mask.width = true;
+        assert!(!mask.is_empty());
+    }
+
+    #[test]
+    fn css_mask_or_assign_merges() {
+        let mut a = StyleMask {
+            padding: true,
+            ..Default::default()
+        };
+        let b = StyleMask {
+            margin: true,
+            display: true,
+            ..Default::default()
+        };
+        a.or_assign(&b);
+        assert!(a.padding);
+        assert!(a.margin);
+        assert!(a.display);
+    }
+
+    #[test]
+    fn css_mask_or_assign_preserves_existing() {
+        let mut a = StyleMask {
+            width: true,
+            height: true,
+            ..Default::default()
+        };
+        let b = StyleMask {
+            width: true,
+            ..Default::default()
+        };
+        a.or_assign(&b);
+        assert!(a.width);
+        assert!(a.height);
+    }
 }

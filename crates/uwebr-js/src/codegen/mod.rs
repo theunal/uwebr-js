@@ -352,3 +352,360 @@ pub fn generate(
         warnings: Vec::new(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TranspileOptions;
+
+    fn codegen_module(module: &RustModule) -> String {
+        let options = TranspileOptions::default();
+        let mut codegen = CodeGen::new(&options);
+        codegen.generate_module(module)
+    }
+
+    fn codegen_stmt(stmt: &RsStmt) -> String {
+        let options = TranspileOptions::default();
+        let mut codegen = CodeGen::new(&options);
+        codegen.generate_stmt(stmt);
+        codegen.output.clone()
+    }
+
+    #[test]
+    fn js_codegen_let_statement() {
+        let stmt = RsStmt::Let("x".into(), Type::I64, RsExpr::Lit(RsLit::I64(42)));
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("let x: i64 = 42;"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_let_mut_statement() {
+        let stmt = RsStmt::LetMut("x".into(), Type::I64, RsExpr::Lit(RsLit::I64(0)));
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("let mut x: i64 = 0;"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_return_with_value() {
+        let stmt = RsStmt::Return(Some(RsExpr::Lit(RsLit::I64(42))));
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("return 42;"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_return_without_value() {
+        let stmt = RsStmt::Return(None);
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("return;"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_break() {
+        let stmt = RsStmt::Break;
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("break;"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_continue() {
+        let stmt = RsStmt::Continue;
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("continue;"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_if_no_else() {
+        let stmt = RsStmt::If(RsExpr::Ident("cond".into()), vec![RsStmt::Break], None);
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("if cond"), "got: {code}");
+        assert!(code.contains("break"), "got: {code}");
+        assert!(!code.contains("else"), "should have no else: {code}");
+    }
+
+    #[test]
+    fn js_codegen_if_else() {
+        let stmt = RsStmt::If(
+            RsExpr::Ident("cond".into()),
+            vec![RsStmt::Break],
+            Some(vec![RsStmt::Continue]),
+        );
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("if cond"), "got: {code}");
+        assert!(code.contains("else"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_while_loop() {
+        let stmt = RsStmt::While(RsExpr::Ident("running".into()), vec![RsStmt::Break]);
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("while running"), "got: {code}");
+        assert!(code.contains("break"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_for_loop() {
+        let stmt = RsStmt::For("i".into(), RsExpr::Lit(RsLit::I64(10)), vec![RsStmt::Break]);
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("for i in 0..10"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_for_in_loop() {
+        let stmt = RsStmt::ForIn(
+            "item".into(),
+            RsExpr::Ident("items".into()),
+            vec![RsStmt::Break],
+        );
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("for item in items"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_loop() {
+        let stmt = RsStmt::Loop(vec![RsStmt::Break]);
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("loop"), "got: {code}");
+        assert!(code.contains("break"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_empty_statement() {
+        let stmt = RsStmt::Empty;
+        let code = codegen_stmt(&stmt);
+        assert!(code.is_empty(), "empty should produce nothing: {code}");
+    }
+
+    #[test]
+    fn js_codegen_use_statement() {
+        let stmt = RsStmt::Use("std::collections::HashMap".into());
+        let code = codegen_stmt(&stmt);
+        assert!(
+            code.contains("use std::collections::HashMap;"),
+            "got: {code}"
+        );
+    }
+
+    #[test]
+    fn js_codegen_mod_statement() {
+        let stmt = RsStmt::Mod("my_module".into());
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("mod my_module;"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_async_block() {
+        let stmt = RsStmt::Async(vec![RsStmt::Return(Some(RsExpr::Lit(RsLit::I64(42))))]);
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("async {"), "got: {code}");
+        assert!(code.contains("return 42;"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_throw_statement() {
+        let stmt = RsStmt::Throw(RsExpr::Lit(RsLit::Str("error".into())));
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("Err"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_try_catch() {
+        let stmt = RsStmt::Try(vec![RsStmt::Break], "e".into(), vec![RsStmt::Continue]);
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("match"), "got: {code}");
+        assert!(code.contains("Ok"), "got: {code}");
+        assert!(code.contains("Err"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_match_simple() {
+        let stmt = RsStmt::Match(
+            RsExpr::Ident("x".into()),
+            vec![
+                MatchArm {
+                    pattern: Pattern::Lit(RsLit::I64(1)),
+                    guard: None,
+                    body: RsExpr::Lit(RsLit::Str("one".into())),
+                },
+                MatchArm {
+                    pattern: Pattern::Wildcard,
+                    guard: None,
+                    body: RsExpr::Lit(RsLit::Str("other".into())),
+                },
+            ],
+        );
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("match x"), "got: {code}");
+        assert!(code.contains("1 =>"), "got: {code}");
+        assert!(code.contains("_ =>"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_pub_function() {
+        let stmt = RsStmt::Pub(Box::new(RsStmt::Fn(FunctionDef {
+            name: "hello".into(),
+            params: vec![],
+            return_type: Type::Void,
+            body: vec![],
+            is_async: false,
+            generics: vec![],
+        })));
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("pub fn hello()"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_for_loop_with_init_and_update() {
+        let stmt = RsStmt::ForLoop {
+            init: Some(Box::new(RsStmt::LetMut(
+                "i".into(),
+                Type::I64,
+                RsExpr::Lit(RsLit::I64(0)),
+            ))),
+            test: Some(RsExpr::Binary(
+                BinOp::Lt,
+                Box::new(RsExpr::Ident("i".into())),
+                Box::new(RsExpr::Lit(RsLit::I64(10))),
+            )),
+            update: Some(RsExpr::Assign(
+                AssignOp::AddAssign,
+                Box::new(RsExpr::Ident("i".into())),
+                Box::new(RsExpr::Lit(RsLit::I64(1))),
+            )),
+            body: vec![RsStmt::Break],
+        };
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("let mut i"), "got: {code}");
+        assert!(code.contains("while"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_module_with_imports() {
+        let module = RustModule {
+            name: "test".into(),
+            imports: vec![RsImport {
+                path: "std::collections::HashMap".into(),
+                items: vec!["HashMap".into()],
+                is_glob: false,
+            }],
+            items: vec![RsStmt::Fn(FunctionDef {
+                name: "f".into(),
+                params: vec![],
+                return_type: Type::Void,
+                body: vec![],
+                is_async: false,
+                generics: vec![],
+            })],
+        };
+        let code = codegen_module(&module);
+        assert!(code.contains("fn f"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_module_with_module_name() {
+        let module = RustModule {
+            name: "test".into(),
+            imports: vec![],
+            items: vec![RsStmt::Fn(FunctionDef {
+                name: "f".into(),
+                params: vec![],
+                return_type: Type::Void,
+                body: vec![],
+                is_async: false,
+                generics: vec![],
+            })],
+        };
+        let options = TranspileOptions {
+            module_name: Some("my_mod".into()),
+            ..Default::default()
+        };
+        let result = generate(&module, &options).unwrap();
+        assert!(result.code.contains("mod my_mod"), "got: {}", result.code);
+    }
+
+    #[test]
+    fn js_codegen_pattern_or() {
+        let stmt = RsStmt::Match(
+            RsExpr::Ident("x".into()),
+            vec![MatchArm {
+                pattern: Pattern::Or(vec![
+                    Pattern::Lit(RsLit::I64(1)),
+                    Pattern::Lit(RsLit::I64(2)),
+                ]),
+                guard: None,
+                body: RsExpr::Lit(RsLit::Str("one or two".into())),
+            }],
+        );
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("1 | 2 =>"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_pattern_tuple() {
+        let stmt = RsStmt::Match(
+            RsExpr::Ident("x".into()),
+            vec![MatchArm {
+                pattern: Pattern::Tuple(vec![
+                    Pattern::Lit(RsLit::I64(1)),
+                    Pattern::Lit(RsLit::I64(2)),
+                ]),
+                guard: None,
+                body: RsExpr::Lit(RsLit::Str("pair".into())),
+            }],
+        );
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("(1, 2) =>"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_pattern_range() {
+        let stmt = RsStmt::Match(
+            RsExpr::Ident("x".into()),
+            vec![MatchArm {
+                pattern: Pattern::Range(
+                    Box::new(RsExpr::Lit(RsLit::I64(1))),
+                    Box::new(RsExpr::Lit(RsLit::I64(10))),
+                ),
+                guard: None,
+                body: RsExpr::Lit(RsLit::Str("range".into())),
+            }],
+        );
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("1..=10 =>"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_pattern_with_guard() {
+        let stmt = RsStmt::Match(
+            RsExpr::Ident("x".into()),
+            vec![MatchArm {
+                pattern: Pattern::Ident("n".into()),
+                guard: Some(RsExpr::Binary(
+                    BinOp::Gt,
+                    Box::new(RsExpr::Ident("n".into())),
+                    Box::new(RsExpr::Lit(RsLit::I64(0))),
+                )),
+                body: RsExpr::Lit(RsLit::Str("positive".into())),
+            }],
+        );
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("if"), "got: {code}");
+        assert!(code.contains("n if"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_expression_statement() {
+        let stmt = RsStmt::Expr(RsExpr::Call(
+            Box::new(RsExpr::Ident("do_something".into())),
+            vec![],
+        ));
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("doSomething();"), "got: {code}");
+    }
+
+    #[test]
+    fn js_codegen_await_stmt() {
+        let stmt = RsStmt::AwaitStmt(RsExpr::Ident("promise".into()));
+        let code = codegen_stmt(&stmt);
+        assert!(code.contains("promise.await;"), "got: {code}");
+    }
+}

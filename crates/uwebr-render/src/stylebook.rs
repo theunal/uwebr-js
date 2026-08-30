@@ -1610,4 +1610,497 @@ mod tests {
         // class=1 (not) + class=1 (.foo) + tag=1 (div) = (0,2,1) → 0*10000 + 2*100 + 1 = 201
         assert_eq!(spec, 201, "not(.foo) specificity should be (0,2,1)");
     }
+
+    // ── Complex matching edge-case tests ────────────────────────
+
+    #[test]
+    fn render_three_level_descendant_selector() {
+        let sb = StyleBook::parse("div > p > span > strong { color: red; }").unwrap();
+        let strong = make_el("strong", vec![], vec![]);
+        let span = make_el("span", vec![], vec![strong]);
+        let p = make_el("p", vec![], vec![span]);
+        let div = make_el("div", vec![], vec![p]);
+        let chain: Vec<&Element> = vec![
+            &div.children[0].children[0].children[0],
+            &div.children[0].children[0],
+            &div.children[0],
+            &div,
+        ];
+
+        let m = sb.match_full(chain[0], &chain[1..], 0);
+        assert!(
+            m.paint.color.is_some(),
+            "div > p > span > strong should match the strong"
+        );
+    }
+
+    #[test]
+    fn render_four_level_descendant_selector() {
+        let sb = StyleBook::parse("div .outer .inner .leaf { color: blue; }").unwrap();
+        let leaf = make_el(
+            "span",
+            vec![("class".into(), PropValue::String("leaf".into()))],
+            vec![],
+        );
+        let inner = make_el(
+            "div",
+            vec![("class".into(), PropValue::String("inner".into()))],
+            vec![leaf],
+        );
+        let outer = make_el(
+            "div",
+            vec![("class".into(), PropValue::String("outer".into()))],
+            vec![inner],
+        );
+        let div = make_el("div", vec![], vec![outer]);
+
+        let m = sb.match_full(
+            &div.children[0].children[0].children[0],
+            &[&div.children[0].children[0], &div.children[0], &div],
+            0,
+        );
+        assert!(
+            m.paint.color.is_some(),
+            "4-level descendant should match leaf"
+        );
+    }
+
+    #[test]
+    fn render_nth_last_child_an_plus_b() {
+        let sb = StyleBook::parse("li:nth-last-child(2n) { color: red; }").unwrap();
+        let c0 = make_el("li", vec![], vec![]);
+        let c1 = make_el("li", vec![], vec![]);
+        let c2 = make_el("li", vec![], vec![]);
+        let c3 = make_el("li", vec![], vec![]);
+        let c4 = make_el("li", vec![], vec![]);
+        let parent = make_el("ul", vec![], vec![c0, c1, c2, c3, c4]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        // nth-last-child(2n): position from end: 1=last,2=second-last,...
+        // 2n means even from end: positions 2,4 match
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_none()); // 1st from end (pos 5)
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_some()); // 2nd from end (pos 4)
+        assert!(sb
+            .match_full(children[2], &[&parent], 2)
+            .paint
+            .color
+            .is_none()); // 3rd from end (pos 3)
+        assert!(sb
+            .match_full(children[3], &[&parent], 3)
+            .paint
+            .color
+            .is_some()); // 4th from end (pos 2)
+        assert!(sb
+            .match_full(children[4], &[&parent], 4)
+            .paint
+            .color
+            .is_none()); // 5th from end (pos 1)
+    }
+
+    #[test]
+    fn render_nth_of_type_complex_an_plus_b() {
+        let sb = StyleBook::parse("span:nth-of-type(2n+1) { color: green; }").unwrap();
+        let div1 = make_el("div", vec![], vec![]);
+        let s1 = make_el("span", vec![], vec![]);
+        let div2 = make_el("div", vec![], vec![]);
+        let s2 = make_el("span", vec![], vec![]);
+        let s3 = make_el("span", vec![], vec![]);
+        let parent = make_el("div", vec![], vec![div1, s1, div2, s2, s3]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_none()); // div
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_some()); // 1st span (2*1+1=3? no, position 1 among spans)
+        assert!(sb
+            .match_full(children[2], &[&parent], 2)
+            .paint
+            .color
+            .is_none()); // div
+        assert!(sb
+            .match_full(children[3], &[&parent], 3)
+            .paint
+            .color
+            .is_none()); // 2nd span (even among spans)
+        assert!(sb
+            .match_full(children[4], &[&parent], 4)
+            .paint
+            .color
+            .is_some()); // 3rd span (odd among spans)
+    }
+
+    #[test]
+    fn render_not_with_complex_inner() {
+        let sb = StyleBook::parse("div:not(.a > .b) { color: red; }").unwrap();
+        let b = make_el(
+            "span",
+            vec![("class".into(), PropValue::String("b".into()))],
+            vec![],
+        );
+        let a = make_el(
+            "div",
+            vec![("class".into(), PropValue::String("a".into()))],
+            vec![b],
+        );
+        let other = make_el("div", vec![], vec![]);
+
+        let m_b = sb.match_full(&a.children[0], &[&a], 0);
+        assert!(
+            m_b.paint.color.is_none(),
+            ":not(.a > .b) should not match b inside .a"
+        );
+
+        let m_other = sb.match_full(&other, &[], 0);
+        assert!(
+            m_other.paint.color.is_some(),
+            ":not(.a > .b) should match div without .a parent"
+        );
+    }
+
+    #[test]
+    fn render_focus_within_nested() {
+        uwebr_core::state::clear_element_state();
+        let sb = StyleBook::parse("div:focus-within { background-color: blue; }").unwrap();
+        let inner = make_el("span", vec![], vec![]);
+        let parent = make_el("div", vec![], vec![inner]);
+
+        // focus-within requires a non-empty parent chain AND any_focused() true
+        uwebr_core::state::set_focused(Some(5));
+        let m = sb.match_full(&parent, &[&parent], 1);
+        assert!(
+            m.paint.background.is_some(),
+            ":focus-within should match when any element is focused and parent_chain is non-empty"
+        );
+        uwebr_core::state::clear_element_state();
+    }
+
+    #[test]
+    fn render_attribute_data_role_button() {
+        let sb = StyleBook::parse(r#"[data-role="button"] { opacity: 0.9; }"#).unwrap();
+        let btn = make_el(
+            "div",
+            vec![("data-role".into(), PropValue::String("button".into()))],
+            vec![],
+        );
+        let link = make_el(
+            "div",
+            vec![("data-role".into(), PropValue::String("link".into()))],
+            vec![],
+        );
+        assert!(sb.match_full(&btn, &[], 0).paint.opacity.is_some());
+        assert!(sb.match_full(&link, &[], 0).paint.opacity.is_none());
+    }
+
+    #[test]
+    fn render_attribute_href_prefix_http() {
+        let sb = StyleBook::parse(r#"[href^="https://"] { opacity: 0.8; }"#).unwrap();
+        let secure = make_el(
+            "a",
+            vec![(
+                "href".into(),
+                PropValue::String("https://example.com".into()),
+            )],
+            vec![],
+        );
+        let insecure = make_el(
+            "a",
+            vec![(
+                "href".into(),
+                PropValue::String("http://example.com".into()),
+            )],
+            vec![],
+        );
+        assert!(sb.match_full(&secure, &[], 0).paint.opacity.is_some());
+        assert!(sb.match_full(&insecure, &[], 0).paint.opacity.is_none());
+    }
+
+    #[test]
+    fn render_combined_class_and_tag() {
+        let sb = StyleBook::parse(".active { color: red; }").unwrap();
+        let active_div = make_el(
+            "div",
+            vec![("class".into(), PropValue::String("active".into()))],
+            vec![],
+        );
+        let inactive_div = make_el("div", vec![], vec![]);
+
+        assert!(
+            sb.match_full(&active_div, &[], 0).paint.color.is_some(),
+            ".active should match active div"
+        );
+        assert!(
+            sb.match_full(&inactive_div, &[], 0).paint.color.is_none(),
+            ".active should not match inactive div"
+        );
+    }
+
+    #[test]
+    fn render_combined_pseudo_first_child() {
+        let sb = StyleBook::parse("p:first-child { color: red; }").unwrap();
+        let first_p = make_el("p", vec![], vec![]);
+        let second_p = make_el("p", vec![], vec![]);
+        let div = make_el("div", vec![], vec![first_p, second_p]);
+        let children: Vec<&Element> = div.children.iter().collect();
+
+        assert!(
+            sb.match_full(children[0], &[&div], 0).paint.color.is_some(),
+            "p:first-child should match first p"
+        );
+        assert!(
+            sb.match_full(children[1], &[&div], 1).paint.color.is_none(),
+            "p:first-child should not match second p"
+        );
+    }
+
+    #[test]
+    fn render_important_same_specificity_later_wins() {
+        let sb = StyleBook::parse(".a { color: red !important; } .b { color: green !important; }")
+            .unwrap();
+        let el = make_el(
+            "div",
+            vec![("class".into(), PropValue::String("a b".into()))],
+            vec![],
+        );
+        let m = sb.match_full(&el, &[], 0);
+        let c = m.paint.color.unwrap();
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (0, 128, 0),
+            "later !important with same specificity should win"
+        );
+    }
+
+    #[test]
+    fn render_cascade_order_later_rules_win() {
+        let sb = StyleBook::parse(".box { color: red; } .box { color: blue; }").unwrap();
+        let el = make_element(
+            "div",
+            vec![("class".into(), PropValue::String("box".into()))],
+        );
+        let m = sb.match_full(&el, &[], 0);
+        let c = m.paint.color.unwrap();
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (0, 0, 255),
+            "later rule should override earlier rule of same specificity"
+        );
+    }
+
+    #[test]
+    fn render_empty_stylesheet_returns_no_styles() {
+        let sb = StyleBook::parse("").unwrap();
+        assert!(sb.is_empty());
+        let el = make_element("div", vec![]);
+        let (style, matched) = sb.match_element(&el);
+        assert!(!matched);
+        let default: taffy::Style = taffy::Style::default();
+        assert_eq!(style, default);
+    }
+
+    #[test]
+    fn render_not_with_empty_pseudo() {
+        let sb = StyleBook::parse("div:not(:empty) { color: red; }").unwrap();
+        let empty = make_el("div", vec![], vec![]);
+        let nonempty = make_el("div", vec![], vec![make_el("span", vec![], vec![])]);
+        let parent = make_el("div", vec![], vec![empty, nonempty]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(
+            sb.match_full(children[0], &[&parent], 0)
+                .paint
+                .color
+                .is_none(),
+            "div:not(:empty) should not match empty div"
+        );
+        assert!(
+            sb.match_full(children[1], &[&parent], 1)
+                .paint
+                .color
+                .is_some(),
+            "div:not(:empty) should match non-empty div"
+        );
+    }
+
+    #[test]
+    fn render_descendant_with_tag_and_class() {
+        let sb = StyleBook::parse(".card .inner { color: red; }").unwrap();
+        let inner = make_el(
+            "span",
+            vec![("class".into(), PropValue::String("inner".into()))],
+            vec![],
+        );
+        let card = make_el(
+            "div",
+            vec![("class".into(), PropValue::String("card".into()))],
+            vec![inner],
+        );
+        let m = sb.match_full(&card.children[0], &[&card], 0);
+        assert!(m.paint.color.is_some(), ".card .inner should match");
+    }
+
+    #[test]
+    fn render_child_selector_chain() {
+        let sb = StyleBook::parse("div > p > span { color: red; }").unwrap();
+        let span = make_el("span", vec![], vec![]);
+        let p = make_el("p", vec![], vec![span]);
+        let div = make_el("div", vec![], vec![p]);
+
+        let m = sb.match_full(&div.children[0].children[0], &[&div.children[0], &div], 0);
+        assert!(m.paint.color.is_some(), "div > p > span should match");
+    }
+
+    #[test]
+    fn render_nth_child_odd() {
+        let sb = StyleBook::parse("li:nth-child(odd) { color: red; }").unwrap();
+        let c0 = make_el("li", vec![], vec![]);
+        let c1 = make_el("li", vec![], vec![]);
+        let c2 = make_el("li", vec![], vec![]);
+        let c3 = make_el("li", vec![], vec![]);
+        let parent = make_el("ul", vec![], vec![c0, c1, c2, c3]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_some()); // pos 1 (odd)
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_none()); // pos 2 (even)
+        assert!(sb
+            .match_full(children[2], &[&parent], 2)
+            .paint
+            .color
+            .is_some()); // pos 3 (odd)
+        assert!(sb
+            .match_full(children[3], &[&parent], 3)
+            .paint
+            .color
+            .is_none()); // pos 4 (even)
+    }
+
+    #[test]
+    fn render_nth_child_3n_plus_2() {
+        let sb = StyleBook::parse("li:nth-child(3n+2) { color: red; }").unwrap();
+        let els: Vec<Element> = (0..7).map(|_| make_el("li", vec![], vec![])).collect();
+        let parent = make_el("ul", vec![], els);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        // Matches positions 2, 5, 8, ...
+        assert!(sb
+            .match_full(children[0], &[&parent], 0)
+            .paint
+            .color
+            .is_none()); // pos 1
+        assert!(sb
+            .match_full(children[1], &[&parent], 1)
+            .paint
+            .color
+            .is_some()); // pos 2
+        assert!(sb
+            .match_full(children[2], &[&parent], 2)
+            .paint
+            .color
+            .is_none()); // pos 3
+        assert!(sb
+            .match_full(children[3], &[&parent], 3)
+            .paint
+            .color
+            .is_none()); // pos 4
+        assert!(sb
+            .match_full(children[4], &[&parent], 4)
+            .paint
+            .color
+            .is_some()); // pos 5
+        assert!(sb
+            .match_full(children[5], &[&parent], 5)
+            .paint
+            .color
+            .is_none()); // pos 6
+        assert!(sb
+            .match_full(children[6], &[&parent], 6)
+            .paint
+            .color
+            .is_none()); // pos 7
+    }
+
+    #[test]
+    fn render_last_child_with_class() {
+        let sb = StyleBook::parse("li:last-child { color: red; }").unwrap();
+        let first = make_el(
+            "li",
+            vec![("class".into(), PropValue::String("special".into()))],
+            vec![],
+        );
+        let last = make_el(
+            "li",
+            vec![("class".into(), PropValue::String("special".into()))],
+            vec![],
+        );
+        let parent = make_el("ul", vec![], vec![first, last]);
+        let children: Vec<&Element> = parent.children.iter().collect();
+
+        assert!(
+            sb.match_full(children[0], &[&parent], 0)
+                .paint
+                .color
+                .is_none(),
+            "first child should not match :last-child"
+        );
+        assert!(
+            sb.match_full(children[1], &[&parent], 1)
+                .paint
+                .color
+                .is_some(),
+            "last child should match :last-child"
+        );
+    }
+
+    #[test]
+    fn render_child_selector_direct_only_no_skip() {
+        let sb = StyleBook::parse("section > .btn { color: red; }").unwrap();
+        let btn = make_el(
+            "span",
+            vec![("class".into(), PropValue::String("btn".into()))],
+            vec![],
+        );
+        let article = make_el("article", vec![], vec![]);
+        let section = make_el("section", vec![], vec![article]);
+
+        let m = sb.match_full(&btn, &[&section.children[0], &section], 0);
+        assert!(
+            m.paint.color.is_none(),
+            "section > .btn should not match when section is grandparent not parent"
+        );
+    }
+
+    #[test]
+    fn render_disabled_string_false_not_disabled() {
+        let sb = StyleBook::parse("button:disabled { opacity: 0.5; }").unwrap();
+        let el = make_element(
+            "button",
+            vec![("disabled".into(), PropValue::String("false".into()))],
+        );
+        let m = sb.match_full(&el, &[], 0);
+        assert!(
+            m.paint.opacity.is_none(),
+            "disabled='false' should not be treated as disabled"
+        );
+    }
 }

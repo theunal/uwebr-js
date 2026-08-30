@@ -583,13 +583,176 @@ mod tests {
 
     #[test]
     fn test_getter_returns_value_not_unit() {
-        // `RsStmt::Expr` is emitted with a trailing semicolon, so the body would
-        // evaluate to `()` and not match the declared return type.
         let (code, _) = lower("let count = 0;");
         let getter = code.split("fn __state_count").nth(1).unwrap();
         assert!(
             getter.contains("return "),
             "getter must return a value:\n{getter}"
         );
+    }
+
+    #[test]
+    fn js_state_detection_with_nested_functions() {
+        let (code, states) = lower(
+            "let x = 1; function outer() { function inner() { return x + 1; } return inner(); }",
+        );
+        assert_eq!(states.len(), 1);
+        assert!(code.contains("__state_x()"));
+        assert!(code.contains("__set_state_x("));
+    }
+
+    #[test]
+    fn js_state_detection_with_closure() {
+        let (code, _) = lower(r#"let count = 0; const increment = () => { count++; }"#);
+        assert!(code.contains("__set_state_count("));
+        assert!(code.contains("__state_count()"));
+    }
+
+    #[test]
+    fn js_compound_assignment_rewriting() {
+        let (code, _) = lower("let x = 0; function f() { x += 5; }");
+        let f = code.split("fn f").nth(1).unwrap();
+        assert!(f.contains("__set_state_x("));
+    }
+
+    #[test]
+    fn js_no_state_no_lowering() {
+        let (code, states) = lower("function add(a, b) { return a + b; }");
+        assert!(states.is_empty());
+        assert!(code.contains("fn add"));
+        assert!(!code.contains("__state_"));
+    }
+
+    #[test]
+    fn js_multiple_state_declarations() {
+        let (code, states) = lower("let a = 1; let b = 'hi'; let c = true;");
+        assert_eq!(states.len(), 3);
+        assert_eq!(states[0].name, "a");
+        assert_eq!(states[1].name, "b");
+        assert_eq!(states[2].name, "c");
+        assert!(code.contains("__state_a"));
+        assert!(code.contains("__state_b"));
+        assert!(code.contains("__state_c"));
+    }
+
+    #[test]
+    fn js_state_with_binary_expression_init() {
+        let (_, states) = lower("let result = 1 + 2;");
+        assert_eq!(states.len(), 1);
+        assert!(matches!(states[0].ty, Type::I64 | Type::F64));
+    }
+
+    #[test]
+    fn js_state_with_string_concat_init() {
+        let (_, states) = lower("let msg = 'hello' + ' world';");
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].ty, Type::String);
+    }
+
+    #[test]
+    fn js_state_mixed_mutable_immutable() {
+        let (_, states) = lower("let x = 1; const y = 2; var z = 3;");
+        assert_eq!(states.len(), 3);
+        let x = states.iter().find(|s| s.name == "x").unwrap();
+        assert!(x.mutable);
+        let y = states.iter().find(|s| s.name == "y").unwrap();
+        assert!(!y.mutable);
+        let z = states.iter().find(|s| s.name == "z").unwrap();
+        assert!(z.mutable);
+    }
+
+    #[test]
+    fn js_expression_rewriting_preserves_binary() {
+        let (code, _) = lower("let x = 0; function f() { return x + x * 2; }");
+        let f = code.split("fn f").nth(1).unwrap();
+        assert!(f.contains("__state_x()"));
+    }
+
+    #[test]
+    fn js_expression_rewriting_preserves_call() {
+        let (code, _) = lower("let x = 0; function f() { return Math.abs(x); }");
+        let f = code.split("fn f").nth(1).unwrap();
+        assert!(f.contains("__state_x()"));
+    }
+
+    #[test]
+    fn js_state_with_float_init() {
+        let (_, states) = lower("let pi = 3.14;");
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].ty, Type::F64);
+    }
+
+    #[test]
+    fn js_getter_name_format() {
+        let s = ScriptState {
+            name: "counter".into(),
+            ty: Type::I64,
+            init: RsExpr::Lit(RsLit::I64(0)),
+            mutable: true,
+        };
+        assert_eq!(s.getter(), "__state_counter");
+    }
+
+    #[test]
+    fn js_setter_name_format() {
+        let s = ScriptState {
+            name: "counter".into(),
+            ty: Type::I64,
+            init: RsExpr::Lit(RsLit::I64(0)),
+            mutable: true,
+        };
+        assert_eq!(s.setter(), "__set_state_counter");
+    }
+
+    #[test]
+    fn js_state_in_if_branch_rewriting() {
+        let (code, _) = lower("let x = 0; function f() { if (x > 0) { return x; } return 0; }");
+        let f = code.split("fn f").nth(1).unwrap();
+        assert!(f.contains("__state_x()"));
+    }
+
+    #[test]
+    fn js_state_in_while_loop() {
+        let (code, _) = lower("let n = 10; function countdown() { while (n > 0) { n--; } }");
+        let cd = code.split("fn countdown").nth(1).unwrap();
+        assert!(cd.contains("__state_n()"));
+        assert!(cd.contains("__set_state_n("));
+    }
+
+    #[test]
+    fn js_state_in_for_loop() {
+        let (code, _) =
+            lower("let n = 10; function f() { for (let i = 0; i < n; i++) { console.log(i); } }");
+        let f = code.split("fn f").nth(1).unwrap();
+        assert!(f.contains("__state_n()"));
+    }
+
+    #[test]
+    fn js_state_with_ternary_expression() {
+        let (code, _) = lower("let x = 5; function f() { return x > 0 ? x : 0; }");
+        let f = code.split("fn f").nth(1).unwrap();
+        assert!(f.contains("__state_x()"));
+    }
+
+    #[test]
+    fn js_state_only_const_lowered() {
+        let (_, states) = lower("const MAX = 100;");
+        assert_eq!(states.len(), 1);
+        assert!(!states[0].mutable);
+        assert_eq!(states[0].name, "MAX");
+    }
+
+    #[test]
+    fn js_function_with_multiple_state_refs() {
+        let (code, _) = lower("let a = 1; let b = 2; function sum() { return a + b; }");
+        let sum = code.split("fn sum").nth(1).unwrap();
+        assert!(sum.contains("__state_a()"));
+        assert!(sum.contains("__state_b()"));
+    }
+
+    #[test]
+    fn js_state_with_unary_negation() {
+        let (_, states) = lower("let x = -5;");
+        assert_eq!(states.len(), 1);
     }
 }

@@ -824,4 +824,791 @@ mod tests {
         assert_eq!(ids.len(), sorted.len(), "node ids must be unique");
         assert_eq!(nodes[0].node_id, 0, "root is pre-order index 0");
     }
+
+    // ── Layout edge-case tests ──────────────────────────────────
+
+    #[test]
+    fn render_flex_wrap_wrap() {
+        let css = ".row { display: flex; flex-direction: row; flex-wrap: wrap; width: 100px; } .item { width: 60px; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 200.0, 200.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        assert!(nodes.len() >= 4, "root + 3 items");
+        let item_layouts: Vec<_> = nodes
+            .iter()
+            .filter(|n| {
+                matches!(n.element.node_type, NodeType::Element(ref t) if t == "div")
+                    && n.depth == 1
+            })
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(item_layouts.len(), 3);
+        let y0 = item_layouts[0].y;
+        let y1 = item_layouts[1].y;
+        let y2 = item_layouts[2].y;
+        assert!(
+            y2 > y1 || y1 > y0,
+            "wrap should cause some items to move to next line"
+        );
+    }
+
+    #[test]
+    fn render_flex_wrap_reverse() {
+        let css = ".row { display: flex; flex-direction: row; flex-wrap: wrap-reverse; width: 100px; } .item { width: 60px; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 200.0, 200.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let item_layouts: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(item_layouts.len(), 2);
+        let items_with_y: Vec<_> = item_layouts.iter().map(|l| l.y).collect();
+        if items_with_y[0] != items_with_y[1] {
+            let first_y = items_with_y[0];
+            let second_y = items_with_y[1];
+            assert!(
+                second_y < first_y,
+                "wrap-reverse should place wrapped items above"
+            );
+        }
+    }
+
+    #[test]
+    fn render_flex_grow_distribution() {
+        let css = ".row { display: flex; flex-direction: row; width: 300px; } .a { flex-grow: 1; height: 20px; } .b { flex-grow: 2; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("a".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("b".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 400.0, 200.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(items.len(), 2);
+        assert!(
+            items[0].width > 0.0,
+            "first item should have width from flex-grow"
+        );
+        assert!(
+            items[1].width > 0.0,
+            "second item should have width from flex-grow"
+        );
+        let ratio = items[1].width / items[0].width;
+        assert!(
+            (ratio - 2.0).abs() < 0.5,
+            "flex-grow 2 should be ~2x flex-grow 1, got ratio {ratio}"
+        );
+    }
+
+    #[test]
+    fn render_flex_shrink_distribution() {
+        let css = ".row { display: flex; flex-direction: row; width: 100px; } .item { width: 80px; height: 20px; flex-shrink: 1; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 200.0, 200.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(items.len(), 2);
+        for item in &items {
+            assert!(
+                item.width <= 80.0,
+                "each item should shrink from 80px, got {}",
+                item.width
+            );
+            assert!(item.width > 0.0, "each item should have positive width");
+        }
+    }
+
+    #[test]
+    fn render_percentage_width() {
+        let css = ".parent { width: 400px; display: flex; } .child { width: 50%; height: 100px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("parent".into()))],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("child".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            (child.layout.width - 200.0).abs() < 1.0,
+            "50% of 400px should be ~200, got {}",
+            child.layout.width
+        );
+        assert_eq!(child.layout.height, 100.0);
+    }
+
+    #[test]
+    fn render_percentage_height() {
+        let css = ".parent { height: 400px; display: flex; flex-direction: column; } .child { height: 50%; width: 100px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("parent".into()))],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("child".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            (child.layout.height - 200.0).abs() < 1.0,
+            "50% of 400px should be ~200, got {}",
+            child.layout.height
+        );
+    }
+
+    #[test]
+    fn render_min_width_clamping() {
+        let css = ".item { min-width: 100px; width: 50px; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("item".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            child.layout.width >= 100.0,
+            "min-width:100px should clamp width to >= 100, got {}",
+            child.layout.width
+        );
+    }
+
+    #[test]
+    fn render_max_width_clamping() {
+        let css = ".item { max-width: 80px; width: 200px; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("item".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            child.layout.width <= 80.0,
+            "max-width:80px should clamp width to <= 80, got {}",
+            child.layout.width
+        );
+    }
+
+    #[test]
+    fn render_min_height_clamping() {
+        let css = ".item { min-height: 150px; height: 50px; width: 100px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("item".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            child.layout.height >= 150.0,
+            "min-height:150px should clamp height, got {}",
+            child.layout.height
+        );
+    }
+
+    #[test]
+    fn render_max_height_clamping() {
+        let css = ".item { max-height: 60px; height: 200px; width: 100px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("item".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            child.layout.height <= 60.0,
+            "max-height:60px should clamp height, got {}",
+            child.layout.height
+        );
+    }
+
+    #[test]
+    fn render_align_self_overrides_parent() {
+        let css = ".row { display: flex; flex-direction: row; align-items: flex-start; height: 200px; } .center { align-self: center; width: 50px; height: 50px; } .start { width: 50px; height: 50px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("start".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("center".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 400.0, 300.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes.iter().filter(|n| n.depth == 1).collect();
+        assert_eq!(items.len(), 2);
+        let y_start = items[0].layout.y;
+        let y_center = items[1].layout.y;
+        assert!(y_center > y_start, "align-self:center should push item down from flex-start, start_y={y_start}, center_y={y_center}");
+    }
+
+    #[test]
+    fn render_flex_basis_with_grow() {
+        let css = ".row { display: flex; flex-direction: row; width: 300px; } .a { flex-basis: 50px; flex-grow: 1; height: 20px; } .b { flex-basis: 50px; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("a".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("b".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 400.0, 200.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(items.len(), 2);
+        assert!(
+            items[0].width > items[1].width,
+            "flex-grow should give item a more space than b"
+        );
+    }
+
+    #[test]
+    fn render_flex_basis_with_shrink() {
+        let css = ".row { display: flex; flex-direction: row; width: 200px; } .a { width: 120px; flex-shrink: 1; height: 20px; } .b { width: 120px; flex-shrink: 1; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("a".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("b".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 400.0, 200.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(items.len(), 2);
+        let total: f32 = items.iter().map(|l| l.width).sum();
+        assert!(total > 0.0, "total width should be positive, got {total}");
+        assert!(
+            total <= 200.0,
+            "total width should not exceed parent, got {total}"
+        );
+    }
+
+    #[test]
+    fn render_nested_flex_containers() {
+        let css = ".outer { display: flex; flex-direction: column; width: 400px; } .inner { display: flex; flex-direction: row; height: 50px; } .item { width: 100px; height: 30px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("outer".into()))],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("inner".into()))],
+                children: vec![
+                    Element {
+                        node_type: NodeType::Element("div".into()),
+                        props: vec![("class".into(), PropValue::String("item".into()))],
+                        children: vec![],
+                    },
+                    Element {
+                        node_type: NodeType::Element("div".into()),
+                        props: vec![("class".into(), PropValue::String("item".into()))],
+                        children: vec![],
+                    },
+                ],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        assert!(nodes.len() >= 4, "outer + inner + 2 items");
+        let inner = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert_eq!(inner.layout.height, 50.0);
+        let items: Vec<_> = nodes.iter().filter(|n| n.depth == 2).collect();
+        assert_eq!(items.len(), 2);
+        let item0_y = items[0].layout.y;
+        let item1_y = items[1].layout.y;
+        assert_eq!(item0_y, item1_y, "items in a row should share the same y");
+        assert!(
+            items[1].layout.x > items[0].layout.x,
+            "row items should be side by side"
+        );
+    }
+
+    #[test]
+    fn render_zero_size_element() {
+        let sb = StyleBook::parse(".z { width: 0px; height: 0px; }").unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("z".into()))],
+            children: vec![],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let info = engine.get_layout_info(node).unwrap();
+        assert_eq!(info.width, 0.0);
+        assert_eq!(info.height, 0.0);
+    }
+
+    #[test]
+    fn render_very_large_element() {
+        let css = ".big { width: 10000px; height: 10000px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("big".into()))],
+            children: vec![],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let info = engine.get_layout_info(node).unwrap();
+        assert_eq!(info.width, 10000.0);
+        assert_eq!(info.height, 10000.0);
+    }
+
+    #[test]
+    fn render_mixed_flex_direction_children() {
+        let css = ".row { display: flex; flex-direction: row; width: 400px; } .col { display: flex; flex-direction: column; width: 200px; height: 100px; } .item { width: 50px; height: 30px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("col".into()))],
+                    children: vec![
+                        Element {
+                            node_type: NodeType::Element("div".into()),
+                            props: vec![("class".into(), PropValue::String("item".into()))],
+                            children: vec![],
+                        },
+                        Element {
+                            node_type: NodeType::Element("div".into()),
+                            props: vec![("class".into(), PropValue::String("item".into()))],
+                            children: vec![],
+                        },
+                    ],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let col = nodes
+            .iter()
+            .find(|n| {
+                n.depth == 1
+                    && n.element.props.iter().any(|(k, v)| {
+                        k == "class" && matches!(v, PropValue::String(s) if s == "col")
+                    })
+            })
+            .unwrap();
+        assert!(col.layout.width >= 200.0);
+        let col_items: Vec<_> = nodes.iter().filter(|n| n.depth == 2).collect();
+        assert_eq!(col_items.len(), 2);
+        assert!(
+            col_items[1].layout.y > col_items[0].layout.y,
+            "column children should stack vertically"
+        );
+    }
+
+    #[test]
+    fn render_flex_grow_three_siblings() {
+        let css = ".row { display: flex; flex-direction: row; width: 300px; } .a { flex-grow: 1; height: 20px; } .b { flex-grow: 1; height: 20px; } .c { flex-grow: 1; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("a".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("b".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("c".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 400.0, 200.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(items.len(), 3);
+        let total: f32 = items.iter().map(|l| l.width).sum();
+        assert!(
+            total > 290.0,
+            "three equal-grow items should fill the row, total={total}"
+        );
+        for item in &items {
+            assert!(
+                item.width > 90.0,
+                "each item should be ~100px, got {}",
+                item.width
+            );
+        }
+    }
+
+    #[test]
+    fn render_min_max_width_combined() {
+        let css = ".item { min-width: 80px; max-width: 120px; width: 500px; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("item".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            child.layout.width >= 80.0 && child.layout.width <= 120.0,
+            "width should be clamped to [80, 120], got {}",
+            child.layout.width
+        );
+    }
+
+    #[test]
+    fn render_deeply_nested_flex() {
+        let mut el = make_text_element("leaf");
+        for _ in 0..10 {
+            el = Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![],
+                children: vec![el],
+            };
+        }
+        let mut engine = LayoutEngine::new();
+        let root = engine.build_tree(&el, &StyleBook::empty()).unwrap();
+        engine.compute(root, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(root, &el, &StyleBook::empty());
+        assert_eq!(nodes.len(), 11, "10 nested divs + 1 leaf = 11 nodes");
+        assert_eq!(nodes[0].depth, 0);
+        assert_eq!(nodes.last().unwrap().depth, 10);
+    }
+
+    #[test]
+    fn render_column_direction_with_flex_grow() {
+        let css = ".col { display: flex; flex-direction: column; height: 300px; } .a { flex-grow: 1; width: 50px; } .b { flex-grow: 2; width: 50px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("col".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("a".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("b".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 400.0, 400.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(items.len(), 2);
+        assert!(
+            items[1].height > items[0].height,
+            "flex-grow:2 should be taller than flex-grow:1"
+        );
+        let ratio = items[1].height / items[0].height;
+        assert!(
+            (ratio - 2.0).abs() < 0.5,
+            "height ratio should be ~2, got {ratio}"
+        );
+    }
+
+    #[test]
+    fn render_row_wrap_with_padding() {
+        let css = ".row { display: flex; flex-direction: row; flex-wrap: wrap; width: 120px; padding: 10px; } .item { width: 50px; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("row".into()))],
+            children: vec![
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+                Element {
+                    node_type: NodeType::Element("div".into()),
+                    props: vec![("class".into(), PropValue::String("item".into()))],
+                    children: vec![],
+                },
+            ],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 400.0, 400.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.depth == 1)
+            .map(|n| n.layout)
+            .collect();
+        assert_eq!(items.len(), 3);
+        let first_item_x = items[0].x;
+        assert!(
+            first_item_x >= 10.0,
+            "padding should offset first item, x={first_item_x}"
+        );
+    }
+
+    #[test]
+    fn render_flex_basis_overrides_width() {
+        let css = ".item { width: 100px; height: 20px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("item".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        assert!(
+            (child.layout.width - 100.0).abs() < 1.0,
+            "width:100px should apply, got {}",
+            child.layout.width
+        );
+    }
+
+    #[test]
+    fn render_align_self_center_in_column() {
+        let css = ".col { display: flex; flex-direction: column; align-items: flex-start; width: 400px; } .center { align-self: center; width: 80px; height: 30px; }";
+        let sb = StyleBook::parse(css).unwrap();
+        let root = Element {
+            node_type: NodeType::Element("div".into()),
+            props: vec![("class".into(), PropValue::String("col".into()))],
+            children: vec![Element {
+                node_type: NodeType::Element("div".into()),
+                props: vec![("class".into(), PropValue::String("center".into()))],
+                children: vec![],
+            }],
+        };
+        let mut engine = LayoutEngine::new();
+        let node = engine.build_tree(&root, &sb).unwrap();
+        engine.compute(node, 800.0, 600.0).unwrap();
+        let nodes = engine.collect_positioned_nodes(node, &root, &sb);
+        let child = nodes.iter().find(|n| n.depth == 1).unwrap();
+        let expected_x = (400.0 - 80.0) / 2.0;
+        assert!(
+            (child.layout.x - expected_x).abs() < 2.0,
+            "align-self:center should center horizontally, got x={}, expected ~{expected_x}",
+            child.layout.x
+        );
+    }
 }

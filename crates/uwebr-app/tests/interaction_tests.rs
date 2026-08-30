@@ -69,6 +69,26 @@ fn rendered_text(pipeline: &RenderPipeline) -> Vec<String> {
         .collect()
 }
 
+fn div_with(props: Vec<(String, PropValue)>, children: Vec<Element>) -> Element {
+    Element {
+        node_type: NodeType::Element("div".into()),
+        props,
+        children,
+    }
+}
+
+fn clickable_button(action: &str, width: f64, height: f64) -> Element {
+    Element {
+        node_type: NodeType::Element("button".into()),
+        props: vec![
+            ("on:click".into(), PropValue::Closure(action.into())),
+            ("width".into(), PropValue::Number(width)),
+            ("height".into(), PropValue::Number(height)),
+        ],
+        children: vec![text("Click")],
+    }
+}
+
 #[test]
 fn click_runs_handler_and_updates_rendered_text() {
     reset();
@@ -212,4 +232,218 @@ fn hit_target_bounds_match_the_css_size() {
     assert_eq!(target.action, "increment");
     assert_eq!(target.bounds.width, 120.0);
     assert_eq!(target.bounds.height, 40.0);
+}
+
+// ── Additional interaction tests ─────────────────────────────────
+
+#[test]
+fn app_click_dispatches_and_renders_new_state() {
+    reset();
+    let mut pipeline = RenderPipeline::new().with_css(CSS);
+
+    register_action("double", || {
+        let v: i64 = state::get("val", 1);
+        state::set("val", v * 2);
+    });
+
+    fn comp() -> Element {
+        let v: i64 = state::get("val", 1);
+        register_action("double", || {
+            let val: i64 = state::get("val", 1);
+            state::set("val", val * 2);
+        });
+        div_with(
+            vec![("class".into(), PropValue::String("app".into()))],
+            vec![
+                text(&v.to_string()),
+                clickable_button("double", 120.0, 40.0),
+            ],
+        )
+    }
+
+    pipeline.build_render_scene(&comp(), 800, 600);
+    assert!(rendered_text(&pipeline).contains(&"1".to_string()));
+
+    let action = pipeline.hit_test(10.0, 50.0).unwrap().to_string();
+    dispatch_action(&action);
+
+    pipeline.build_render_scene(&comp(), 800, 600);
+    assert!(rendered_text(&pipeline).contains(&"2".to_string()));
+}
+
+#[test]
+fn app_multiple_clicks_chain_state() {
+    reset();
+    let mut pipeline = RenderPipeline::new().with_css(CSS);
+
+    fn comp() -> Element {
+        let v: i64 = state::get("val", 0);
+        register_action("add_5", || {
+            let v: i64 = state::get("val", 0);
+            state::set("val", v + 5);
+        });
+        div_with(
+            vec![("class".into(), PropValue::String("app".into()))],
+            vec![text(&v.to_string()), clickable_button("add_5", 120.0, 40.0)],
+        )
+    }
+
+    for expected in [5, 10, 15, 20, 25] {
+        pipeline.build_render_scene(&comp(), 800, 600);
+        let action = pipeline.hit_test(10.0, 50.0).unwrap().to_string();
+        dispatch_action(&action);
+        pipeline.build_render_scene(&comp(), 800, 600);
+        assert!(
+            rendered_text(&pipeline).contains(&expected.to_string()),
+            "expected {expected} after click, got {:?}",
+            rendered_text(&pipeline)
+        );
+    }
+}
+
+#[test]
+fn app_hover_state_applies_css_rule() {
+    reset();
+    let mut pipeline = RenderPipeline::new()
+        .with_css(".box { width: 100px; height: 40px; } .box:hover { background-color: green; }");
+    let el = div_with(
+        vec![("class".into(), PropValue::String("box".into()))],
+        vec![],
+    );
+
+    pipeline.build_render_scene(&el, 800, 600);
+    assert!(
+        pipeline.render_scene().nodes()[0]
+            .style
+            .background
+            .is_none(),
+        "no hover yet"
+    );
+
+    uwebr_core::state::set_hovered(0, true);
+    pipeline.build_render_scene(&el, 800, 600);
+    assert!(
+        pipeline.render_scene().nodes()[0]
+            .style
+            .background
+            .is_some(),
+        ":hover background should appear"
+    );
+    uwebr_core::state::clear_element_state();
+}
+
+#[test]
+fn app_focus_state_tracks_node() {
+    reset();
+    state::clear_element_state();
+    assert!(!state::any_focused());
+
+    state::set_focused(Some(7));
+    assert!(state::is_focused(7));
+    assert!(!state::is_focused(3));
+    assert!(state::any_focused());
+
+    state::set_focused(None);
+    assert!(!state::is_focused(7));
+    assert!(!state::any_focused());
+}
+
+#[test]
+fn app_hover_and_focus_independent() {
+    reset();
+    state::clear_element_state();
+
+    state::set_hovered(1, true);
+    state::set_focused(Some(2));
+
+    assert!(state::is_hovered(1));
+    assert!(!state::is_hovered(2));
+    assert!(state::is_focused(2));
+    assert!(!state::is_focused(1));
+    assert!(state::any_focused());
+
+    // Clearing hover doesn't affect focus
+    state::clear_hover();
+    assert!(!state::is_hovered(1));
+    assert!(state::is_focused(2));
+}
+
+#[test]
+fn app_clear_element_state_resets_all() {
+    reset();
+    state::set_hovered(5, true);
+    state::set_focused(Some(10));
+    assert!(state::any_focused());
+
+    state::clear_element_state();
+    assert!(!state::is_hovered(5));
+    assert!(!state::is_focused(10));
+    assert!(!state::any_focused());
+}
+
+#[test]
+fn app_click_on_nested_hit_target() {
+    reset();
+    let mut pipeline = RenderPipeline::new().with_css(CSS);
+
+    register_action("btn1", || {
+        state::set("last".to_string(), "btn1".to_string());
+    });
+    register_action("btn2", || {
+        state::set("last".to_string(), "btn2".to_string());
+    });
+
+    let el = div_with(
+        vec![("class".into(), PropValue::String("app".into()))],
+        vec![
+            clickable_button("btn1", 120.0, 40.0),
+            clickable_button("btn2", 120.0, 40.0),
+        ],
+    );
+
+    pipeline.build_render_scene(&el, 800, 600);
+
+    let targets = pipeline.hit_targets();
+    assert_eq!(targets.len(), 2);
+
+    // Both should be hit-testable at different positions
+    let action1 = pipeline.hit_test(10.0, 10.0).unwrap().to_string();
+    dispatch_action(&action1);
+    assert_eq!(
+        state::get::<String>("last".to_string(), String::new()),
+        "btn1"
+    );
+
+    let action2 = pipeline.hit_test(10.0, 50.0).unwrap().to_string();
+    dispatch_action(&action2);
+    assert_eq!(
+        state::get::<String>("last".to_string(), String::new()),
+        "btn2"
+    );
+    clear_actions();
+}
+
+#[test]
+fn app_state_write_then_render_consistent() {
+    reset();
+    let mut pipeline = RenderPipeline::new().with_css(CSS);
+
+    state::set("name".to_string(), "Alice".to_string());
+
+    fn comp() -> Element {
+        let name: String = state::get("name".to_string(), "Unknown".to_string());
+        register_action("noop", || {});
+        div_with(
+            vec![("class".into(), PropValue::String("app".into()))],
+            vec![text(&name)],
+        )
+    }
+
+    pipeline.build_render_scene(&comp(), 800, 600);
+    assert!(rendered_text(&pipeline).contains(&"Alice".to_string()));
+
+    state::set("name".to_string(), "Bob".to_string());
+    pipeline.build_render_scene(&comp(), 800, 600);
+    assert!(rendered_text(&pipeline).contains(&"Bob".to_string()));
+    assert!(!rendered_text(&pipeline).contains(&"Alice".to_string()));
 }
