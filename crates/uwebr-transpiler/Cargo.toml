@@ -1,0 +1,13 @@
+[package]
+name = "uwebr-transpiler"
+description = "Transpiler: .uwebr → Rust code generation"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+uwebr-html = { workspace = true }
+uwebr-js = { workspace = true }
+
+[dev-dependencies]

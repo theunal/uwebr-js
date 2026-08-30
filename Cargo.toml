@@ -8,6 +8,7 @@ members = [
     "crates/uwebr-macro",
     "crates/uwebr-render",
     "crates/uwebr-app",
+    "crates/uwebr-transpiler",
     "crates/uwebr-cli",
     "crates/uwebr-dynlib",
 ]
@@ -59,6 +60,7 @@ uwebr-macro = { path = "crates/uwebr-macro" }
 uwebr-render = { path = "crates/uwebr-render" }
 uwebr-app = { path = "crates/uwebr-app" }
 uwebr-dynlib = { path = "crates/uwebr-dynlib" }
+uwebr-transpiler = { path = "crates/uwebr-transpiler" }
 
 # Testing
 tempfile = "3.0"

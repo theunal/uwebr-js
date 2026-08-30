@@ -1015,6 +1015,7 @@ fn dev_server_hot_swap(path: &str) -> Result<()> {
         dynlib_dir,
         component_name,
         root: root_w2,
+        error: None,
     };
 
     event_loop.run_app(&mut state)?;
@@ -1031,6 +1032,8 @@ struct HotSwapState {
     dynlib_dir: PathBuf,
     component_name: String,
     root: PathBuf,
+    /// Son compile/load hatası — Some ise error overlay gösterilir.
+    error: Option<String>,
 }
 
 impl winit::application::ApplicationHandler for HotSwapState {
@@ -1109,6 +1112,54 @@ impl HotSwapState {
         let Some(ref mut ctx) = self.ctx else {
             return;
         };
+
+        // Error overlay: hata varsa kırmızı zeminde hata mesajı göster
+        if let Some(ref error_msg) = self.error {
+            let (w, h) = ctx.size();
+            let error_elem = uwebr_core::component::Element {
+                node_type: uwebr_core::component::NodeType::Element("div".into()),
+                props: vec![
+                    (
+                        "style".into(),
+                        uwebr_core::component::PropValue::String(
+                            "background-color:#1a0000;color:#ff4444;padding:20px;font-size:16px;display:flex;flex-direction:column;justify-content:center;align-items:center;".into(),
+                        ),
+                    ),
+                ],
+                children: vec![
+                    uwebr_core::component::Element {
+                        node_type: uwebr_core::component::NodeType::Text(
+                            "Compilation Error".into(),
+                        ),
+                        props: vec![(
+                            "style".into(),
+                            uwebr_core::component::PropValue::String(
+                                "font-size:24px;font-weight:bold;color:#ff6666;margin-bottom:16px;"
+                                    .into(),
+                            ),
+                        )],
+                        children: vec![],
+                    },
+                    uwebr_core::component::Element {
+                        node_type: uwebr_core::component::NodeType::Text(error_msg.clone()),
+                        props: vec![(
+                            "style".into(),
+                            uwebr_core::component::PropValue::String(
+                                "font-family:monospace;font-size:14px;color:#ffaaaa;white-space:pre-wrap;text-align:center;"
+                                    .into(),
+                            ),
+                        )],
+                        children: vec![],
+                    },
+                ],
+            };
+            let scene = self.pipeline.render(&error_elem, w, h);
+            if let Err(e) = ctx.render_scene(&scene) {
+                eprintln!("Render error: {e}");
+            }
+            return;
+        }
+
         let elem = self.component.render();
         let (w, h) = ctx.size();
         let scene = self.pipeline.render(&elem, w, h);
@@ -1142,6 +1193,9 @@ impl HotSwapState {
             Ok(result) => {
                 match uwebr_dynlib::LoadedLibrary::load(&result.library_path) {
                     Ok(new_lib) => {
+                        // Hata overlay'i temizle — başarılı compile
+                        self.error = None;
+
                         // Update CSS
                         if let Some(new_css) = new_lib.css() {
                             let css_str = new_css.to_string();
@@ -1159,11 +1213,13 @@ impl HotSwapState {
                         println!("  hot-reloaded in {:?}", reload_start.elapsed());
                     }
                     Err(e) => {
+                        self.error = Some(format!("Load failed: {e}"));
                         eprintln!("  load failed: {e}");
                     }
                 }
             }
             Err(e) => {
+                self.error = Some(format!("{e}"));
                 eprintln!("  compile failed: {e} — keeping current version");
             }
         }

@@ -23,6 +23,9 @@ enum Commands {
         /// Build in release mode
         #[arg(long)]
         release: bool,
+        /// Run the built binary after compilation
+        #[arg(long)]
+        open: bool,
     },
     /// Validate .uwebr files (parse-only check)
     Check {
@@ -68,8 +71,27 @@ fn main() -> Result<()> {
         Commands::Init { name } => {
             uwebr_cli::commands::init_project(&name)?;
         }
-        Commands::Build { path, release } => {
+        Commands::Build {
+            path,
+            release,
+            open,
+        } => {
             uwebr_cli::commands::build_project(&path, release)?;
+            if open {
+                // Run the built binary
+                let bin_path = std::path::Path::new(&path)
+                    .join("target")
+                    .join(if release { "release" } else { "debug" })
+                    .join("app");
+                #[cfg(target_os = "windows")]
+                let bin_path = bin_path.with_extension("exe");
+                if bin_path.exists() {
+                    println!("  Running {}...", bin_path.display());
+                    std::process::Command::new(&bin_path).spawn().map(|_| ())?;
+                } else {
+                    eprintln!("  Binary not found at {}", bin_path.display());
+                }
+            }
         }
         Commands::Check { path } => {
             uwebr_cli::commands::validate_project(&path)?;
