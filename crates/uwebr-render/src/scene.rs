@@ -163,6 +163,29 @@ pub enum RenderNodeKind {
         height: u32,
     },
     Container,
+    /// An editable text input: draws value text, caret, and selection.
+    Input {
+        value: String,
+        font_size: f32,
+        color: peniko::Color,
+        font_family: Option<String>,
+        /// Caret character index (only drawn when `focused`).
+        caret: usize,
+        /// Selection range `(start, end)` in characters, if any.
+        selection: Option<(usize, usize)>,
+        /// Whether this input currently holds focus.
+        focused: bool,
+        /// Whether the caret is visible this frame (blink state).
+        caret_visible: bool,
+        /// Placeholder text drawn when `value` is empty.
+        placeholder: Option<String>,
+    },
+    /// A checkbox or radio toggle. `radio` selects a circular dot vs. checkmark.
+    Toggle {
+        checked: bool,
+        radio: bool,
+        color: peniko::Color,
+    },
 }
 
 // ── Render Node ───────────────────────────────────────────────────────

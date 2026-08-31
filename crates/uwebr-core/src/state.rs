@@ -43,12 +43,112 @@ pub struct ElementStateStore {
     hovered: HashSet<usize>,
     /// The focused node, if any.
     focused: Option<usize>,
+    /// Node indices currently "active" (mouse pressed on them).
+    active: HashSet<usize>,
+    /// Caret (cursor) character index within the focused text input.
+    caret: usize,
+    /// Selection anchor within the focused input; the selection spans
+    /// `[min(anchor, caret), max(anchor, caret)]`. `None` = no selection.
+    sel_anchor: Option<usize>,
+    /// Whether the caret is currently visible (blink state).
+    caret_visible: bool,
 }
 
 impl ElementStateStore {
     pub fn new() -> Self {
-        Self::default()
+        let mut s = Self::default();
+        s.caret_visible = true;
+        s
     }
+}
+
+/// Mark (or unmark) a node as active (mouse held down on it).
+pub fn set_active(node_id: usize, active: bool) {
+    ELEMENT_STATE.with(|s| {
+        let mut store = s.borrow_mut();
+        if active {
+            store.active.insert(node_id);
+        } else {
+            store.active.remove(&node_id);
+        }
+    });
+}
+
+/// Whether a node is currently active.
+pub fn is_active(node_id: usize) -> bool {
+    ELEMENT_STATE.with(|s| s.borrow().active.contains(&node_id))
+}
+
+/// Clear all active state (called on mouse up).
+pub fn clear_active() {
+    ELEMENT_STATE.with(|s| s.borrow_mut().active.clear());
+}
+
+/// The caret character index within the focused input.
+pub fn caret() -> usize {
+    ELEMENT_STATE.with(|s| s.borrow().caret)
+}
+
+/// Set the caret index and clear any selection.
+pub fn set_caret(pos: usize) {
+    ELEMENT_STATE.with(|s| {
+        let mut store = s.borrow_mut();
+        store.caret = pos;
+        store.sel_anchor = None;
+        store.caret_visible = true;
+    });
+}
+
+/// Move the caret while extending the selection (Shift+arrow behaviour).
+pub fn set_caret_selecting(pos: usize) {
+    ELEMENT_STATE.with(|s| {
+        let mut store = s.borrow_mut();
+        if store.sel_anchor.is_none() {
+            store.sel_anchor = Some(store.caret);
+        }
+        store.caret = pos;
+        store.caret_visible = true;
+    });
+}
+
+/// Set both caret and selection anchor explicitly (used by select-all).
+pub fn set_selection(anchor: usize, caret: usize) {
+    ELEMENT_STATE.with(|s| {
+        let mut store = s.borrow_mut();
+        store.sel_anchor = Some(anchor);
+        store.caret = caret;
+        store.caret_visible = true;
+    });
+}
+
+/// The current selection range `(start, end)` within the focused input, if any.
+pub fn selection() -> Option<(usize, usize)> {
+    ELEMENT_STATE.with(|s| {
+        let store = s.borrow();
+        store.sel_anchor.map(|a| {
+            let c = store.caret;
+            (a.min(c), a.max(c))
+        })
+    })
+}
+
+/// Whether the caret is currently visible (drives blink rendering).
+pub fn caret_visible() -> bool {
+    ELEMENT_STATE.with(|s| s.borrow().caret_visible)
+}
+
+/// Toggle the caret blink state; returns the new visibility.
+pub fn toggle_caret() -> bool {
+    ELEMENT_STATE.with(|s| {
+        let mut store = s.borrow_mut();
+        store.caret_visible = !store.caret_visible;
+        store.caret_visible
+    })
+}
+
+/// Force the caret visible (called on any edit to reset the blink cycle).
+pub fn reset_caret_blink() {
+    ELEMENT_STATE.with(|s| s.borrow_mut().caret_visible = true);
 }
 
 /// Mark (or unmark) a node as hovered. Called as the cursor moves.
@@ -65,7 +165,21 @@ pub fn set_hovered(node_id: usize, hovered: bool) {
 
 /// Set (or clear) the focused node. Called on focus/blur.
 pub fn set_focused(node_id: Option<usize>) {
-    ELEMENT_STATE.with(|s| s.borrow_mut().focused = node_id);
+    ELEMENT_STATE.with(|s| {
+        let mut store = s.borrow_mut();
+        if store.focused != node_id {
+            // Reset caret/selection when focus moves to a different element.
+            store.caret = 0;
+            store.sel_anchor = None;
+            store.caret_visible = true;
+        }
+        store.focused = node_id;
+    });
+}
+
+/// The currently focused node id, if any.
+pub fn focused() -> Option<usize> {
+    ELEMENT_STATE.with(|s| s.borrow().focused)
 }
 
 /// Whether a node is currently hovered.
@@ -95,6 +209,10 @@ pub fn clear_element_state() {
         let mut store = s.borrow_mut();
         store.hovered.clear();
         store.focused = None;
+        store.active.clear();
+        store.caret = 0;
+        store.sel_anchor = None;
+        store.caret_visible = true;
     });
 }
 

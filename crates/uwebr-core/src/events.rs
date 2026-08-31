@@ -213,6 +213,44 @@ pub fn clear_actions() {
     ACTIONS.with(|a| a.borrow_mut().clear());
 }
 
+// ── Value-carrying action registry ─────────────────────────────────────
+
+thread_local! {
+    /// Handlers that receive a string value, e.g. `on:input={handler}` where
+    /// the handler needs the current input text. Keyed by name like [`ACTIONS`].
+    static VALUE_ACTIONS: RefCell<HashMap<String, Rc<dyn Fn(&str)>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Register (or replace) a named handler that receives a string value.
+pub fn register_value_action(name: &str, handler: impl Fn(&str) + 'static) {
+    VALUE_ACTIONS.with(|a| {
+        a.borrow_mut().insert(name.to_string(), Rc::new(handler));
+    });
+}
+
+/// Invoke a named value action with `value`. Returns false when unregistered.
+pub fn dispatch_value_action(name: &str, value: &str) -> bool {
+    let handler = VALUE_ACTIONS.with(|a| a.borrow().get(name).cloned());
+    match handler {
+        Some(h) => {
+            h(value);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether a value handler is registered under this name.
+pub fn has_value_action(name: &str) -> bool {
+    VALUE_ACTIONS.with(|a| a.borrow().contains_key(name))
+}
+
+/// Remove all registered value actions.
+pub fn clear_value_actions() {
+    VALUE_ACTIONS.with(|a| a.borrow_mut().clear());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

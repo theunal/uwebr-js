@@ -27,6 +27,8 @@ struct WindowState {
     hovered_element: Option<usize>,
     /// Current cursor icon — tracked to avoid redundant `set_cursor` calls.
     current_cursor_icon: CursorIcon,
+    /// Current modifier key state, updated via `ModifiersChanged`.
+    modifiers: winit::keyboard::ModifiersState,
 }
 
 impl WindowState {
@@ -38,6 +40,7 @@ impl WindowState {
             cursor: (0.0, 0.0),
             hovered_element: None,
             current_cursor_icon: CursorIcon::Default,
+            modifiers: winit::keyboard::ModifiersState::empty(),
         }
     }
 
@@ -64,6 +67,400 @@ impl WindowState {
             }
             None => false,
         }
+    }
+
+    /// Update focus based on the current cursor position.
+    ///
+    /// If the clicked element is focusable, it gains focus; otherwise focus
+    /// is cleared. Returns true when focus changed (caller should redraw).
+    fn handle_focus(&mut self) -> bool {
+        let (x, y) = self.cursor;
+        let new_focused = self.pipeline.focus_hit_test(x, y);
+        if new_focused != uwebr_core::state::focused() {
+            uwebr_core::state::set_focused(new_focused);
+            return true;
+        }
+        false
+    }
+
+    /// Handle a keyboard event dispatched to the focused element.
+    ///
+    /// Routes `on:keydown` actions, handles text input editing, button
+    /// activation (Enter/Space), and checkbox/radio toggling.
+    /// Returns true when state changed (caller should redraw).
+    fn handle_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        let Some(focused_id) = uwebr_core::state::focused() else {
+            return false;
+        };
+
+        let key = &event.logical_key;
+        let mods = self.modifiers;
+        let pressed = event.state == winit::event::ElementState::Pressed;
+        if !pressed {
+            return false;
+        }
+
+        use winit::keyboard::NamedKey;
+
+        // Check if the focused element is an input
+        let is_text_input = self
+            .pipeline
+            .input_node(focused_id)
+            .map(|n| n.kind == crate::pipeline::InputKind::Text)
+            .unwrap_or(false);
+        let is_toggle = self
+            .pipeline
+            .input_node(focused_id)
+            .map(|n| {
+                n.kind == crate::pipeline::InputKind::Checkbox
+                    || n.kind == crate::pipeline::InputKind::Radio
+            })
+            .unwrap_or(false);
+        let is_button = self
+            .pipeline
+            .tag_of(focused_id)
+            == Some("button");
+
+        if is_text_input {
+            return self.handle_text_input_key(focused_id, key, mods);
+        }
+
+        if is_toggle {
+            // Space toggles checkbox/radio
+            if matches!(key, winit::keyboard::Key::Named(NamedKey::Space)) {
+                return self.handle_toggle_click(focused_id);
+            }
+        }
+
+        if is_button {
+            // Enter or Space activates the button
+            if matches!(
+                key,
+                winit::keyboard::Key::Named(NamedKey::Enter)
+            ) || matches!(key, winit::keyboard::Key::Named(NamedKey::Space))
+            {
+                if let Some(action) = self.pipeline.click_action_for(focused_id) {
+                    let action = action.to_string();
+                    return dispatch_action(&action);
+                }
+            }
+        }
+
+        // Generic on:keydown handler
+        if let Some(action) = self.pipeline.focus_action_for(focused_id) {
+            let action = action.to_string();
+            return dispatch_action(&action);
+        }
+
+        false
+    }
+
+    /// Handle keyboard editing for a focused text input.
+    fn handle_text_input_key(
+        &mut self,
+        focused_id: usize,
+        key: &winit::keyboard::Key,
+        mods: winit::keyboard::ModifiersState,
+    ) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+
+        let input = match self.pipeline.input_node(focused_id) {
+            Some(i) if i.kind == crate::pipeline::InputKind::Text => i.clone(),
+            _ => return false,
+        };
+        let bind = input.bind_key.clone().unwrap_or_default();
+        let mut value = uwebr_core::state::get::<String>(&bind, String::new());
+        let mut caret = uwebr_core::state::caret();
+        let mut changed = false;
+
+        match key {
+            Key::Named(NamedKey::Home) => {
+                caret = 0;
+                changed = true;
+            }
+            Key::Named(NamedKey::End) => {
+                caret = value.chars().count();
+                changed = true;
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                if caret > 0 {
+                    if mods.shift_key() {
+                        uwebr_core::state::set_caret_selecting(caret - 1);
+                    } else {
+                        uwebr_core::state::set_caret(caret - 1);
+                    }
+                    return true;
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if caret < value.chars().count() {
+                    if mods.shift_key() {
+                        uwebr_core::state::set_caret_selecting(caret + 1);
+                    } else {
+                        uwebr_core::state::set_caret(caret + 1);
+                    }
+                    return true;
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                // If there is a selection, delete it instead
+                if let Some((sel_start, sel_end)) = uwebr_core::state::selection() {
+                    let s = sel_start.min(sel_end);
+                    let e = sel_start.max(sel_end);
+                    let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                    let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                    value.drain(byte_s..byte_e);
+                    caret = s;
+                    changed = true;
+                } else if mods.control_key() {
+                    // Ctrl+Backspace = delete word left
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(caret)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    let prefix = &value[..byte_pos];
+                    let new_caret = prefix.rsplit(|c: char| c.is_whitespace())
+                        .next()
+                        .map(|w| caret - w.chars().count())
+                        .unwrap_or(0);
+                    let del_start = value.char_indices().nth(new_caret).map(|(i, _)| i).unwrap_or(0);
+                    value.drain(del_start..byte_pos);
+                    caret = new_caret;
+                    changed = true;
+                } else if caret > 0 {
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(caret)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    let prev_char_start = value[..byte_pos]
+                        .char_indices()
+                        .last()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    value.drain(prev_char_start..byte_pos);
+                    caret -= 1;
+                    changed = true;
+                }
+            }
+            Key::Named(NamedKey::Delete) => {
+                // If there is a selection, delete it instead
+                if let Some((sel_start, sel_end)) = uwebr_core::state::selection() {
+                    let s = sel_start.min(sel_end);
+                    let e = sel_start.max(sel_end);
+                    let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                    let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                    value.drain(byte_s..byte_e);
+                    caret = s;
+                    changed = true;
+                } else if caret < value.chars().count() {
+                    let byte_start = value
+                        .char_indices()
+                        .nth(caret)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    let byte_end = value[byte_start..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| byte_start + i)
+                        .unwrap_or(value.len());
+                    value.drain(byte_start..byte_end);
+                    changed = true;
+                }
+            }
+            Key::Character(ch) => {
+                let ch_str = ch.as_str();
+                if mods.control_key() {
+                    match ch_str {
+                        "a" => {
+                            let len = value.chars().count();
+                            uwebr_core::state::set_selection(0, len);
+                            return true;
+                        }
+                        "c" => {
+                            // Copy selection to clipboard
+                            if let Some((start, end)) = uwebr_core::state::selection() {
+                                let s = start.min(end);
+                                let e = start.max(end);
+                                let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                                let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                                let selected = &value[byte_s..byte_e];
+                                if !selected.is_empty() {
+                                    if let Ok(mut ctx) = arboard::Clipboard::new() {
+                                        let _ = ctx.set_text(selected.to_string());
+                                    }
+                                }
+                            }
+                            return false;
+                        }
+                        "x" => {
+                            // Cut selection to clipboard
+                            if let Some((start, end)) = uwebr_core::state::selection() {
+                                let s = start.min(end);
+                                let e = start.max(end);
+                                let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                                let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                                let selected = value[byte_s..byte_e].to_string();
+                                if !selected.is_empty() {
+                                    if let Ok(mut ctx) = arboard::Clipboard::new() {
+                                        let _ = ctx.set_text(selected);
+                                    }
+                                }
+                                value.drain(byte_s..byte_e);
+                                caret = s;
+                                changed = true;
+                            }
+                        }
+                        "v" => {
+                            // Paste from clipboard
+                            let clipboard_text = arboard::Clipboard::new()
+                                .ok()
+                                .and_then(|mut ctx| ctx.get_text().ok())
+                                .filter(|t| !t.is_empty());
+                            if let Some(paste) = clipboard_text {
+                                // Delete selection first if any
+                                if let Some((sel_start, sel_end)) = uwebr_core::state::selection() {
+                                    let s = sel_start.min(sel_end);
+                                    let e = sel_start.max(sel_end);
+                                    let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                                    let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                                    value.drain(byte_s..byte_e);
+                                    caret = s;
+                                }
+                                let byte_pos = value
+                                    .char_indices()
+                                    .nth(caret)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(value.len());
+                                value.insert_str(byte_pos, &paste);
+                                caret += paste.chars().count();
+                                changed = true;
+                                uwebr_core::state::reset_caret_blink();
+                            }
+                        }
+                        _ => return false,
+                    }
+                } else if !ch_str.is_empty() {
+                    // Delete selection first if any
+                    if let Some((sel_start, sel_end)) = uwebr_core::state::selection() {
+                        let s = sel_start.min(sel_end);
+                        let e = sel_start.max(sel_end);
+                        let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                        let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                        value.drain(byte_s..byte_e);
+                        caret = s;
+                    }
+                    let byte_pos = value
+                        .char_indices()
+                        .nth(caret)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
+                    for ch in ch_str.chars() {
+                        value.insert(byte_pos, ch);
+                        caret += 1;
+                    }
+                    changed = true;
+                    uwebr_core::state::reset_caret_blink();
+                }
+            }
+            _ => return false,
+        }
+
+        if changed {
+            uwebr_core::state::set_caret(caret);
+            // Write back to the bound state key
+            if !bind.is_empty() {
+                uwebr_core::state::set(&bind, value);
+            }
+            // Dispatch on:input action if present
+            if let Some(action) = &input.change_action {
+                let action = action.clone();
+                dispatch_action(&action);
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Position the caret in a text input where the user clicked.
+    fn handle_input_click(&mut self, focused_id: usize) -> bool {
+        let input = match self.pipeline.input_node(focused_id) {
+            Some(i) if i.kind == crate::pipeline::InputKind::Text => i.clone(),
+            _ => return false,
+        };
+        let bind = input.bind_key.clone().unwrap_or_default();
+        let value = uwebr_core::state::get::<String>(&bind, String::new());
+        let (x, _y) = self.cursor;
+
+        // Compute the text-relative x by subtracting the input's left edge + padding
+        let padding_x = 4.0f32;
+        let text_x = x - input.bounds.x - padding_x;
+        if text_x <= 0.0 {
+            uwebr_core::state::set_caret(0);
+        } else {
+            let idx = self
+                .pipeline
+                .text_renderer()
+                .char_index_at_x(
+                    &value,
+                    input.font_size,
+                    input.font_family.as_deref(),
+                    text_x,
+                );
+            uwebr_core::state::set_caret(idx);
+        }
+        true
+    }
+
+    /// Toggle a checkbox or radio input on click/space.
+    fn handle_toggle_click(&mut self, node_id: usize) -> bool {
+        let input = match self.pipeline.input_node(node_id) {
+            Some(i) if i.kind == crate::pipeline::InputKind::Checkbox
+                || i.kind == crate::pipeline::InputKind::Radio => {
+                i.clone()
+            }
+            _ => return false,
+        };
+        let is_radio = input.kind == crate::pipeline::InputKind::Radio;
+        let bind = input.bind_key.clone().unwrap_or_default();
+
+        if is_radio {
+            // For radios: set this one to true, uncheck others with same name
+            let name = input.name.clone();
+            if !bind.is_empty() {
+                uwebr_core::state::set(&bind, true);
+            }
+            // Uncheck other radios in the same group
+            if let Some(ref group_name) = name {
+                for (nid, other) in self.pipeline.input_nodes() {
+                    if *nid == node_id {
+                        continue;
+                    }
+                    if other.kind == crate::pipeline::InputKind::Radio
+                        && other.name.as_deref() == Some(group_name.as_str())
+                    {
+                        if let Some(ref other_bind) = other.bind_key {
+                            uwebr_core::state::set(other_bind, false);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Checkbox: toggle
+            if !bind.is_empty() {
+                let current = uwebr_core::state::get::<bool>(&bind, false);
+                uwebr_core::state::set(&bind, !current);
+            }
+        }
+
+        // Dispatch on:change if present
+        if let Some(action) = &input.change_action {
+            let action = action.clone();
+            dispatch_action(&action);
+        }
+
+        true
     }
 
     /// Update `:hover` state from the current cursor position.
@@ -388,6 +785,10 @@ impl ApplicationHandler for App {
                 self.dispatch_event(&AppEvent::MouseMove(position.x as f32, position.y as f32));
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                // Route keyboard events to the focused element first
+                if state.handle_key(&event) {
+                    state.ctx.window().request_redraw();
+                }
                 self.dispatch_event(&AppEvent::KeyPress(format!("{:?}", event.logical_key)));
             }
             WindowEvent::MouseInput {
@@ -395,12 +796,54 @@ impl ApplicationHandler for App {
                 button,
                 ..
             } if input_state.is_pressed() => {
+                // Set active state for :active pseudo-class
+                if let Some(hover_id) = state.pipeline.hit_test_hover(state.cursor.0, state.cursor.1) {
+                    uwebr_core::state::set_active(hover_id, true);
+                }
+                // Update focus on click
+                if state.handle_focus() {
+                    state.ctx.window().request_redraw();
+                }
+                // Handle checkbox/radio toggle on click
+                let mut toggled = false;
+                if let Some(focused_id) = uwebr_core::state::focused() {
+                    let is_toggle = state
+                        .pipeline
+                        .input_node(focused_id)
+                        .map(|n| {
+                            n.kind == crate::pipeline::InputKind::Checkbox
+                                || n.kind == crate::pipeline::InputKind::Radio
+                        })
+                        .unwrap_or(false);
+                    if is_toggle && button == winit::event::MouseButton::Left {
+                        toggled = state.handle_toggle_click(focused_id);
+                    }
+                    // Position caret in text input where user clicked
+                    let is_text = state
+                        .pipeline
+                        .input_node(focused_id)
+                        .map(|n| n.kind == crate::pipeline::InputKind::Text)
+                        .unwrap_or(false);
+                    if is_text && button == winit::event::MouseButton::Left {
+                        if state.handle_input_click(focused_id) {
+                            state.ctx.window().request_redraw();
+                        }
+                    }
+                }
                 // Route the click to an `on:click` handler before notifying
                 // generic listeners; the handler may mutate state.
-                if button == winit::event::MouseButton::Left && state.handle_click() {
+                if button == winit::event::MouseButton::Left && (state.handle_click() || toggled) {
                     state.ctx.window().request_redraw();
                 }
                 self.dispatch_event(&AppEvent::MouseClick(button));
+            }
+            WindowEvent::MouseInput {
+                state: input_state,
+                button: _,
+                ..
+            } if !input_state.is_pressed() => {
+                uwebr_core::state::clear_active();
+                state.ctx.window().request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // winit: positive LineDelta(y) = scroll up → negate so positive = scroll content down
@@ -413,6 +856,9 @@ impl ApplicationHandler for App {
                 state.pipeline.scroll_by(dx, dy);
                 state.ctx.window().request_redraw();
                 self.dispatch_event(&AppEvent::MouseScroll(dx, dy));
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                state.modifiers = mods.state();
             }
             _ => {}
         }

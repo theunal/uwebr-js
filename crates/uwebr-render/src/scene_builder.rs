@@ -32,6 +32,11 @@ impl SceneBuilder {
         }
     }
 
+    /// Mutable access to the text renderer for text measurement queries.
+    pub fn text_renderer(&mut self) -> &mut TextRenderer {
+        &mut self.text
+    }
+
     /// Build a vello::Scene from positioned render nodes.
     pub fn build(&mut self, scene: &RenderScene, width: u32, height: u32) -> vello::Scene {
         let empty: HashMap<usize, ScrollState> = HashMap::new();
@@ -204,6 +209,82 @@ impl SceneBuilder {
                         );
                     } else {
                         Self::draw_rect(scene, &node.style, x, y, w, h);
+                    }
+                }
+            }
+            RenderNodeKind::Input {
+                value,
+                font_size,
+                color,
+                font_family,
+                caret,
+                selection,
+                focused,
+                caret_visible,
+                placeholder,
+            } => {
+                // Background/border for the input come from the container style
+                // (drawn below via border); here we draw text/caret/selection.
+                if node.style.background.is_some() {
+                    if node.style.border_radius > 0.0 {
+                        Self::draw_round_rect(
+                            scene,
+                            &node.style,
+                            x,
+                            y,
+                            w,
+                            h,
+                            node.style.border_radius as f64,
+                        );
+                    } else {
+                        Self::draw_rect(scene, &node.style, x, y, w, h);
+                    }
+                }
+                self.draw_input(
+                    scene,
+                    value,
+                    *font_size,
+                    *color,
+                    font_family.as_deref(),
+                    x,
+                    y,
+                    w,
+                    h,
+                    *caret,
+                    *selection,
+                    *focused,
+                    *caret_visible,
+                    placeholder.as_deref(),
+                );
+            }
+            RenderNodeKind::Toggle {
+                checked,
+                radio,
+                color,
+            } => {
+                // Draw box/circle background from style, then the mark.
+                if node.style.background.is_some() {
+                    if *radio {
+                        Self::draw_round_rect(scene, &node.style, x, y, w, h, (w / 2.0).min(h / 2.0));
+                    } else if node.style.border_radius > 0.0 {
+                        Self::draw_round_rect(
+                            scene,
+                            &node.style,
+                            x,
+                            y,
+                            w,
+                            h,
+                            node.style.border_radius as f64,
+                        );
+                    } else {
+                        Self::draw_rect(scene, &node.style, x, y, w, h);
+                    }
+                }
+                if *checked {
+                    if *radio {
+                        Self::draw_radio_dot(scene, x, y, w, h, *color);
+                    } else {
+                        Self::draw_checkmark(scene, x, y, w, h, *color);
                     }
                 }
             }
@@ -563,6 +644,195 @@ impl SceneBuilder {
         let stroke = Stroke::new(width);
         let rect = Rect::new(x, y, x + w, y + h);
         scene.stroke(&stroke, Affine::IDENTITY, color, None, &rect);
+    }
+
+    /// Draw an editable text input: value text, caret, selection highlight, and placeholder.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_input(
+        &mut self,
+        scene: &mut vello::Scene,
+        value: &str,
+        font_size: f32,
+        color: peniko::Color,
+        font_family: Option<&str>,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        caret: usize,
+        selection: Option<(usize, usize)>,
+        focused: bool,
+        caret_visible: bool,
+        placeholder: Option<&str>,
+    ) {
+        let text_y = y + ((h - font_size as f64) / 2.0).max(0.0);
+        let padding_x = 4.0;
+        let text_x = x + padding_x;
+        let text_width = (w - padding_x * 2.0).max(0.0);
+
+        let display = if value.is_empty() {
+            ""
+        } else {
+            value
+        };
+
+        if display.is_empty() {
+            // Draw placeholder text in a dimmer color
+            if let Some(ph) = placeholder {
+                if !ph.is_empty() {
+                    let placeholder_color = peniko::Color::from_rgba8(160, 160, 160, 255);
+                    let layout = self.text.layout_text(
+                        ph,
+                        font_size,
+                        font_family,
+                        Some(text_width as f32),
+                        None, None, None, None, None, None,
+                    );
+                    self.draw_layout_glyphs(scene, &layout, text_x, text_y, placeholder_color);
+                }
+            }
+        } else {
+            // Draw selection highlight first (behind text)
+            if let Some((sel_start, sel_end)) = selection {
+                if sel_start != sel_end {
+                    let start = sel_start.min(sel_end);
+                    let end = sel_start.max(sel_end);
+                    let start_advance = self
+                        .text
+                        .measure_advance_before(display, font_size, font_family, start)
+                        as f64;
+                    let end_advance = self
+                        .text
+                        .measure_advance_before(display, font_size, font_family, end)
+                        as f64;
+                    let sel_x = text_x + start_advance;
+                    let sel_w = end_advance - start_advance;
+                    if sel_w > 0.0 {
+                        let sel_color = peniko::Color::from_rgba8(51, 133, 255, 100);
+                        let sel_brush = peniko::Brush::Solid(sel_color);
+                        scene.fill(
+                            Fill::NonZero,
+                            Affine::IDENTITY,
+                            &sel_brush,
+                            None,
+                            &Rect::new(sel_x, text_y, sel_x + sel_w, text_y + font_size as f64),
+                        );
+                    }
+                }
+            }
+
+            // Draw the value text
+            let layout = self.text.layout_text(
+                display,
+                font_size,
+                font_family,
+                Some(text_width as f32),
+                None, None, None, None, None, None,
+            );
+            self.draw_layout_glyphs(scene, &layout, text_x, text_y, color);
+        }
+
+        // Draw the caret when focused and visible
+        if focused && caret_visible {
+            let caret_x = if display.is_empty() {
+                text_x
+            } else {
+                text_x
+                    + self.text
+                        .measure_advance_before(display, font_size, font_family, caret)
+                        as f64
+            };
+            let caret_color = color;
+            let caret_brush = peniko::Brush::Solid(caret_color);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &caret_brush,
+                None,
+                &Rect::new(
+                    caret_x,
+                    text_y,
+                    caret_x + 1.5,
+                    text_y + font_size as f64,
+                ),
+            );
+        }
+    }
+
+    /// Draw glyph runs from a pre-built parley layout.
+    fn draw_layout_glyphs(
+        &mut self,
+        scene: &mut vello::Scene,
+        layout: &parley::Layout<()>,
+        x: f64,
+        y: f64,
+        color: peniko::Color,
+    ) {
+        for line in layout.lines() {
+            for item in line.items() {
+                let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                    continue;
+                };
+                let run = glyph_run.run();
+                scene
+                    .draw_glyphs(run.font())
+                    .font_size(run.font_size())
+                    .brush(color)
+                    .transform(Affine::translate((x, y)))
+                    .normalized_coords(run.normalized_coords())
+                    .draw(
+                        Fill::NonZero,
+                        glyph_run.positioned_glyphs().map(|g| vello::Glyph {
+                            id: g.id,
+                            x: g.x,
+                            y: g.y,
+                        }),
+                    );
+            }
+        }
+    }
+
+    /// Draw a checkmark inside a checkbox box.
+    fn draw_checkmark(
+        scene: &mut vello::Scene,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        color: peniko::Color,
+    ) {
+        let stroke = Stroke::new(2.0).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round);
+        let cx = x + w * 0.5;
+        let cy = y + h * 0.5;
+        let s = w.min(h) * 0.3;
+        // Checkmark path: down-left then up-right
+        let mut path = vello::kurbo::BezPath::new();
+        path.move_to((cx - s, cy));
+        path.line_to((cx - s * 0.3, cy + s * 0.7));
+        path.line_to((cx + s, cy - s * 0.6));
+        scene.stroke(&stroke, Affine::IDENTITY, color, None, &path);
+    }
+
+    /// Draw a filled circle (radio dot) inside a radio button box.
+    fn draw_radio_dot(
+        scene: &mut vello::Scene,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        color: peniko::Color,
+    ) {
+        let cx = x + w * 0.5;
+        let cy = y + h * 0.5;
+        let r = w.min(h) * 0.25;
+        let brush = peniko::Brush::Solid(color);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &brush,
+            None,
+            &vello::kurbo::Circle::new((cx, cy), r),
+        );
     }
 
     /// Create a peniko::Brush from a Background

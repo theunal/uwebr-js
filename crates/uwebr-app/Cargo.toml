@@ -19,6 +19,7 @@ taffy = "0.14"
 peniko = "0.6"
 pollster = "0.4"
 log = "0.4"
+arboard = "3"
 
 [dev-dependencies]
 tempfile.workspace = true

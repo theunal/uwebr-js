@@ -591,7 +591,8 @@ fn pseudo_class_matches(
             uwebr_core::state::is_focused(node_id)
                 || (!_parent_chain.is_empty() && uwebr_core::state::any_focused())
         }
-        "active" | "visited" => false,
+        "active" => uwebr_core::state::is_active(node_id),
+        "visited" => false,
         "disabled" => is_disabled(element),
         "enabled" => !is_disabled(element),
         "checked" => element

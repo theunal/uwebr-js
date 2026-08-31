@@ -31,6 +31,31 @@ fn tag_defaults(node_type: &NodeType) -> (Option<Display>, Option<FlexDirection>
     }
 }
 
+/// Apply tag-specific CSS defaults (e.g. button padding).
+///
+/// Layout-only defaults are applied to the taffy `Style`. Paint defaults
+/// (background, border, cursor) are applied in [`ResolvedPaint`] resolution.
+fn tag_css_defaults(node_type: &NodeType, style: &mut taffy::Style, matched: &crate::stylebook::MatchedStyle) {
+    let NodeType::Element(tag) = node_type else {
+        return;
+    };
+    match tag.as_str() {
+        "button" => {
+            // Default padding: 8px all sides (only if CSS didn't set it)
+            if !matched.mask.padding {
+                let lp = taffy::LengthPercentage::length(8.0);
+                style.padding = taffy::Rect {
+                    left: lp,
+                    right: lp,
+                    top: lp,
+                    bottom: lp,
+                };
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Extract a numeric f32 from PropValue (Number or String-parseable)
 fn prop_to_f32(value: &PropValue) -> Option<f32> {
     match value {
@@ -38,6 +63,44 @@ fn prop_to_f32(value: &PropValue) -> Option<f32> {
         PropValue::String(s) => s.parse::<f32>().ok(),
         _ => None,
     }
+}
+
+/// The display value for a text `<input>` element, or `None` if the element is
+/// not a text input.
+///
+/// A checkbox/radio input is a toggle, not a text leaf, so it returns `None`
+/// and is laid out as a normal (empty) box.
+fn text_input_value(element: &Element) -> Option<String> {
+    let NodeType::Element(tag) = &element.node_type else {
+        return None;
+    };
+    if tag != "input" {
+        return None;
+    }
+    let ty = element
+        .props
+        .iter()
+        .find(|(k, _)| k == "type")
+        .and_then(|(_, v)| match v {
+            PropValue::String(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or("text");
+    if ty == "checkbox" || ty == "radio" {
+        return None;
+    }
+    // Prefer an explicit `value` prop; fall back to `placeholder`-less empty.
+    let value = element
+        .props
+        .iter()
+        .find(|(k, _)| k == "value")
+        .and_then(|(_, v)| match v {
+            PropValue::String(s) => Some(s.clone()),
+            PropValue::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    Some(value)
 }
 
 /// Per-node context handed to Taffy's measure function.
@@ -49,6 +112,13 @@ fn prop_to_f32(value: &PropValue) -> Option<f32> {
 pub enum NodeContext {
     Text {
         content: String,
+        font_size: f32,
+        font_family: Option<String>,
+    },
+    /// An editable text input. Measured like text so taffy reserves space for
+    /// the current value (or a minimum width when empty).
+    Input {
+        value: String,
         font_size: f32,
         font_family: Option<String>,
     },
@@ -159,6 +229,20 @@ impl LayoutEngine {
                 Ok(node)
             }
             NodeType::Element(_) | NodeType::Component(_) => {
+                // A text `<input>` is a leaf that carries its current value so
+                // taffy can size it like a line of text.
+                if let Some(value) = text_input_value(element) {
+                    let node = self.taffy.new_leaf_with_context(
+                        style,
+                        NodeContext::Input {
+                            value,
+                            font_size: paint.font_size,
+                            font_family: paint.font_family.clone(),
+                        },
+                    )?;
+                    return Ok(node);
+                }
+
                 // Extend the parent chain with this element for its children.
                 let mut child_chain = Vec::with_capacity(parent_chain.len() + 1);
                 child_chain.push(element);
@@ -203,6 +287,9 @@ impl LayoutEngine {
                 style.flex_direction = direction;
             }
         }
+
+        // Apply tag-specific CSS defaults (e.g. button styling)
+        tag_css_defaults(&element.node_type, &mut style, &matched);
 
         // Apply inline style properties
         for (prop_name, prop_value) in &element.props {
@@ -549,6 +636,27 @@ fn measure_node(
             Size {
                 width: known_dimensions.width.unwrap_or(w),
                 height: known_dimensions.height.unwrap_or(h),
+            }
+        }
+        Some(NodeContext::Input {
+            value,
+            font_size,
+            font_family,
+        }) => {
+            // An input never wraps: it is a single line. Measure the current
+            // value but keep a minimum height of one text line so an empty
+            // input still reserves space.
+            let (vw, vh) = if value.is_empty() {
+                text.measure("A", *font_size, font_family.as_deref(), None)
+            } else {
+                text.measure(value, *font_size, font_family.as_deref(), None)
+            };
+            // Empty inputs measure the width of a sample glyph but should not
+            // force any content width — CSS width usually drives them.
+            let natural_w = if value.is_empty() { 0.0 } else { vw };
+            Size {
+                width: known_dimensions.width.unwrap_or(natural_w),
+                height: known_dimensions.height.unwrap_or(vh),
             }
         }
     }

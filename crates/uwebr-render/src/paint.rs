@@ -88,6 +88,42 @@ impl Default for ResolvedPaint {
     }
 }
 
+/// Apply tag-specific paint defaults (e.g. button styling).
+///
+/// These act like browser user-agent defaults: CSS rules and inline props
+/// always win, so this is called last in the resolve pipeline.
+fn tag_paint_defaults(node_type: &NodeType, paint: &mut ResolvedPaint) {
+    let NodeType::Element(tag) = node_type else {
+        return;
+    };
+    match tag.as_str() {
+        "button" => {
+            // Only apply defaults when the user didn't set them via CSS or inline
+            if paint.background.is_none() {
+                paint.background = Some(Background::Solid(
+                    peniko::color::palette::css::LIGHT_GRAY,
+                ));
+            }
+            if paint.border_width == 0.0 {
+                paint.border_width = 1.0;
+            }
+            if paint.border_color == peniko::color::palette::css::WHITE {
+                paint.border_color = peniko::Color::from_rgb8(0x99, 0x99, 0x99);
+            }
+            if paint.border_radius == 0.0 {
+                paint.border_radius = 4.0;
+            }
+            if paint.text_align.is_none() {
+                paint.text_align = Some("center".to_string());
+            }
+            if paint.cursor.is_none() {
+                paint.cursor = Some("pointer".to_string());
+            }
+        }
+        _ => {}
+    }
+}
+
 impl ResolvedPaint {
     /// Seed for a child node: keep the inheritable text properties, drop the
     /// box-local ones (background, border, opacity are not inherited in CSS).
@@ -260,6 +296,9 @@ impl ResolvedPaint {
     }
 
     /// Resolve the paint for one element given its inherited context.
+    ///
+    /// Tag-specific paint defaults (e.g. button background, border, cursor)
+    /// are applied after CSS and inline props so they act as user-agent defaults.
     pub fn resolve(
         inherited: &ResolvedPaint,
         css: &PaintProps,
@@ -275,6 +314,8 @@ impl ResolvedPaint {
         if !matches!(element.node_type, NodeType::Text(_)) {
             paint.apply_props(&element.props);
         }
+        // Apply tag-specific paint defaults (e.g. button styling)
+        tag_paint_defaults(&element.node_type, &mut paint);
         paint
     }
 }

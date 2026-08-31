@@ -148,6 +148,78 @@ impl TextRenderer {
 
         (max_width, total_height)
     }
+
+    /// Sum of glyph advances for the first `char_index` characters of `content`.
+    ///
+    /// Used to place the caret and selection highlight in a single-line input.
+    /// Falls back to the font-less estimate when parley resolves no glyphs.
+    pub fn measure_advance_before(
+        &mut self,
+        content: &str,
+        font_size: f32,
+        font_family: Option<&str>,
+        char_index: usize,
+    ) -> f32 {
+        if char_index == 0 || content.is_empty() {
+            return 0.0;
+        }
+        let byte_end = content
+            .char_indices()
+            .nth(char_index)
+            .map(|(i, _)| i)
+            .unwrap_or(content.len());
+        let prefix = &content[..byte_end];
+
+        let layout =
+            self.layout_text(prefix, font_size, font_family, None, None, None, None, None, None, None);
+        let advance: f32 = layout
+            .lines()
+            .flat_map(|l| l.items())
+            .filter_map(|item| {
+                if let parley::PositionedLayoutItem::GlyphRun(run) = item {
+                    Some(run.glyphs().map(|g| g.advance).sum::<f32>())
+                } else {
+                    None
+                }
+            })
+            .sum();
+
+        if advance > 0.0 {
+            advance
+        } else {
+            // Font-less fallback: proportional to prefix char count.
+            prefix.chars().count() as f32 * font_size * FALLBACK_ADVANCE_RATIO
+        }
+    }
+
+    /// Find the character index closest to horizontal offset `x` within `content`.
+    ///
+    /// The inverse of [`measure_advance_before`]: used to place the caret where
+    /// the user clicks. Returns a value in `0..=content.chars().count()`.
+    pub fn char_index_at_x(
+        &mut self,
+        content: &str,
+        font_size: f32,
+        font_family: Option<&str>,
+        x: f32,
+    ) -> usize {
+        if x <= 0.0 || content.is_empty() {
+            return 0;
+        }
+        let char_count = content.chars().count();
+        let mut prev_advance = 0.0f32;
+        for i in 1..=char_count {
+            let advance = self.measure_advance_before(content, font_size, font_family, i);
+            // If x falls in the first half of this glyph, snap to the previous
+            // boundary; otherwise include this glyph.
+            let mid = (prev_advance + advance) / 2.0;
+            if x < mid {
+                return i - 1;
+            }
+            prev_advance = advance;
+        }
+        char_count
+    }
 }
 
 /// Font-less size estimate: character count times a fraction of the font size.

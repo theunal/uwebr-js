@@ -18,6 +18,14 @@ pub struct HitTarget {
     pub depth: usize,
 }
 
+/// A region that listens for keyboard events (`on:keydown`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyTarget {
+    pub action: String,
+    pub bounds: LayoutInfo,
+    pub depth: usize,
+}
+
 /// An element's screen box, kept so hover hit-testing can map a cursor position
 /// back to the layout node id that drives `:hover`.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +33,11 @@ struct ElementBox {
     node_id: usize,
     bounds: LayoutInfo,
     depth: usize,
+    focusable: bool,
+    /// Tag name for element nodes (`div`, `button`, `input`, ...).
+    tag: Option<String>,
+    /// `on:click` action name, if any — used for keyboard activation.
+    click_action: Option<String>,
 }
 
 /// Full render pipeline: Element → Layout → Scene → vello Scene
@@ -34,6 +47,7 @@ pub struct RenderPipeline {
     stylebook: StyleBook,
     scene_builder: SceneBuilder,
     hit_targets: Vec<HitTarget>,
+    key_targets: Vec<KeyTarget>,
     /// Element boxes from the last layout pass, for hover hit-testing.
     element_boxes: Vec<ElementBox>,
     /// Raw CSS kept so `vw`/`vh` can be re-resolved when the viewport changes.
@@ -42,6 +56,10 @@ pub struct RenderPipeline {
     scroll_states: HashMap<usize, ScrollState>,
     /// CSS `cursor` per node — populated during build_render_scene.
     cursor_map: HashMap<usize, String>,
+    /// Focus handler names keyed by node id — populated during build.
+    focus_actions: HashMap<usize, String>,
+    /// `<input>` metadata keyed by node id — populated during build.
+    input_nodes: HashMap<usize, InputNodeInfo>,
 }
 
 impl RenderPipeline {
@@ -53,10 +71,13 @@ impl RenderPipeline {
             // Reused across frames: building one enumerates the system fonts.
             scene_builder: SceneBuilder::new(),
             hit_targets: Vec::new(),
+            key_targets: Vec::new(),
             element_boxes: Vec::new(),
             css_string: None,
             scroll_states: HashMap::new(),
             cursor_map: HashMap::new(),
+            focus_actions: HashMap::new(),
+            input_nodes: HashMap::new(),
         }
     }
 
@@ -97,8 +118,11 @@ impl RenderPipeline {
         self.layout_engine.reset();
         self.render_scene.clear();
         self.hit_targets.clear();
+        self.key_targets.clear();
         self.element_boxes.clear();
         self.cursor_map.clear();
+        self.focus_actions.clear();
+        self.input_nodes.clear();
 
         // Re-resolve `vw`/`vh` against the current viewport before layout.
         if let Some(ref css) = self.css_string {
@@ -122,17 +146,52 @@ impl RenderPipeline {
                 .collect_positioned_nodes(root, element, &self.stylebook);
 
         for pos_node in &positioned {
+            let focusable = is_focusable(&pos_node.element);
+            let tag = match &pos_node.element.node_type {
+                NodeType::Element(t) => Some(t.clone()),
+                _ => None,
+            };
+            let node_click_action = click_action(&pos_node.element.props);
             self.element_boxes.push(ElementBox {
                 node_id: pos_node.node_id,
                 bounds: pos_node.layout,
                 depth: pos_node.depth,
+                focusable,
+                tag,
+                click_action: node_click_action.clone(),
             });
-            if let Some(action) = click_action(&pos_node.element.props) {
+            if let Some(action) = node_click_action {
                 self.hit_targets.push(HitTarget {
                     action,
                     bounds: pos_node.layout,
                     depth: pos_node.depth,
                 });
+            }
+            if let Some(action) = key_action(&pos_node.element.props) {
+                self.key_targets.push(KeyTarget {
+                    action,
+                    bounds: pos_node.layout,
+                    depth: pos_node.depth,
+                });
+            }
+            if let Some(action) = focus_action(&pos_node.element.props) {
+                self.focus_actions.insert(pos_node.node_id, action);
+            }
+            if let Some(kind) = input_type_of(&pos_node.element) {
+                self.input_nodes.insert(
+                    pos_node.node_id,
+                    InputNodeInfo {
+                        node_id: pos_node.node_id,
+                        kind,
+                        bounds: pos_node.layout,
+                        depth: pos_node.depth,
+                        bind_key: bind_key(&pos_node.element.props),
+                        name: string_prop(&pos_node.element.props, "name"),
+                        change_action: change_action(&pos_node.element.props),
+                        font_size: pos_node.paint.font_size,
+                        font_family: pos_node.paint.font_family.clone(),
+                    },
+                );
             }
             // Ensure scroll containers have a scroll_states entry.
             if pos_node.overflow_scroll_x || pos_node.overflow_scroll_y {
@@ -151,6 +210,11 @@ impl RenderPipeline {
     /// Access the intermediate render scene (post-layout, pre-encoding).
     pub fn render_scene(&self) -> &RenderScene {
         &self.render_scene
+    }
+
+    /// Mutable access to the text renderer for text measurement queries.
+    pub fn text_renderer(&mut self) -> &mut uwebr_render::text::TextRenderer {
+        self.scene_builder.text_renderer()
     }
 
     /// Clickable regions from the last layout pass.
@@ -182,6 +246,70 @@ impl RenderPipeline {
     /// Look up the CSS `cursor` value for a node, if any.
     pub fn cursor_at(&self, node_id: usize) -> Option<&str> {
         self.cursor_map.get(&node_id).map(|s| s.as_str())
+    }
+
+    /// Keyboard-focused regions from the last layout pass.
+    pub fn key_targets(&self) -> &[KeyTarget] {
+        &self.key_targets
+    }
+
+    /// Find the `on:keydown` action registered at a point, innermost first.
+    pub fn key_hit_test(&self, x: f32, y: f32) -> Option<&str> {
+        self.key_targets
+            .iter()
+            .filter(|t| contains_point(&t.bounds, x, y))
+            .max_by_key(|t| t.depth)
+            .map(|t| t.action.as_str())
+    }
+
+    /// Find the innermost focusable node at a point.
+    ///
+    /// An element is considered focusable if it has an `on:focus` prop or is
+    /// a known focusable tag (`input`, `button`, `select`, `textarea`).
+    pub fn focus_hit_test(&self, x: f32, y: f32) -> Option<usize> {
+        self.element_boxes
+            .iter()
+            .filter(|b| b.focusable && contains_point(&b.bounds, x, y))
+            .max_by_key(|b| b.depth)
+            .map(|b| b.node_id)
+    }
+
+    /// The `on:focus` action registered for a node, if any.
+    pub fn focus_action_for(&self, node_id: usize) -> Option<&str> {
+        self.focus_actions.get(&node_id).map(|s| s.as_str())
+    }
+
+    /// `<input>` metadata for a node, if it is an input.
+    pub fn input_node(&self, node_id: usize) -> Option<&InputNodeInfo> {
+        self.input_nodes.get(&node_id)
+    }
+
+    /// All `<input>` nodes discovered in the last layout pass.
+    pub fn input_nodes(&self) -> &HashMap<usize, InputNodeInfo> {
+        &self.input_nodes
+    }
+
+    /// The tag name of the element at a node id (for keyboard routing), if the
+    /// node is an element. Looked up from element boxes is not enough (no tag),
+    /// so this checks the input map and key targets.
+    pub fn is_focusable_input(&self, node_id: usize) -> bool {
+        self.input_nodes.contains_key(&node_id)
+    }
+
+    /// The tag name for a node id, if it is an element node.
+    pub fn tag_of(&self, node_id: usize) -> Option<&str> {
+        self.element_boxes
+            .iter()
+            .find(|b| b.node_id == node_id)
+            .and_then(|b| b.tag.as_deref())
+    }
+
+    /// The `on:click` action for a node id, if any.
+    pub fn click_action_for(&self, node_id: usize) -> Option<&str> {
+        self.element_boxes
+            .iter()
+            .find(|b| b.node_id == node_id)
+            .and_then(|b| b.click_action.as_deref())
     }
 
     /// Reload CSS without rebuilding the entire pipeline.
@@ -257,6 +385,142 @@ fn click_action(props: &[(String, PropValue)]) -> Option<String> {
         }
         match value {
             PropValue::Closure(action) => Some(action.clone()),
+            _ => None,
+        }
+    })
+}
+
+/// Extract the keyboard handler name from an element's props.
+fn key_action(props: &[(String, PropValue)]) -> Option<String> {
+    props.iter().find_map(|(name, value)| {
+        if name != "on:keydown" {
+            return None;
+        }
+        match value {
+            PropValue::Closure(action) => Some(action.clone()),
+            _ => None,
+        }
+    })
+}
+
+/// Tags that are inherently focusable (receive keyboard events by default).
+const FOCUSABLE_TAGS: &[&str] = &["input", "button", "select", "textarea"];
+
+/// Whether an element can receive keyboard focus.
+///
+/// An element is focusable when it is a known focusable tag (`input`,
+/// `button`, `select`, `textarea`) or explicitly opts in with an `on:focus`
+/// or `on:keydown` handler prop.
+fn is_focusable(element: &Element) -> bool {
+    if let NodeType::Element(tag) = &element.node_type {
+        if FOCUSABLE_TAGS.contains(&tag.as_str()) {
+            return true;
+        }
+    }
+    element
+        .props
+        .iter()
+        .any(|(name, _)| name == "on:focus" || name == "on:keydown")
+}
+
+/// Extract the focus handler name from an element's props, if any.
+fn focus_action(props: &[(String, PropValue)]) -> Option<String> {
+    props.iter().find_map(|(name, value)| {
+        if name != "on:focus" {
+            return None;
+        }
+        match value {
+            PropValue::Closure(action) => Some(action.clone()),
+            _ => None,
+        }
+    })
+}
+
+/// Whether an element is an `<input>` of the given `type` (defaulting to text).
+fn input_type_of(element: &Element) -> Option<InputKind> {
+    let NodeType::Element(tag) = &element.node_type else {
+        return None;
+    };
+    if tag != "input" {
+        return None;
+    }
+    let ty = element
+        .props
+        .iter()
+        .find(|(k, _)| k == "type")
+        .and_then(|(_, v)| match v {
+            PropValue::String(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or("text");
+    Some(match ty {
+        "checkbox" => InputKind::Checkbox,
+        "radio" => InputKind::Radio,
+        _ => InputKind::Text,
+    })
+}
+
+/// The kind of `<input>` element, driving edit and render behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputKind {
+    Text,
+    Checkbox,
+    Radio,
+}
+
+/// Per-`<input>` info recorded during layout, used by the app to route text
+/// editing and by the scene builder to render caret/selection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputNodeInfo {
+    pub node_id: usize,
+    pub kind: InputKind,
+    pub bounds: LayoutInfo,
+    pub depth: usize,
+    /// State key bound via `bind:value` / `bind:checked`, if any.
+    pub bind_key: Option<String>,
+    /// `name` attribute (used to group radios).
+    pub name: Option<String>,
+    /// `on:change` action name, if any.
+    pub change_action: Option<String>,
+    pub font_size: f32,
+    pub font_family: Option<String>,
+}
+
+/// Extract a `bind:value` or `bind:checked` state key from props.
+fn bind_key(props: &[(String, PropValue)]) -> Option<String> {
+    props.iter().find_map(|(name, value)| {
+        if name != "bind:value" && name != "bind:checked" {
+            return None;
+        }
+        match value {
+            PropValue::String(s) => Some(s.clone()),
+            PropValue::Closure(s) => Some(s.clone()),
+            _ => None,
+        }
+    })
+}
+
+/// Extract the `on:change` action name from props.
+fn change_action(props: &[(String, PropValue)]) -> Option<String> {
+    props.iter().find_map(|(name, value)| {
+        if name != "on:change" {
+            return None;
+        }
+        match value {
+            PropValue::Closure(action) => Some(action.clone()),
+            _ => None,
+        }
+    })
+}
+
+/// Read a plain `String` prop.
+fn string_prop(props: &[(String, PropValue)], key: &str) -> Option<String> {
+    props.iter().find_map(|(name, value)| {
+        if name != key {
+            return None;
+        }
+        match value {
+            PropValue::String(s) => Some(s.clone()),
             _ => None,
         }
     })
