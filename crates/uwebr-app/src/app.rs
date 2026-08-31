@@ -7,7 +7,7 @@ use uwebr_core::timer::timer_registry;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::window::{WindowAttributes, WindowId};
+use winit::window::{CursorIcon, WindowAttributes, WindowId};
 
 use crate::component::Component;
 use crate::context::GpuContext;
@@ -25,6 +25,8 @@ struct WindowState {
     cursor: (f32, f32),
     /// Layout node currently under the cursor, driving `:hover`.
     hovered_element: Option<usize>,
+    /// Current cursor icon — tracked to avoid redundant `set_cursor` calls.
+    current_cursor_icon: CursorIcon,
 }
 
 impl WindowState {
@@ -35,6 +37,7 @@ impl WindowState {
             component,
             cursor: (0.0, 0.0),
             hovered_element: None,
+            current_cursor_icon: CursorIcon::Default,
         }
     }
 
@@ -81,6 +84,70 @@ impl WindowState {
         }
         self.hovered_element = new_hovered;
         true
+    }
+
+    /// Update the window cursor icon based on the CSS `cursor` property of the
+    /// element under the pointer. Returns true if the icon changed.
+    fn update_cursor_icon(&mut self) -> bool {
+        let new_icon = self
+            .hovered_element
+            .and_then(|id| self.pipeline.cursor_at(id))
+            .map(css_cursor_to_icon)
+            .unwrap_or(CursorIcon::Default);
+
+        if new_icon == self.current_cursor_icon {
+            return false;
+        }
+        self.current_cursor_icon = new_icon;
+        self.ctx.window().set_cursor(new_icon);
+        true
+    }
+}
+
+/// Map a CSS `cursor` value string to a winit [`CursorIcon`].
+///
+/// CSS cursor names follow the W3C spec and match [`CursorIcon::name()`]
+/// exactly, so a simple string comparison suffices.
+fn css_cursor_to_icon(css: &str) -> CursorIcon {
+    match css {
+        "default" => CursorIcon::Default,
+        "context-menu" => CursorIcon::ContextMenu,
+        "help" => CursorIcon::Help,
+        "pointer" => CursorIcon::Pointer,
+        "progress" => CursorIcon::Progress,
+        "wait" => CursorIcon::Wait,
+        "cell" => CursorIcon::Cell,
+        "crosshair" => CursorIcon::Crosshair,
+        "text" => CursorIcon::Text,
+        "vertical-text" => CursorIcon::VerticalText,
+        "alias" => CursorIcon::Alias,
+        "copy" => CursorIcon::Copy,
+        "move" => CursorIcon::Move,
+        "no-drop" => CursorIcon::NoDrop,
+        "not-allowed" => CursorIcon::NotAllowed,
+        "grab" => CursorIcon::Grab,
+        "grabbing" => CursorIcon::Grabbing,
+        "e-resize" => CursorIcon::EResize,
+        "n-resize" => CursorIcon::NResize,
+        "ne-resize" => CursorIcon::NeResize,
+        "nw-resize" => CursorIcon::NwResize,
+        "s-resize" => CursorIcon::SResize,
+        "se-resize" => CursorIcon::SeResize,
+        "sw-resize" => CursorIcon::SwResize,
+        "w-resize" => CursorIcon::WResize,
+        "ew-resize" => CursorIcon::EwResize,
+        "ns-resize" => CursorIcon::NsResize,
+        "nesw-resize" => CursorIcon::NeswResize,
+        "nwse-resize" => CursorIcon::NwseResize,
+        "col-resize" => CursorIcon::ColResize,
+        "row-resize" => CursorIcon::RowResize,
+        "all-scroll" => CursorIcon::AllScroll,
+        "zoom-in" => CursorIcon::ZoomIn,
+        "zoom-out" => CursorIcon::ZoomOut,
+        "dnd-ask" => CursorIcon::DndAsk,
+        "all-resize" => CursorIcon::AllResize,
+        // Unknown or "none" → default arrow.
+        _ => CursorIcon::Default,
     }
 }
 
@@ -312,7 +379,10 @@ impl ApplicationHandler for App {
                 state.cursor = (position.x as f32, position.y as f32);
                 // Recompute `:hover`; a change requires a repaint to apply any
                 // hover rules to the newly (un)hovered element.
-                if state.update_hover() {
+                let hover_changed = state.update_hover();
+                // Update cursor icon from CSS `cursor` property on the hovered element.
+                let cursor_changed = state.update_cursor_icon();
+                if hover_changed || cursor_changed {
                     state.ctx.window().request_redraw();
                 }
                 self.dispatch_event(&AppEvent::MouseMove(position.x as f32, position.y as f32));
@@ -428,5 +498,133 @@ mod tests {
     fn test_app_primary_window_none_before_run() {
         let app = App::new("Test");
         assert!(app.primary_window().is_none());
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_pointer() {
+        assert_eq!(css_cursor_to_icon("pointer"), CursorIcon::Pointer);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_text() {
+        assert_eq!(css_cursor_to_icon("text"), CursorIcon::Text);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_crosshair() {
+        assert_eq!(css_cursor_to_icon("crosshair"), CursorIcon::Crosshair);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_not_allowed() {
+        assert_eq!(css_cursor_to_icon("not-allowed"), CursorIcon::NotAllowed);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_grab() {
+        assert_eq!(css_cursor_to_icon("grab"), CursorIcon::Grab);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_grabbing() {
+        assert_eq!(css_cursor_to_icon("grabbing"), CursorIcon::Grabbing);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_wait() {
+        assert_eq!(css_cursor_to_icon("wait"), CursorIcon::Wait);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_move() {
+        assert_eq!(css_cursor_to_icon("move"), CursorIcon::Move);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_zoom_in() {
+        assert_eq!(css_cursor_to_icon("zoom-in"), CursorIcon::ZoomIn);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_zoom_out() {
+        assert_eq!(css_cursor_to_icon("zoom-out"), CursorIcon::ZoomOut);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_col_resize() {
+        assert_eq!(css_cursor_to_icon("col-resize"), CursorIcon::ColResize);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_row_resize() {
+        assert_eq!(css_cursor_to_icon("row-resize"), CursorIcon::RowResize);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_resize_variants() {
+        assert_eq!(css_cursor_to_icon("e-resize"), CursorIcon::EResize);
+        assert_eq!(css_cursor_to_icon("n-resize"), CursorIcon::NResize);
+        assert_eq!(css_cursor_to_icon("ne-resize"), CursorIcon::NeResize);
+        assert_eq!(css_cursor_to_icon("nw-resize"), CursorIcon::NwResize);
+        assert_eq!(css_cursor_to_icon("s-resize"), CursorIcon::SResize);
+        assert_eq!(css_cursor_to_icon("se-resize"), CursorIcon::SeResize);
+        assert_eq!(css_cursor_to_icon("sw-resize"), CursorIcon::SwResize);
+        assert_eq!(css_cursor_to_icon("w-resize"), CursorIcon::WResize);
+        assert_eq!(css_cursor_to_icon("ew-resize"), CursorIcon::EwResize);
+        assert_eq!(css_cursor_to_icon("ns-resize"), CursorIcon::NsResize);
+        assert_eq!(css_cursor_to_icon("nesw-resize"), CursorIcon::NeswResize);
+        assert_eq!(css_cursor_to_icon("nwse-resize"), CursorIcon::NwseResize);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_unknown_falls_back_to_default() {
+        assert_eq!(css_cursor_to_icon("banana"), CursorIcon::Default);
+        assert_eq!(css_cursor_to_icon(""), CursorIcon::Default);
+        assert_eq!(css_cursor_to_icon("none"), CursorIcon::Default);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_all_scroll() {
+        assert_eq!(css_cursor_to_icon("all-scroll"), CursorIcon::AllScroll);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_context_menu() {
+        assert_eq!(css_cursor_to_icon("context-menu"), CursorIcon::ContextMenu);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_help() {
+        assert_eq!(css_cursor_to_icon("help"), CursorIcon::Help);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_alias() {
+        assert_eq!(css_cursor_to_icon("alias"), CursorIcon::Alias);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_copy() {
+        assert_eq!(css_cursor_to_icon("copy"), CursorIcon::Copy);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_no_drop() {
+        assert_eq!(css_cursor_to_icon("no-drop"), CursorIcon::NoDrop);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_cell() {
+        assert_eq!(css_cursor_to_icon("cell"), CursorIcon::Cell);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_progress() {
+        assert_eq!(css_cursor_to_icon("progress"), CursorIcon::Progress);
+    }
+
+    #[test]
+    fn test_css_cursor_to_icon_vertical_text() {
+        assert_eq!(css_cursor_to_icon("vertical-text"), CursorIcon::VerticalText);
     }
 }
