@@ -135,9 +135,11 @@ fn parse_at_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<AtR
             let content = read_until(chars, '}');
             chars.next(); // consume '}'
 
+            let conditions = parse_media_conditions(&query);
             let (inner_rules, _) = parse_css(&content)?;
             if let Some(mut rule) = inner_rules.into_iter().next() {
                 rule.media_query = Some(query);
+                rule.media_conditions = conditions;
                 Ok(AtRuleResult::Rule(rule))
             } else {
                 Ok(AtRuleResult::Skipped)
@@ -166,6 +168,95 @@ fn parse_at_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<AtR
             Ok(AtRuleResult::Skipped)
         }
     }
+}
+
+/// Parse a media query string into OR-groups of AND-conditions.
+///
+/// Outer vec = OR groups (comma-separated).
+/// Inner vec = AND conditions within a group.
+fn parse_media_conditions(query: &str) -> Vec<Vec<MediaCondition>> {
+    let query = query.trim();
+
+    // Handle "not screen" or "not print" — prefix negation.
+    let (negate_prefix, query) = if let Some(rest) = query.strip_prefix("not ") {
+        (true, rest.trim())
+    } else {
+        (false, query)
+    };
+
+    // Split on comma for OR groups.
+    let or_groups: Vec<&str> = query.split(',').collect();
+    let mut groups = Vec::new();
+
+    for group_str in &or_groups {
+        let group_str = group_str.trim();
+        if group_str.is_empty() {
+            continue;
+        }
+
+        // Split on " and " for AND conditions within a group.
+        let and_parts: Vec<&str> = group_str.split(" and ").collect();
+        let mut conditions = Vec::new();
+
+        for part in &and_parts {
+            let part = part.trim();
+            if part.is_empty() || part == "screen" {
+                continue;
+            }
+            if part == "print" && !negate_prefix {
+                conditions.push(MediaCondition {
+                    feature: "print".to_string(),
+                    value: MediaValue::Keyword("print".to_string()),
+                    negated: false,
+                });
+                continue;
+            }
+            if let Some(cond) = parse_one_media_condition(part, negate_prefix) {
+                conditions.push(cond);
+            }
+        }
+
+        if !conditions.is_empty() {
+            groups.push(conditions);
+        }
+    }
+
+    groups
+}
+
+/// Parse a single `(feature: value)` or `feature: value` token.
+fn parse_one_media_condition(token: &str, negated: bool) -> Option<MediaCondition> {
+    let token = token.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let token = token.trim();
+
+    let (feature, value_str) = if let Some(colon_pos) = token.find(':') {
+        let feature = token[..colon_pos].trim().to_string();
+        let value_str = token[colon_pos + 1..].trim().to_string();
+        (feature, value_str)
+    } else {
+        // Feature without value, e.g. "print" — treat as keyword.
+        return Some(MediaCondition {
+            feature: token.to_string(),
+            value: MediaValue::Keyword(token.to_string()),
+            negated,
+        });
+    };
+
+    let value = if let Some(px_val) = value_str.strip_suffix("px") {
+        let num: f32 = px_val.trim().parse().ok()?;
+        MediaValue::Length(num, LengthUnit::Px)
+    } else if let Some(em_val) = value_str.strip_suffix("em") {
+        let num: f32 = em_val.trim().parse().ok()?;
+        MediaValue::Length(num, LengthUnit::Em)
+    } else {
+        MediaValue::Keyword(value_str)
+    };
+
+    Some(MediaCondition {
+        feature,
+        value,
+        negated,
+    })
 }
 
 /// Parse the inner content of a `@keyframes` block.
@@ -246,6 +337,7 @@ fn parse_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<CssRul
         selector,
         properties,
         media_query: None,
+        media_conditions: Vec::new(),
     })
 }
 

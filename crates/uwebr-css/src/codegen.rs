@@ -365,6 +365,7 @@ fn resolve_rule(
             })
             .collect(),
         media_query: rule.media_query.clone(),
+        media_conditions: rule.media_conditions.clone(),
     }
 }
 
@@ -532,6 +533,72 @@ fn resolve_calc_length(val: f32, unit: LengthUnit, vw: f32, vh: f32) -> f32 {
     }
 }
 
+/// Evaluate a `MediaCondition` against the current viewport dimensions.
+fn media_condition_matches(condition: &MediaCondition, vw: f32, vh: f32) -> bool {
+    let result = match condition.feature.as_str() {
+        "min-width" => match condition.value {
+            MediaValue::Length(val, _) => vw >= val,
+            _ => false,
+        },
+        "max-width" => match condition.value {
+            MediaValue::Length(val, _) => vw <= val,
+            _ => false,
+        },
+        "min-height" => match condition.value {
+            MediaValue::Length(val, _) => vh >= val,
+            _ => false,
+        },
+        "max-height" => match condition.value {
+            MediaValue::Length(val, _) => vh <= val,
+            _ => false,
+        },
+        "width" => match condition.value {
+            MediaValue::Length(val, _) => (vw - val).abs() < f32::EPSILON,
+            _ => false,
+        },
+        "height" => match condition.value {
+            MediaValue::Length(val, _) => (vh - val).abs() < f32::EPSILON,
+            _ => false,
+        },
+        "orientation" => match &condition.value {
+            MediaValue::Keyword(k) if k == "portrait" => vh > vw,
+            MediaValue::Keyword(k) if k == "landscape" => vw > vh,
+            _ => false,
+        },
+        "prefers-color-scheme" => match &condition.value {
+            // Desktop app → always light mode.
+            MediaValue::Keyword(k) if k == "light" => true,
+            MediaValue::Keyword(k) if k == "dark" => false,
+            _ => false,
+        },
+        // "print" feature → always false for desktop app.
+        "print" => false,
+        // Unknown feature → assume matches (permissive).
+        _ => true,
+    };
+
+    if condition.negated {
+        !result
+    } else {
+        result
+    }
+}
+
+/// Check if a rule's media conditions match the given viewport.
+/// Returns `true` if no media conditions (always matches).
+/// Outer vec = OR groups (any group matching is enough).
+/// Inner vec = AND conditions (all must match).
+pub fn rule_media_matches(rule: &CssRule, vw: f32, vh: f32) -> bool {
+    if rule.media_conditions.is_empty() {
+        return true;
+    }
+    // Any OR group matching → rule matches.
+    rule.media_conditions.iter().any(|group| {
+        // All AND conditions in the group must match.
+        group.iter().all(|c| media_condition_matches(c, vw, vh))
+    })
+}
+
 pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Result<Vec<StyleEntry>> {
     // Phase 1: Collect all custom properties (--*) from every rule.
     let mut custom_props: std::collections::HashMap<String, CssValue> =
@@ -553,6 +620,11 @@ pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Resul
     let mut entries = Vec::with_capacity(resolved_rules.len());
 
     for rule in &resolved_rules {
+        // Skip rules whose media queries don't match the viewport.
+        if !rule_media_matches(rule, vw, vh) {
+            continue;
+        }
+
         // Skip custom-property-only rules (they have no real CSS properties).
         let real_props: Vec<_> = rule
             .properties
@@ -3854,6 +3926,122 @@ mod tests {
             rules.is_empty(),
             "empty @media body should produce no rules"
         );
+    }
+
+    #[test]
+    fn test_media_max_width_match() {
+        let css = "@media (max-width: 768px) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        assert!(super::rule_media_matches(&rules[0], 400.0, 600.0));
+    }
+
+    #[test]
+    fn test_media_max_width_no_match() {
+        let css = "@media (max-width: 768px) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        assert!(!super::rule_media_matches(&rules[0], 1024.0, 600.0));
+    }
+
+    #[test]
+    fn test_media_min_height_match() {
+        let css = "@media (min-height: 400px) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        assert!(super::rule_media_matches(&rules[0], 800.0, 600.0));
+    }
+
+    #[test]
+    fn test_media_min_height_no_match() {
+        let css = "@media (min-height: 600px) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        assert!(!super::rule_media_matches(&rules[0], 800.0, 400.0));
+    }
+
+    #[test]
+    fn test_media_orientation_portrait() {
+        let css = "@media (orientation: portrait) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        assert!(super::rule_media_matches(&rules[0], 400.0, 800.0));
+    }
+
+    #[test]
+    fn test_media_orientation_landscape() {
+        let css = "@media (orientation: landscape) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        assert!(super::rule_media_matches(&rules[0], 800.0, 400.0));
+    }
+
+    #[test]
+    fn test_media_and_conditions() {
+        let css = "@media (min-width: 320px) and (max-width: 768px) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        // 500px is between 320 and 768 → matches.
+        assert!(super::rule_media_matches(&rules[0], 500.0, 600.0));
+        // 200px < 320 → doesn't match.
+        assert!(!super::rule_media_matches(&rules[0], 200.0, 600.0));
+        // 1024px > 768 → doesn't match.
+        assert!(!super::rule_media_matches(&rules[0], 1024.0, 600.0));
+    }
+
+    #[test]
+    fn test_media_not_print() {
+        let css = "@media not print { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        // print is always false, so not print = always true.
+        assert!(super::rule_media_matches(&rules[0], 800.0, 600.0));
+    }
+
+    #[test]
+    fn test_media_comma_or() {
+        let css = "@media (max-width: 400px), (max-height: 300px) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        // vw=300 matches first condition.
+        assert!(super::rule_media_matches(&rules[0], 300.0, 600.0));
+        // vh=200 matches second condition.
+        assert!(super::rule_media_matches(&rules[0], 800.0, 200.0));
+        // Neither matches.
+        assert!(!super::rule_media_matches(&rules[0], 800.0, 600.0));
+    }
+
+    #[test]
+    fn test_media_filter_rules_in_entries() {
+        let css = "@media (max-width: 400px) { .a { color: red; } } .b { color: blue; }";
+        let rules = parse_rules(css).unwrap();
+        // vw=800 → media query doesn't match → only .b should be in entries.
+        let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].selector, ".b");
+    }
+
+    #[test]
+    fn test_media_rules_match_when_vp_fits() {
+        let css = "@media (max-width: 768px) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        // vw=400 → matches → .a should be in entries.
+        let entries = convert_to_style_entries_vp(&rules, 400.0, 600.0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].selector, ".a");
+    }
+
+    #[test]
+    fn test_media_no_query_always_matches() {
+        let css = ".a { color: red; }";
+        let rules = parse_rules(css).unwrap();
+        assert!(super::rule_media_matches(&rules[0], 800.0, 600.0));
+    }
+
+    #[test]
+    fn test_media_prefers_color_scheme_light() {
+        let css = "@media (prefers-color-scheme: light) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        assert!(super::rule_media_matches(&rules[0], 800.0, 600.0));
+    }
+
+    #[test]
+    fn test_media_prefers_color_scheme_dark() {
+        let css = "@media (prefers-color-scheme: dark) { .a { color: red; } }";
+        let rules = parse_rules(css).unwrap();
+        // Desktop app → always light → dark doesn't match.
+        assert!(!super::rule_media_matches(&rules[0], 800.0, 600.0));
     }
 
     #[test]

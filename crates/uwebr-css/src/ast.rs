@@ -6,6 +6,31 @@ pub struct CssRule {
     pub selector: CssSelector,
     pub properties: Vec<CssProperty>,
     pub media_query: Option<String>,
+    /// Parsed media conditions.
+    /// Outer vec = OR groups (comma-separated).
+    /// Inner vec = AND conditions within a group.
+    /// Empty = always match.
+    pub media_conditions: Vec<Vec<MediaCondition>>,
+}
+
+/// A single media condition, e.g. `(max-width: 768px)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaCondition {
+    /// The media feature name, e.g. "max-width", "orientation".
+    pub feature: String,
+    /// The value to compare against.
+    pub value: MediaValue,
+    /// If true, negate the condition (`not (min-width: ...)`).
+    pub negated: bool,
+}
+
+/// The value side of a media condition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MediaValue {
+    /// A length with unit, e.g. `768px`.
+    Length(f32, LengthUnit),
+    /// A keyword, e.g. "portrait", "landscape".
+    Keyword(String),
 }
 
 /// CSS selector
