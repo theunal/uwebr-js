@@ -5,7 +5,7 @@ use vello::peniko::{self, color::palette, Fill};
 
 use crate::color::css_color_to_peniko;
 use crate::scene::{
-    Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle, TextOverflow,
+    Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle, TextOverflow, Visibility,
 };
 use crate::text::TextRenderer;
 
@@ -91,6 +91,11 @@ impl SceneBuilder {
             return;
         }
 
+        // `visibility: hidden` renders nothing but still reserves layout space.
+        if node.style.visibility == Visibility::Hidden {
+            return;
+        }
+
         let tx = Self::transform_to_affine(&node.transform, x, y);
 
         // Push transform layer if needed
@@ -156,6 +161,9 @@ impl SceneBuilder {
                 font_size,
                 color,
                 font_family,
+                font_weight,
+                font_style,
+                text_decoration,
             } => {
                 self.draw_text(
                     scene,
@@ -170,6 +178,9 @@ impl SceneBuilder {
                     node.style.text_align.as_deref(),
                     node.style.line_height,
                     node.style.letter_spacing,
+                    font_weight.as_deref(),
+                    font_style.as_deref(),
+                    text_decoration.as_deref(),
                 );
             }
             RenderNodeKind::Image {
@@ -269,6 +280,7 @@ impl SceneBuilder {
 
     /// Lay out the string with parley and encode its glyph runs into the scene.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn draw_text(
         &mut self,
         scene: &mut vello::Scene,
@@ -283,6 +295,9 @@ impl SceneBuilder {
         text_align: Option<&str>,
         line_height: Option<f32>,
         letter_spacing: Option<f32>,
+        font_weight: Option<&str>,
+        font_style: Option<&str>,
+        text_decoration: Option<&str>,
     ) {
         if content.trim().is_empty() {
             return;
@@ -313,6 +328,9 @@ impl SceneBuilder {
             text_align,
             line_height,
             letter_spacing,
+            font_weight,
+            font_style,
+            text_decoration,
         );
 
         let mut cursor_y: f32 = 0.0;
@@ -355,9 +373,18 @@ impl SceneBuilder {
 
     /// Total advance width of a laid-out string on its first line.
     fn measure_advance(&mut self, content: &str, font_size: f32, font_family: Option<&str>) -> f32 {
-        let layout = self
-            .text
-            .layout_text(content, font_size, font_family, None, None, None, None);
+        let layout = self.text.layout_text(
+            content,
+            font_size,
+            font_family,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         layout
             .lines()
             .flat_map(|l| l.items())

@@ -40,6 +40,8 @@ pub struct RenderPipeline {
     css_string: Option<String>,
     /// Per-node scroll offsets for scroll containers.
     scroll_states: HashMap<usize, ScrollState>,
+    /// CSS `cursor` per node — populated during build_render_scene.
+    cursor_map: HashMap<usize, String>,
 }
 
 impl RenderPipeline {
@@ -54,6 +56,7 @@ impl RenderPipeline {
             element_boxes: Vec::new(),
             css_string: None,
             scroll_states: HashMap::new(),
+            cursor_map: HashMap::new(),
         }
     }
 
@@ -95,6 +98,7 @@ impl RenderPipeline {
         self.render_scene.clear();
         self.hit_targets.clear();
         self.element_boxes.clear();
+        self.cursor_map.clear();
 
         // Re-resolve `vw`/`vh` against the current viewport before layout.
         if let Some(ref css) = self.css_string {
@@ -134,6 +138,10 @@ impl RenderPipeline {
             if pos_node.overflow_scroll_x || pos_node.overflow_scroll_y {
                 self.scroll_states.entry(pos_node.node_id).or_default();
             }
+            // Track cursor values for hover state.
+            if let Some(ref c) = pos_node.paint.cursor {
+                self.cursor_map.insert(pos_node.node_id, c.clone());
+            }
             if let Some(render_node) = positioned_to_render_node(pos_node) {
                 self.render_scene.add_node(render_node);
             }
@@ -169,6 +177,11 @@ impl RenderPipeline {
             .filter(|b| contains_point(&b.bounds, x, y))
             .max_by_key(|b| b.depth)
             .map(|b| b.node_id)
+    }
+
+    /// Look up the CSS `cursor` value for a node, if any.
+    pub fn cursor_at(&self, node_id: usize) -> Option<&str> {
+        self.cursor_map.get(&node_id).map(|s| s.as_str())
     }
 
     /// Reload CSS without rebuilding the entire pipeline.
@@ -270,13 +283,16 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 return None;
             }
             Some(
-                RenderNode::text_with_family(
+                RenderNode::text_full(
                     id,
                     layout,
                     content,
                     pos.paint.font_size,
                     pos.paint.color,
                     pos.paint.font_family.clone(),
+                    pos.paint.font_weight.clone(),
+                    pos.paint.font_style.clone(),
+                    pos.paint.text_decoration.clone(),
                 )
                 .with_transform(pos.transform.clone())
                 .with_box_shadow(pos.paint.box_shadow.clone())
@@ -333,13 +349,16 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 return None;
             }
             Some(
-                RenderNode::text_with_family(
+                RenderNode::text_full(
                     id,
                     layout,
                     html,
                     pos.paint.font_size,
                     pos.paint.color,
                     pos.paint.font_family.clone(),
+                    pos.paint.font_weight.clone(),
+                    pos.paint.font_style.clone(),
+                    pos.paint.text_decoration.clone(),
                 )
                 .with_transform(pos.transform.clone())
                 .with_box_shadow(pos.paint.box_shadow.clone())
@@ -480,6 +499,14 @@ fn paint_to_render_style(
         text_align: paint.text_align.clone(),
         line_height: paint.line_height,
         letter_spacing: paint.letter_spacing,
+        font_weight: paint.font_weight.clone(),
+        font_style: paint.font_style.clone(),
+        text_decoration: paint.text_decoration.clone(),
+        visibility: match paint.visibility.as_deref() {
+            Some("hidden") | Some("collapse") => uwebr_render::scene::Visibility::Hidden,
+            _ => uwebr_render::scene::Visibility::Visible,
+        },
+        cursor: paint.cursor.clone(),
     }
 }
 
@@ -1464,5 +1491,83 @@ mod tests {
             !pipeline.scroll_states.is_empty(),
             "scroll containers should get entries in scroll_states"
         );
+    }
+
+    #[test]
+    fn test_visibility_hidden_reaches_render_style() {
+        let css = ".h { visibility: hidden; }";
+        let el = make_el(
+            "div",
+            vec![("class".into(), PropValue::String("h".into()))],
+            vec![make_text("hidden")],
+        );
+        let mut pipeline = RenderPipeline::new().with_css(css);
+        pipeline.build_render_scene(&el, 800, 600);
+        let scene = pipeline.render_scene();
+        let nodes = scene.nodes();
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.style.visibility == uwebr_render::scene::Visibility::Hidden),
+            "visibility: hidden must reach the render style"
+        );
+    }
+
+    #[test]
+    fn test_cursor_pointer_populates_cursor_map() {
+        let css = ".c { cursor: pointer; }";
+        let el = make_el(
+            "div",
+            vec![
+                ("class".into(), PropValue::String("c".into())),
+                ("width".into(), PropValue::Number(100.0)),
+                ("height".into(), PropValue::Number(50.0)),
+            ],
+            vec![],
+        );
+        let mut pipeline = RenderPipeline::new().with_css(css);
+        pipeline.build_render_scene(&el, 800, 600);
+        assert!(
+            !pipeline.cursor_map.is_empty(),
+            "cursor: pointer must populate cursor_map"
+        );
+        let cursor = pipeline.cursor_map.values().next().unwrap();
+        assert_eq!(cursor, "pointer");
+    }
+
+    #[test]
+    fn test_font_weight_reaches_text_node() {
+        let css = ".b { font-weight: bold; }";
+        let el = make_el(
+            "div",
+            vec![("class".into(), PropValue::String("b".into()))],
+            vec![make_text("bold")],
+        );
+        let mut pipeline = RenderPipeline::new().with_css(css);
+        pipeline.build_render_scene(&el, 800, 600);
+        let scene = pipeline.render_scene();
+        let text_node = scene
+            .nodes()
+            .iter()
+            .find(|n| matches!(&n.kind, RenderNodeKind::Text { .. }));
+        assert!(text_node.is_some(), "should have a text node");
+    }
+
+    #[test]
+    fn test_cursor_at_method() {
+        let css = ".c { cursor: pointer; }";
+        let el = make_el(
+            "div",
+            vec![
+                ("class".into(), PropValue::String("c".into())),
+                ("width".into(), PropValue::Number(100.0)),
+                ("height".into(), PropValue::Number(50.0)),
+            ],
+            vec![],
+        );
+        let mut pipeline = RenderPipeline::new().with_css(css);
+        pipeline.build_render_scene(&el, 800, 600);
+        let &node_id = pipeline.cursor_map.keys().next().unwrap();
+        assert_eq!(pipeline.cursor_at(node_id), Some("pointer"));
     }
 }

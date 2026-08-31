@@ -1,4 +1,4 @@
-use parley::style::{FontFamily, LineHeight, StyleProperty};
+use parley::style::{FontFamily, FontStyle, FontWeight, LineHeight, StyleProperty};
 use parley::{Alignment, AlignmentOptions, FontContext, Layout, LayoutContext};
 
 /// Ratio used to estimate glyph advance when no system font is available.
@@ -41,6 +41,9 @@ impl TextRenderer {
         text_align: Option<&str>,
         line_height: Option<f32>,
         letter_spacing: Option<f32>,
+        font_weight: Option<&str>,
+        font_style: Option<&str>,
+        text_decoration: Option<&str>,
     ) -> Layout<()> {
         let mut builder =
             self.layout_context
@@ -58,6 +61,31 @@ impl TextRenderer {
         }
         if let Some(lh) = line_height {
             builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(lh)));
+        }
+        if let Some(weight) = font_weight {
+            if let Some(fw) = FontWeight::parse_css(weight) {
+                builder.push_default(StyleProperty::FontWeight(fw));
+            }
+        }
+        if let Some(style) = font_style {
+            if let Some(fs) = FontStyle::parse_css(style) {
+                builder.push_default(StyleProperty::FontStyle(fs));
+            }
+        }
+        if let Some(deco) = text_decoration {
+            match deco {
+                "underline" => {
+                    builder.push_default(StyleProperty::Underline(true));
+                }
+                "line-through" => {
+                    builder.push_default(StyleProperty::Strikethrough(true));
+                }
+                "none" => {
+                    builder.push_default(StyleProperty::Underline(false));
+                    builder.push_default(StyleProperty::Strikethrough(false));
+                }
+                _ => {}
+            }
         }
 
         let mut layout = builder.build(content);
@@ -91,6 +119,9 @@ impl TextRenderer {
             font_size,
             font_family,
             max_advance,
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -159,7 +190,18 @@ mod tests {
     #[test]
     fn test_layout_text() {
         let mut tr = TextRenderer::new();
-        let layout = tr.layout_text("Hello World", 16.0, None, None, None, None, None);
+        let layout = tr.layout_text(
+            "Hello World",
+            16.0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         // parley may return 0 lines if no system fonts are available
         let _line_count = layout.lines().count();
     }
@@ -167,7 +209,9 @@ mod tests {
     #[test]
     fn test_measure_text() {
         let mut tr = TextRenderer::new();
-        let layout = tr.layout_text("Hello", 16.0, None, None, None, None, None);
+        let layout = tr.layout_text(
+            "Hello", 16.0, None, None, None, None, None, None, None, None,
+        );
         let (w, h) = tr.measure_text(&layout);
         // Values depend on font availability
         assert!(w >= 0.0);

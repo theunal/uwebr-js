@@ -153,6 +153,16 @@ pub struct PaintProps {
     pub line_height: Option<f32>,
     /// CSS `letter-spacing` in px.
     pub letter_spacing: Option<f32>,
+    /// CSS `font-weight`: "normal", "bold", "100"-"900".
+    pub font_weight: Option<String>,
+    /// CSS `font-style`: "normal", "italic", "oblique".
+    pub font_style: Option<String>,
+    /// CSS `text-decoration`: "underline", "line-through", "none".
+    pub text_decoration: Option<String>,
+    /// CSS `visibility`: "visible", "hidden", "collapse".
+    pub visibility: Option<String>,
+    /// CSS `cursor`: "pointer", "default", etc.
+    pub cursor: Option<String>,
 }
 
 impl PaintProps {
@@ -204,6 +214,21 @@ impl PaintProps {
         }
         if other.letter_spacing.is_some() {
             self.letter_spacing = other.letter_spacing;
+        }
+        if other.font_weight.is_some() {
+            self.font_weight = other.font_weight.clone();
+        }
+        if other.font_style.is_some() {
+            self.font_style = other.font_style.clone();
+        }
+        if other.text_decoration.is_some() {
+            self.text_decoration = other.text_decoration.clone();
+        }
+        if other.visibility.is_some() {
+            self.visibility = other.visibility.clone();
+        }
+        if other.cursor.is_some() {
+            self.cursor = other.cursor.clone();
         }
     }
 }
@@ -429,6 +454,31 @@ pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
             "letter-spacing" => {
                 if let CssValue::Length(n, _) = &prop.value {
                     paint.letter_spacing = Some(*n);
+                }
+            }
+            "font-weight" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.font_weight = Some(k.clone());
+                }
+            }
+            "font-style" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.font_style = Some(k.clone());
+                }
+            }
+            "text-decoration" | "text-decoration-line" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.text_decoration = Some(k.clone());
+                }
+            }
+            "visibility" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.visibility = Some(k.clone());
+                }
+            }
+            "cursor" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.cursor = Some(k.clone());
                 }
             }
             _ => {}
@@ -3682,5 +3732,61 @@ mod tests {
         a.merge(&b);
         assert_eq!(a.translate_x, Some(20.0));
         assert_eq!(a.rotate, Some(45.0));
+    }
+
+    #[test]
+    fn test_paint_font_weight() {
+        let css = ".b { font-weight: bold; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.font_weight.as_deref(), Some("bold"));
+    }
+
+    #[test]
+    fn test_paint_font_style_italic() {
+        let css = ".i { font-style: italic; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.font_style.as_deref(), Some("italic"));
+    }
+
+    #[test]
+    fn test_paint_text_decoration_underline() {
+        let css = ".u { text-decoration: underline; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(
+            entries[0].paint.text_decoration.as_deref(),
+            Some("underline")
+        );
+    }
+
+    #[test]
+    fn test_paint_visibility_hidden() {
+        let css = ".v { visibility: hidden; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.visibility.as_deref(), Some("hidden"));
+    }
+
+    #[test]
+    fn test_paint_cursor_pointer() {
+        let css = ".c { cursor: pointer; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].paint.cursor.as_deref(), Some("pointer"));
+    }
+
+    #[test]
+    fn test_paint_merge_font_weight() {
+        let mut base = PaintProps::default();
+        let over = PaintProps {
+            font_weight: Some("bold".into()),
+            font_style: Some("italic".into()),
+            ..Default::default()
+        };
+        base.merge(&over);
+        assert_eq!(base.font_weight.as_deref(), Some("bold"));
+        assert_eq!(base.font_style.as_deref(), Some("italic"));
     }
 }

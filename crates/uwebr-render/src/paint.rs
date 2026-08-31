@@ -48,6 +48,16 @@ pub struct ResolvedPaint {
     pub line_height: Option<f32>,
     /// CSS `letter-spacing` in px.
     pub letter_spacing: Option<f32>,
+    /// CSS `font-weight`: "normal", "bold", "100"-"900".
+    pub font_weight: Option<String>,
+    /// CSS `font-style`: "normal", "italic", "oblique".
+    pub font_style: Option<String>,
+    /// CSS `text-decoration`: "underline", "line-through", "none".
+    pub text_decoration: Option<String>,
+    /// CSS `visibility`: "visible", "hidden", "collapse".
+    pub visibility: Option<String>,
+    /// CSS `cursor`: "pointer", "default", etc.
+    pub cursor: Option<String>,
 }
 
 impl Default for ResolvedPaint {
@@ -69,6 +79,11 @@ impl Default for ResolvedPaint {
             text_align: None,
             line_height: None,
             letter_spacing: None,
+            font_weight: None,
+            font_style: None,
+            text_decoration: None,
+            visibility: None,
+            cursor: None,
         }
     }
 }
@@ -94,6 +109,11 @@ impl ResolvedPaint {
             text_align: None,
             line_height: None,
             letter_spacing: None,
+            font_weight: self.font_weight.clone(),
+            font_style: self.font_style.clone(),
+            text_decoration: self.text_decoration.clone(),
+            visibility: None,
+            cursor: None,
         }
     }
 
@@ -145,6 +165,21 @@ impl ResolvedPaint {
         if let Some(ls) = paint.letter_spacing {
             self.letter_spacing = Some(ls);
         }
+        if let Some(ref fw) = paint.font_weight {
+            self.font_weight = Some(fw.clone());
+        }
+        if let Some(ref fs) = paint.font_style {
+            self.font_style = Some(fs.clone());
+        }
+        if let Some(ref td) = paint.text_decoration {
+            self.text_decoration = Some(td.clone());
+        }
+        if let Some(ref v) = paint.visibility {
+            self.visibility = Some(v.clone());
+        }
+        if let Some(ref c) = paint.cursor {
+            self.cursor = Some(c.clone());
+        }
     }
 
     /// Apply inline element props, which win over CSS rules.
@@ -192,6 +227,31 @@ impl ResolvedPaint {
                 "opacity" => {
                     if let Some(n) = prop_to_f32(value) {
                         self.opacity = n.clamp(0.0, 1.0);
+                    }
+                }
+                "font-weight" | "font_weight" => {
+                    if let PropValue::String(s) = value {
+                        self.font_weight = Some(s.clone());
+                    }
+                }
+                "font-style" | "font_style" => {
+                    if let PropValue::String(s) = value {
+                        self.font_style = Some(s.clone());
+                    }
+                }
+                "text-decoration" | "text_decoration" => {
+                    if let PropValue::String(s) = value {
+                        self.text_decoration = Some(s.clone());
+                    }
+                }
+                "visibility" => {
+                    if let PropValue::String(s) = value {
+                        self.visibility = Some(s.clone());
+                    }
+                }
+                "cursor" => {
+                    if let PropValue::String(s) = value {
+                        self.cursor = Some(s.clone());
                     }
                 }
                 _ => {}
@@ -692,5 +752,85 @@ mod tests {
         });
         assert_eq!(p.border_color, peniko::Color::from_rgba8(255, 0, 0, 255));
         assert_eq!(p.border_width, 3.0);
+    }
+
+    #[test]
+    fn test_apply_css_font_weight() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            font_weight: Some("bold".into()),
+            ..Default::default()
+        });
+        assert_eq!(p.font_weight.as_deref(), Some("bold"));
+    }
+
+    #[test]
+    fn test_apply_css_font_style() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            font_style: Some("italic".into()),
+            ..Default::default()
+        });
+        assert_eq!(p.font_style.as_deref(), Some("italic"));
+    }
+
+    #[test]
+    fn test_apply_css_text_decoration() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            text_decoration: Some("underline".into()),
+            ..Default::default()
+        });
+        assert_eq!(p.text_decoration.as_deref(), Some("underline"));
+    }
+
+    #[test]
+    fn test_apply_css_visibility() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            visibility: Some("hidden".into()),
+            ..Default::default()
+        });
+        assert_eq!(p.visibility.as_deref(), Some("hidden"));
+    }
+
+    #[test]
+    fn test_apply_css_cursor() {
+        let mut p = ResolvedPaint::default();
+        p.apply_css(&PaintProps {
+            cursor: Some("pointer".into()),
+            ..Default::default()
+        });
+        assert_eq!(p.cursor.as_deref(), Some("pointer"));
+    }
+
+    #[test]
+    fn test_inherited_carries_font_weight() {
+        let parent = ResolvedPaint {
+            font_weight: Some("bold".into()),
+            font_style: Some("italic".into()),
+            text_decoration: Some("underline".into()),
+            ..Default::default()
+        };
+        let child = parent.inherited();
+        assert_eq!(child.font_weight.as_deref(), Some("bold"));
+        assert_eq!(child.font_style.as_deref(), Some("italic"));
+        assert_eq!(child.text_decoration.as_deref(), Some("underline"));
+        assert!(child.cursor.is_none(), "cursor must not inherit");
+        assert!(child.visibility.is_none(), "visibility must not inherit");
+    }
+
+    #[test]
+    fn test_apply_props_font_weight() {
+        let mut p = ResolvedPaint::default();
+        p.apply_props(&[("font-weight".into(), PropValue::String("700".into()))]);
+        assert_eq!(p.font_weight.as_deref(), Some("700"));
+    }
+
+    #[test]
+    fn test_apply_props_cursor() {
+        let mut p = ResolvedPaint::default();
+        p.apply_props(&[("cursor".into(), PropValue::String("pointer".into()))]);
+        assert_eq!(p.cursor.as_deref(), Some("pointer"));
     }
 }

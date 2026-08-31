@@ -92,6 +92,24 @@ pub struct RenderStyle {
     pub line_height: Option<f32>,
     /// CSS `letter-spacing` in px.
     pub letter_spacing: Option<f32>,
+    /// CSS `font-weight`: "normal", "bold", "100"-"900".
+    pub font_weight: Option<String>,
+    /// CSS `font-style`: "normal", "italic", "oblique".
+    pub font_style: Option<String>,
+    /// CSS `text-decoration`: "underline", "line-through", "none".
+    pub text_decoration: Option<String>,
+    /// CSS `visibility`: "visible" or "hidden".
+    pub visibility: Visibility,
+    /// CSS `cursor`: "pointer", "default", etc.
+    pub cursor: Option<String>,
+}
+
+/// CSS `visibility` values.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Visibility {
+    #[default]
+    Visible,
+    Hidden,
 }
 
 impl Default for RenderStyle {
@@ -109,6 +127,11 @@ impl Default for RenderStyle {
             text_align: None,
             line_height: None,
             letter_spacing: None,
+            font_weight: None,
+            font_style: None,
+            text_decoration: None,
+            visibility: Visibility::Visible,
+            cursor: None,
         }
     }
 }
@@ -127,6 +150,12 @@ pub enum RenderNodeKind {
         color: peniko::Color,
         /// CSS `font-family` list, passed through to parley.
         font_family: Option<String>,
+        /// CSS `font-weight`: "normal", "bold", "100"-"900".
+        font_weight: Option<String>,
+        /// CSS `font-style`: "normal", "italic", "oblique".
+        font_style: Option<String>,
+        /// CSS `text-decoration`: "underline", "line-through", "none".
+        text_decoration: Option<String>,
     },
     Image {
         data: Vec<u8>,
@@ -201,6 +230,31 @@ impl RenderNode {
         color: peniko::Color,
         font_family: Option<String>,
     ) -> Self {
+        Self::text_full(
+            id,
+            layout,
+            content,
+            font_size,
+            color,
+            font_family,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_full(
+        id: u64,
+        layout: LayoutInfo,
+        content: &str,
+        font_size: f32,
+        color: peniko::Color,
+        font_family: Option<String>,
+        font_weight: Option<String>,
+        font_style: Option<String>,
+        text_decoration: Option<String>,
+    ) -> Self {
         Self {
             id,
             node_id: 0,
@@ -209,6 +263,9 @@ impl RenderNode {
                 font_size,
                 color,
                 font_family,
+                font_weight,
+                font_style,
+                text_decoration,
             },
             layout,
             style: RenderStyle::default(),
@@ -380,6 +437,7 @@ mod tests {
                 font_size,
                 color: _,
                 font_family,
+                ..
             } => {
                 assert_eq!(content, "Hello");
                 assert_eq!(*font_size, 16.0);
