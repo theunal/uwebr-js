@@ -705,6 +705,20 @@ fn parse_single_value(raw: &str) -> Result<CssValue> {
         }
     }
 
+    // var(--name) or var(--name, fallback)
+    if raw.starts_with("var(") {
+        if let Some(v) = parse_var(raw) {
+            return Ok(v);
+        }
+    }
+
+    // calc(100% - 20px)
+    if raw.starts_with("calc(") {
+        if let Some(v) = parse_calc(raw) {
+            return Ok(v);
+        }
+    }
+
     // Keyword
     if raw
         .chars()
@@ -889,6 +903,198 @@ fn parse_radial_gradient(raw: &str) -> Option<CssValue> {
     }
 
     Some(CssValue::RadialGradient { stops })
+}
+
+/// Parse `var(--name)` or `var(--name, fallback)`.
+fn parse_var(raw: &str) -> Option<CssValue> {
+    let inner = raw.trim().strip_prefix("var(")?.strip_suffix(')')?;
+    let inner = inner.trim();
+
+    // Split on first comma to separate name from fallback.
+    let (name, fallback_str) = if let Some(comma_pos) = find_var_comma(inner) {
+        let name = inner[..comma_pos].trim();
+        let fallback = inner[comma_pos + 1..].trim();
+        (name, Some(fallback))
+    } else {
+        (inner, None)
+    };
+
+    if !name.starts_with("--") {
+        return None;
+    }
+
+    let name = name.to_string();
+    let fallback = fallback_str.and_then(|s| parse_single_value(s).ok().map(Box::new));
+
+    Some(CssValue::Var { name, fallback })
+}
+
+/// Find the comma that separates var() name from fallback, skipping nested parens.
+fn find_var_comma(s: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            ',' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse `calc(100% - 20px)` into a `CalcToken` list.
+fn parse_calc(raw: &str) -> Option<CssValue> {
+    let inner = raw.trim().strip_prefix("calc(")?.strip_suffix(')')?;
+    let tokens = tokenize_calc(inner.trim())?;
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(CssValue::Calc(tokens))
+}
+
+/// Tokenize a calc() expression into a flat list of `CalcToken`.
+fn tokenize_calc(expr: &str) -> Option<Vec<CalcToken>> {
+    let mut tokens = Vec::new();
+    let mut chars = expr.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        match ch {
+            '+' => {
+                chars.next();
+                tokens.push(CalcToken::Add);
+            }
+            '-' => {
+                chars.next();
+                // Could be negative number or subtraction.
+                // Peek ahead: if followed by digit and last token was operator/open/start, it's negative.
+                let is_negative_number = tokens.is_empty()
+                    || matches!(
+                        tokens.last(),
+                        Some(
+                            CalcToken::Add
+                                | CalcToken::Sub
+                                | CalcToken::Mul
+                                | CalcToken::Div
+                                | CalcToken::OpenParen
+                        )
+                    );
+                if is_negative_number {
+                    // Parse the negative number.
+                    let mut num_str = String::from("-");
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_digit() || c == '.' {
+                            num_str.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Ok(num) = num_str.parse::<f32>() {
+                        // Check for unit suffix.
+                        let unit = peek_length_unit(&mut chars);
+                        if let Some(u) = unit {
+                            tokens.push(CalcToken::Length(num, u));
+                        } else {
+                            tokens.push(CalcToken::Number(num));
+                        }
+                    }
+                } else {
+                    tokens.push(CalcToken::Sub);
+                }
+            }
+            '*' => {
+                chars.next();
+                tokens.push(CalcToken::Mul);
+            }
+            '/' => {
+                chars.next();
+                tokens.push(CalcToken::Div);
+            }
+            '(' => {
+                chars.next();
+                tokens.push(CalcToken::OpenParen);
+            }
+            ')' => {
+                chars.next();
+                tokens.push(CalcToken::CloseParen);
+            }
+            _ if ch.is_ascii_digit() || ch == '.' => {
+                let mut num_str = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c.is_ascii_digit() || c == '.' {
+                        num_str.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                let num: f32 = num_str.parse().ok()?;
+                let unit = peek_length_unit(&mut chars);
+                if let Some(u) = unit {
+                    tokens.push(CalcToken::Length(num, u));
+                } else {
+                    tokens.push(CalcToken::Number(num));
+                }
+            }
+            _ => {
+                // Unknown char — bail.
+                return None;
+            }
+        }
+    }
+
+    Some(tokens)
+}
+
+/// Try to consume a length unit from the char iterator.
+fn peek_length_unit(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<LengthUnit> {
+    let remaining: String = chars.clone().take(4).collect();
+    if remaining.starts_with("rem") {
+        for _ in 0..3 {
+            chars.next();
+        }
+        return Some(LengthUnit::Rem);
+    }
+    if remaining.starts_with("px") {
+        for _ in 0..2 {
+            chars.next();
+        }
+        return Some(LengthUnit::Px);
+    }
+    if remaining.starts_with("em") {
+        for _ in 0..2 {
+            chars.next();
+        }
+        return Some(LengthUnit::Em);
+    }
+    if remaining.starts_with("vw") {
+        for _ in 0..2 {
+            chars.next();
+        }
+        return Some(LengthUnit::Vw);
+    }
+    if remaining.starts_with("vh") {
+        for _ in 0..2 {
+            chars.next();
+        }
+        return Some(LengthUnit::Vh);
+    }
+    if remaining.starts_with("fr") {
+        for _ in 0..2 {
+            chars.next();
+        }
+        return Some(LengthUnit::Fr);
+    }
+    if remaining.starts_with('%') {
+        chars.next();
+        return Some(LengthUnit::Percent);
+    }
+    None
 }
 
 fn parse_rgb(raw: &str) -> Result<CssValue> {
@@ -2227,8 +2433,10 @@ mod tests {
         let css = ".a { width: calc(100% - 20px); }";
         let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
-            CssValue::Keyword(k) => assert!(k.contains("calc")),
-            other => panic!("expected Keyword for calc, got {other:?}"),
+            CssValue::Calc(tokens) => {
+                assert_eq!(tokens.len(), 3);
+            }
+            other => panic!("expected Calc, got {other:?}"),
         }
     }
 
@@ -2272,8 +2480,11 @@ mod tests {
         let css = ".a { color: var(--text-color); }";
         let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
-            CssValue::Keyword(k) => assert!(k.contains("var")),
-            other => panic!("expected Keyword for var(), got {other:?}"),
+            CssValue::Var { name, fallback } => {
+                assert_eq!(name, "--text-color");
+                assert!(fallback.is_none());
+            }
+            other => panic!("expected Var, got {other:?}"),
         }
     }
 

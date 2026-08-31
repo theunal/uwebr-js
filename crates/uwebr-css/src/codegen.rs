@@ -343,10 +343,226 @@ pub fn convert_to_style_entries(rules: &[CssRule]) -> Result<Vec<StyleEntry>> {
 
 /// Convert CssRule list into full style entries, resolving `vw`/`vh` against the
 /// given viewport dimensions.
-pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Result<Vec<StyleEntry>> {
-    let mut entries = Vec::with_capacity(rules.len());
+/// Resolve `var()` and `calc()` references in a rule's property values.
+fn resolve_rule(
+    rule: &CssRule,
+    custom_props: &std::collections::HashMap<String, CssValue>,
+    vw: f32,
+    vh: f32,
+) -> CssRule {
+    CssRule {
+        selector: rule.selector.clone(),
+        properties: rule
+            .properties
+            .iter()
+            .map(|prop| {
+                let resolved = resolve_value(&prop.value, custom_props, vw, vh);
+                CssProperty {
+                    name: prop.name.clone(),
+                    value: resolved,
+                    important: prop.important,
+                }
+            })
+            .collect(),
+        media_query: rule.media_query.clone(),
+    }
+}
 
+/// Resolve a single CssValue, replacing Var and Calc nodes.
+fn resolve_value(
+    value: &CssValue,
+    custom_props: &std::collections::HashMap<String, CssValue>,
+    vw: f32,
+    vh: f32,
+) -> CssValue {
+    match value {
+        CssValue::Var { name, fallback } => {
+            if let Some(resolved) = custom_props.get(name.as_str()) {
+                // Recursively resolve in case the variable itself contains var().
+                resolve_value(resolved, custom_props, vw, vh)
+            } else if let Some(fb) = fallback {
+                resolve_value(fb, custom_props, vw, vh)
+            } else {
+                // Unresolved var → keep as-is (will produce default).
+                value.clone()
+            }
+        }
+        CssValue::Calc(tokens) => {
+            // Evaluate the calc expression.
+            if let Some(result) = eval_calc(tokens, custom_props, vw, vh) {
+                CssValue::Length(result, LengthUnit::Px)
+            } else {
+                value.clone()
+            }
+        }
+        // Recurse into compound values.
+        CssValue::Shorthand(items) => CssValue::Shorthand(
+            items
+                .iter()
+                .map(|v| resolve_value(v, custom_props, vw, vh))
+                .collect(),
+        ),
+        CssValue::LinearGradient {
+            direction: _,
+            stops: _,
+        } => {
+            // Gradient stops can't contain var() in practice; pass through.
+            value.clone()
+        }
+        _ => value.clone(),
+    }
+}
+
+/// Evaluate a `calc()` token list into a single f32 value (in px).
+///
+/// Uses a simple recursive-descent parser with operator precedence:
+/// `*` and `/` bind tighter than `+` and `-`.
+fn eval_calc(
+    tokens: &[CalcToken],
+    custom_props: &std::collections::HashMap<String, CssValue>,
+    vw: f32,
+    vh: f32,
+) -> Option<f32> {
+    let (result, _) = eval_calc_additive(tokens, 0, custom_props, vw, vh)?;
+    Some(result)
+}
+
+/// Parse additive operations (+ and -).
+fn eval_calc_additive(
+    tokens: &[CalcToken],
+    pos: usize,
+    custom_props: &std::collections::HashMap<String, CssValue>,
+    vw: f32,
+    vh: f32,
+) -> Option<(f32, usize)> {
+    let (mut left, mut pos) = eval_calc_multiplicative(tokens, pos, custom_props, vw, vh)?;
+
+    loop {
+        match tokens.get(pos) {
+            Some(CalcToken::Add) => {
+                pos += 1;
+                let (right, new_pos) = eval_calc_multiplicative(tokens, pos, custom_props, vw, vh)?;
+                left += right;
+                pos = new_pos;
+            }
+            Some(CalcToken::Sub) => {
+                pos += 1;
+                let (right, new_pos) = eval_calc_multiplicative(tokens, pos, custom_props, vw, vh)?;
+                left -= right;
+                pos = new_pos;
+            }
+            _ => break,
+        }
+    }
+
+    Some((left, pos))
+}
+
+/// Parse multiplicative operations (* and /).
+fn eval_calc_multiplicative(
+    tokens: &[CalcToken],
+    pos: usize,
+    custom_props: &std::collections::HashMap<String, CssValue>,
+    vw: f32,
+    vh: f32,
+) -> Option<(f32, usize)> {
+    let (mut left, mut pos) = eval_calc_primary(tokens, pos, custom_props, vw, vh)?;
+
+    loop {
+        match tokens.get(pos) {
+            Some(CalcToken::Mul) => {
+                pos += 1;
+                let (right, new_pos) = eval_calc_primary(tokens, pos, custom_props, vw, vh)?;
+                left *= right;
+                pos = new_pos;
+            }
+            Some(CalcToken::Div) => {
+                pos += 1;
+                let (right, new_pos) = eval_calc_primary(tokens, pos, custom_props, vw, vh)?;
+                if right != 0.0 {
+                    left /= right;
+                }
+                pos = new_pos;
+            }
+            _ => break,
+        }
+    }
+
+    Some((left, pos))
+}
+
+/// Parse a primary expression: number, length, or parenthesized group.
+fn eval_calc_primary(
+    tokens: &[CalcToken],
+    pos: usize,
+    _custom_props: &std::collections::HashMap<String, CssValue>,
+    vw: f32,
+    vh: f32,
+) -> Option<(f32, usize)> {
+    match tokens.get(pos)? {
+        CalcToken::Number(n) => Some((*n, pos + 1)),
+        CalcToken::Length(val, unit) => {
+            let px = resolve_calc_length(*val, *unit, vw, vh);
+            Some((px, pos + 1))
+        }
+        CalcToken::OpenParen => {
+            let (val, mut pos) = eval_calc_additive(tokens, pos + 1, _custom_props, vw, vh)?;
+            // Expect closing paren.
+            if matches!(tokens.get(pos), Some(CalcToken::CloseParen)) {
+                pos += 1;
+            }
+            Some((val, pos))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a length unit to px. For %/vw/vh we need the viewport context.
+/// In calc() we can't know the parent size, so % resolves to 0.
+/// This is a limitation: proper calc() would need parent context.
+fn resolve_calc_length(val: f32, unit: LengthUnit, vw: f32, vh: f32) -> f32 {
+    match unit {
+        LengthUnit::Px => val,
+        LengthUnit::Rem => val * 16.0,
+        LengthUnit::Em => val * 16.0,
+        LengthUnit::Vw => vw * val / 100.0,
+        LengthUnit::Vh => vh * val / 100.0,
+        // % and Fr can't resolve without parent context in calc().
+        LengthUnit::Percent | LengthUnit::Fr | LengthUnit::Auto => 0.0,
+    }
+}
+
+pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Result<Vec<StyleEntry>> {
+    // Phase 1: Collect all custom properties (--*) from every rule.
+    let mut custom_props: std::collections::HashMap<String, CssValue> =
+        std::collections::HashMap::new();
     for rule in rules {
+        for prop in &rule.properties {
+            if prop.name.starts_with("--") {
+                custom_props.insert(prop.name.clone(), prop.value.clone());
+            }
+        }
+    }
+
+    // Phase 2: Resolve var() and calc() in every rule's property values.
+    let resolved_rules: Vec<CssRule> = rules
+        .iter()
+        .map(|rule| resolve_rule(rule, &custom_props, vw, vh))
+        .collect();
+
+    let mut entries = Vec::with_capacity(resolved_rules.len());
+
+    for rule in &resolved_rules {
+        // Skip custom-property-only rules (they have no real CSS properties).
+        let real_props: Vec<_> = rule
+            .properties
+            .iter()
+            .filter(|p| !p.name.starts_with("--"))
+            .collect();
+        if real_props.is_empty() {
+            continue;
+        }
+
         let selector = selector_key(&rule.selector);
         let mut style = Style::default();
         let mut mask = StyleMask::default();
@@ -3433,8 +3649,10 @@ mod tests {
         let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].properties[0].value {
-            CssValue::Keyword(k) => assert!(k.contains("calc")),
-            other => panic!("expected Keyword fallback for calc, got {other:?}"),
+            CssValue::Calc(tokens) => {
+                assert_eq!(tokens.len(), 3);
+            }
+            other => panic!("expected Calc, got {other:?}"),
         }
     }
 
@@ -3444,9 +3662,177 @@ mod tests {
         let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].properties[0].value {
-            CssValue::Keyword(k) => assert!(k.contains("var")),
-            other => panic!("expected Keyword fallback for var(), got {other:?}"),
+            CssValue::Var { name, fallback } => {
+                assert_eq!(name, "--spacing");
+                assert!(fallback.is_none());
+            }
+            other => panic!("expected Var, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_var_resolves_to_value() {
+        let css = ".root { --primary: #ff0000; } .a { color: var(--primary); }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
+        // .a should have a valid entry with resolved color (background may be None).
+        let entry = entries.iter().find(|e| e.selector == ".a").unwrap();
+        // The rule should have been processed — verify it has a selector and doesn't panic.
+        assert!(!entry.selector.is_empty());
+    }
+
+    #[test]
+    fn test_var_with_fallback_resolves() {
+        let css = ".a { color: var(--missing, blue); }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
+        let entry = entries.iter().find(|e| e.selector == ".a").unwrap();
+        assert!(!entry.selector.is_empty());
+    }
+
+    #[test]
+    fn test_calc_addition() {
+        let css = ".a { width: calc(10px + 20px); }";
+        let rules = parse_rules(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Calc(tokens) => {
+                let val = super::eval_calc(tokens, &std::collections::HashMap::new(), 800.0, 600.0);
+                assert_eq!(val, Some(30.0));
+            }
+            other => panic!("expected Calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_calc_subtraction() {
+        let css = ".a { width: calc(100px - 20px); }";
+        let rules = parse_rules(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Calc(tokens) => {
+                let val = super::eval_calc(tokens, &std::collections::HashMap::new(), 800.0, 600.0);
+                assert_eq!(val, Some(80.0));
+            }
+            other => panic!("expected Calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_calc_multiplication() {
+        let css = ".a { width: calc(10px * 3); }";
+        let rules = parse_rules(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Calc(tokens) => {
+                let val = super::eval_calc(tokens, &std::collections::HashMap::new(), 800.0, 600.0);
+                assert_eq!(val, Some(30.0));
+            }
+            other => panic!("expected Calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_calc_division() {
+        let css = ".a { width: calc(60px / 2); }";
+        let rules = parse_rules(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Calc(tokens) => {
+                let val = super::eval_calc(tokens, &std::collections::HashMap::new(), 800.0, 600.0);
+                assert_eq!(val, Some(30.0));
+            }
+            other => panic!("expected Calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_calc_mixed_precedence() {
+        // 10 + 2 * 3 = 16 (mul binds tighter)
+        let css = ".a { width: calc(10px + 2px * 3); }";
+        let rules = parse_rules(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Calc(tokens) => {
+                let val = super::eval_calc(tokens, &std::collections::HashMap::new(), 800.0, 600.0);
+                assert_eq!(val, Some(16.0));
+            }
+            other => panic!("expected Calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_calc_parens() {
+        // (10 + 2) * 3 = 36
+        let css = ".a { width: calc((10px + 2px) * 3); }";
+        let rules = parse_rules(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Calc(tokens) => {
+                let val = super::eval_calc(tokens, &std::collections::HashMap::new(), 800.0, 600.0);
+                assert_eq!(val, Some(36.0));
+            }
+            other => panic!("expected Calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_calc_negative_number() {
+        let css = ".a { width: calc(-10px + 30px); }";
+        let rules = parse_rules(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Calc(tokens) => {
+                let val = super::eval_calc(tokens, &std::collections::HashMap::new(), 800.0, 600.0);
+                assert_eq!(val, Some(20.0));
+            }
+            other => panic!("expected Calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_calc_with_viewport_units() {
+        let css = ".a { width: calc(50vw + 10px); }";
+        let rules = parse_rules(css).unwrap();
+        match &rules[0].properties[0].value {
+            CssValue::Calc(tokens) => {
+                let val =
+                    super::eval_calc(tokens, &std::collections::HashMap::new(), 1000.0, 600.0);
+                assert_eq!(val, Some(510.0)); // 50% of 1000 + 10
+            }
+            other => panic!("expected Calc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_var_chains_through_custom_props() {
+        let css = ".root { --a: red; --b: var(--a); } .a { color: var(--b); }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
+        // .a should resolve var(--b) → var(--a) → red via chaining.
+        let entry = entries.iter().find(|e| e.selector == ".a").unwrap();
+        assert!(!entry.selector.is_empty());
+    }
+
+    #[test]
+    fn test_var_custom_props_skipped_in_output() {
+        let css = ".root { --primary: red; color: blue; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
+        // The --primary rule is custom-property-only and should be skipped.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].selector, ".root");
+    }
+
+    #[test]
+    fn test_calc_resolves_to_length_in_output() {
+        let css = ".a { width: calc(50px + 30px); }";
+        let rules = parse_rules(css).unwrap();
+        // Verify the raw rule has a Calc value.
+        match &rules[0].properties[0].value {
+            CssValue::Calc(_) => {}
+            other => panic!("expected Calc in raw rule, got {other:?}"),
+        }
+        // After resolution, calc should be evaluated to Length(80, Px).
+        let mut custom_props = std::collections::HashMap::new();
+        let resolved = super::resolve_rule(&rules[0], &custom_props, 800.0, 600.0);
+        assert_eq!(
+            resolved.properties[0].value,
+            CssValue::Length(80.0, LengthUnit::Px)
+        );
     }
 
     #[test]

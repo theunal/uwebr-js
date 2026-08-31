@@ -113,6 +113,34 @@ pub enum CssValue {
     Inherited,
     /// none, auto
     Auto,
+    /// var(--name) or var(--name, fallback)
+    Var {
+        name: String,
+        fallback: Option<Box<CssValue>>,
+    },
+    /// calc(100% - 20px)
+    Calc(Vec<CalcToken>),
+}
+
+/// A single token in a `calc()` expression.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum CalcToken {
+    /// A numeric value in px (resolved from length units where possible).
+    Number(f32),
+    /// A length value that needs unit-aware evaluation: value + unit.
+    Length(f32, LengthUnit),
+    /// Addition operator: +
+    Add,
+    /// Subtraction operator: -
+    Sub,
+    /// Multiplication operator: *
+    Mul,
+    /// Division operator: /
+    Div,
+    /// Opening parenthesis: (
+    OpenParen,
+    /// Closing parenthesis: )
+    CloseParen,
 }
 
 /// A single colour stop in a gradient.
@@ -123,7 +151,7 @@ pub struct GradientStop {
     pub position: Option<f32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LengthUnit {
     Px,
     Em,
