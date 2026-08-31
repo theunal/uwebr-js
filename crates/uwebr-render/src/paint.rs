@@ -1,5 +1,5 @@
 use uwebr_core::component::{Element, NodeType, PropValue};
-use uwebr_css::codegen::{BackgroundValue, PaintProps, TransformProps};
+use uwebr_css::codegen::{AnimationProps, BackgroundValue, PaintProps, TransformProps};
 use vello::peniko;
 
 use crate::color::{css_color_to_peniko, parse_color_to_peniko};
@@ -37,6 +37,9 @@ pub struct ResolvedPaint {
     /// CSS `transform` — translate, rotate, scale, skew.
     /// Not inherited; defaults to identity.
     pub transform: TransformProps,
+    /// CSS `animation` — name, duration, timing, etc.
+    /// Not inherited; defaults to empty (no animation).
+    pub animation: AnimationProps,
 }
 
 impl Default for ResolvedPaint {
@@ -53,6 +56,7 @@ impl Default for ResolvedPaint {
             text_overflow: TextOverflow::default(),
             z_index: 0,
             transform: TransformProps::default(),
+            animation: AnimationProps::default(),
         }
     }
 }
@@ -73,6 +77,7 @@ impl ResolvedPaint {
             text_overflow: self.text_overflow.clone(),
             z_index: 0,
             transform: TransformProps::default(),
+            animation: AnimationProps::default(),
         }
     }
 
@@ -171,11 +176,13 @@ impl ResolvedPaint {
         inherited: &ResolvedPaint,
         css: &PaintProps,
         transform: &TransformProps,
+        animation: &AnimationProps,
         element: &Element,
     ) -> Self {
         let mut paint = inherited.inherited();
         paint.apply_css(css);
         paint.transform = transform.clone();
+        paint.animation = animation.clone();
         // Text nodes never carry their own attributes; they only inherit.
         if !matches!(element.node_type, NodeType::Text(_)) {
             paint.apply_props(&element.props);
@@ -404,6 +411,7 @@ mod tests {
             &parent,
             &PaintProps::default(),
             &TransformProps::default(),
+            &AnimationProps::default(),
             &e,
         );
         assert_eq!(
@@ -425,6 +433,7 @@ mod tests {
             &parent,
             &PaintProps::default(),
             &TransformProps::default(),
+            &AnimationProps::default(),
             &text_el("hi"),
         );
         assert_eq!(p.color, peniko::color::palette::css::GREEN);
@@ -540,6 +549,7 @@ mod tests {
             &parent,
             &PaintProps::default(),
             &TransformProps::default(),
+            &AnimationProps::default(),
             &e,
         );
         assert!(
@@ -563,6 +573,7 @@ mod tests {
             &parent,
             &PaintProps::default(),
             &TransformProps::default(),
+            &AnimationProps::default(),
             &text,
         );
         assert_eq!(

@@ -128,7 +128,13 @@ impl LayoutEngine {
         *node_counter += 1;
 
         let matched = stylebook.match_full(element, parent_chain, node_id);
-        let paint = ResolvedPaint::resolve(inherited, &matched.paint, &matched.transform, element);
+        let paint = ResolvedPaint::resolve(
+            inherited,
+            &matched.paint,
+            &matched.transform,
+            &matched.animation,
+            element,
+        );
         let style = self.element_to_style(element, &matched);
 
         match &element.node_type {
@@ -375,7 +381,13 @@ impl LayoutEngine {
         };
 
         let matched = stylebook.match_full(element, parent_chain, node_id);
-        let paint = ResolvedPaint::resolve(inherited, &matched.paint, &matched.transform, element);
+        let paint = ResolvedPaint::resolve(
+            inherited,
+            &matched.paint,
+            &matched.transform,
+            &matched.animation,
+            element,
+        );
 
         // Clip children when the element sets `overflow: hidden`/`clip` on either
         // axis. Read from the resolved taffy style so it follows the cascade.

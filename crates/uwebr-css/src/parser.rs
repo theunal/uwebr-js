@@ -1,8 +1,9 @@
 use crate::ast::*;
 use anyhow::{bail, Result};
 
-pub fn parse_css(input: &str) -> Result<Vec<CssRule>> {
+pub fn parse_css(input: &str) -> Result<(Vec<CssRule>, Vec<KeyframeRule>)> {
     let mut rules = Vec::new();
+    let mut keyframes = Vec::new();
     let mut chars = input.chars().peekable();
 
     while let Some(&ch) = chars.peek() {
@@ -15,10 +16,12 @@ pub fn parse_css(input: &str) -> Result<Vec<CssRule>> {
             continue;
         }
         if ch == '@' {
-            // @media rule
-            let at_rule = parse_at_rule(&mut chars)?;
-            if let Some(rule) = at_rule {
-                rules.push(rule);
+            // @media, @keyframes, @import
+            let at_result = parse_at_rule(&mut chars)?;
+            match at_result {
+                AtRuleResult::Rule(rule) => rules.push(rule),
+                AtRuleResult::Keyframes(kf) => keyframes.push(kf),
+                AtRuleResult::Skipped => {}
             }
             continue;
         }
@@ -29,6 +32,14 @@ pub fn parse_css(input: &str) -> Result<Vec<CssRule>> {
         rules.push(rule);
     }
 
+    Ok((rules, keyframes))
+}
+
+/// Convenience: parse CSS and return only the rules (discard keyframes).
+///
+/// Use `parse_css` when you need keyframes.
+pub fn parse_rules(input: &str) -> Result<Vec<CssRule>> {
+    let (rules, _) = parse_css(input)?;
     Ok(rules)
 }
 
@@ -105,7 +116,13 @@ fn skip_block(chars: &mut std::iter::Peekable<std::str::Chars>) {
     }
 }
 
-fn parse_at_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Option<CssRule>> {
+enum AtRuleResult {
+    Rule(CssRule),
+    Keyframes(KeyframeRule),
+    Skipped,
+}
+
+fn parse_at_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<AtRuleResult> {
     chars.next(); // consume '@'
     let name = read_ident(chars);
     skip_whitespace(chars);
@@ -118,25 +135,77 @@ fn parse_at_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Opt
             let content = read_until(chars, '}');
             chars.next(); // consume '}'
 
-            let inner_rules = parse_css(&content)?;
+            let (inner_rules, _) = parse_css(&content)?;
             if let Some(mut rule) = inner_rules.into_iter().next() {
                 rule.media_query = Some(query);
-                Ok(Some(rule))
+                Ok(AtRuleResult::Rule(rule))
             } else {
-                Ok(None)
+                Ok(AtRuleResult::Skipped)
             }
+        }
+        "keyframes" => {
+            let anim_name = read_until(chars, '{').trim().to_string();
+            chars.next(); // consume '{'
+            skip_whitespace(chars);
+            let content = read_until(chars, '}');
+            chars.next(); // consume '}'
+            let keyframes = parse_keyframes_block(&content)?;
+            Ok(AtRuleResult::Keyframes(KeyframeRule {
+                name: anim_name,
+                keyframes,
+            }))
         }
         "import" => {
             // Skip @import
             read_until(chars, ';');
             chars.next();
-            Ok(None)
+            Ok(AtRuleResult::Skipped)
         }
         _ => {
             skip_block(chars);
-            Ok(None)
+            Ok(AtRuleResult::Skipped)
         }
     }
+}
+
+/// Parse the inner content of a `@keyframes` block.
+///
+/// Input is the text between `{` and `}`, e.g.:
+/// ```text
+/// from { transform: translateX(0); }
+/// 50% { opacity: 0.5; }
+/// to { transform: translateX(100px); }
+/// ```
+fn parse_keyframes_block(content: &str) -> Result<Vec<Keyframe>> {
+    let mut keyframes = Vec::new();
+    let mut chars = content.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if ch == '}' || ch == '\0' {
+            break;
+        }
+        // Read the keyframe selector: "from", "to", "0%", "50%", "100%", etc.
+        let selector = read_until(&mut chars, '{').trim().to_string();
+        chars.next(); // consume '{'
+        skip_whitespace(&mut chars);
+
+        // Parse properties inside the block
+        let properties = parse_declarations(&mut chars)?;
+        if chars.peek() == Some(&'}') {
+            chars.next(); // consume '}'
+        }
+
+        keyframes.push(Keyframe {
+            selector,
+            properties,
+        });
+    }
+
+    Ok(keyframes)
 }
 
 fn parse_rule(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<CssRule> {
@@ -907,7 +976,7 @@ mod tests {
     #[test]
     fn test_parse_simple_rule() {
         let css = ".card { padding: 16px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].properties[0].name, "padding");
         assert_eq!(
@@ -919,14 +988,14 @@ mod tests {
     #[test]
     fn test_parse_multiple_properties() {
         let css = ".container { display: flex; padding: 16px; gap: 8px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules[0].properties.len(), 3);
     }
 
     #[test]
     fn test_parse_class_selector() {
         let css = ".my-class { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Class(name) => assert_eq!(name, "my-class"),
             _ => panic!("Expected class selector"),
@@ -936,7 +1005,7 @@ mod tests {
     #[test]
     fn test_parse_id_selector() {
         let css = "#main { width: 100%; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Id(name) => assert_eq!(name, "main"),
             _ => panic!("Expected id selector"),
@@ -946,7 +1015,7 @@ mod tests {
     #[test]
     fn test_parse_tag_selector() {
         let css = "div { margin: 0; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Tag(name) => assert_eq!(name, "div"),
             _ => panic!("Expected tag selector"),
@@ -956,7 +1025,7 @@ mod tests {
     #[test]
     fn test_parse_universal_selector() {
         let css = "* { box-sizing: border-box; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Universal => {}
             _ => panic!("Expected universal selector"),
@@ -966,7 +1035,7 @@ mod tests {
     #[test]
     fn test_parse_padding_values() {
         let css = ".box { padding: 10px 20px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Shorthand(parts) => assert_eq!(parts.len(), 2),
             _ => panic!("Expected shorthand"),
@@ -976,7 +1045,7 @@ mod tests {
     #[test]
     fn test_parse_margin_auto() {
         let css = ".box { margin: auto; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Auto => {}
             _ => panic!("Expected auto value"),
@@ -986,7 +1055,7 @@ mod tests {
     #[test]
     fn test_parse_position() {
         let css = ".box { position: absolute; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert_eq!(k, "absolute"),
             _ => panic!("Expected keyword value"),
@@ -996,7 +1065,7 @@ mod tests {
     #[test]
     fn test_parse_width_height() {
         let css = ".box { width: 100px; height: 50vh; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules[0].properties.len(), 2);
         assert_eq!(
             rules[0].properties[0].value,
@@ -1011,14 +1080,14 @@ mod tests {
     #[test]
     fn test_parse_gap() {
         let css = ".grid { gap: 16px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules[0].properties[0].name, "gap");
     }
 
     #[test]
     fn test_parse_color_hex() {
         let css = ".box { color: #ff0000; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 assert_eq!(c.r, 255);
@@ -1032,35 +1101,35 @@ mod tests {
     #[test]
     fn test_parse_color_named() {
         let css = ".box { color: red; background-color: blue; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules[0].properties.len(), 2);
     }
 
     #[test]
     fn test_parse_important() {
         let css = ".box { color: red !important; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert!(rules[0].properties[0].important);
     }
 
     #[test]
     fn test_parse_multiple_rules() {
         let css = ".a { color: red; } .b { color: blue; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 2);
     }
 
     #[test]
     fn test_parse_comment() {
         let css = "/* comment */ .a { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
     }
 
     #[test]
     fn test_parse_child_selector() {
         let css = "div > span { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Child(parts) => assert_eq!(parts.len(), 2),
             _ => panic!("Expected child selector"),
@@ -1070,7 +1139,7 @@ mod tests {
     #[test]
     fn test_parse_list_selector() {
         let css = ".a, .b { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::List(parts) => assert_eq!(parts.len(), 2),
             _ => panic!("Expected list selector"),
@@ -1080,7 +1149,7 @@ mod tests {
     #[test]
     fn test_parse_media_query() {
         let css = "@media (max-width: 768px) { .a { color: red; } }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert!(rules[0].media_query.is_some());
     }
@@ -1090,14 +1159,14 @@ mod tests {
     #[test]
     fn test_tailwind_like_utilities() {
         let css = ".flex { display: flex; } .p-4 { padding: 16px; } .m-auto { margin: auto; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 3);
     }
 
     #[test]
     fn test_nested_selectors() {
         let css = ".card .title { font-size: 24px; } .nav > a { color: blue; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 2);
     }
 
@@ -1111,7 +1180,7 @@ mod tests {
                 transition: all 0.3s ease;
             }
         "#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         // Only known properties are converted to Taffy
     }
@@ -1129,7 +1198,7 @@ mod tests {
                 color: #333;
             }
         "#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].properties.len(), 7);
     }
@@ -1138,7 +1207,7 @@ mod tests {
     fn test_pseudo_class_fallback() {
         // :hover, :focus, :active etc. are now parsed into PseudoClass variants.
         let css = ".btn:hover { background: blue; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert!(matches!(rules[0].selector, CssSelector::PseudoClass(_, _)));
     }
@@ -1147,7 +1216,7 @@ mod tests {
     fn test_attribute_selector_fallback() {
         // [type="text"] is now parsed into an Attribute variant.
         let css = r#"input[type="text"] { border: 1px solid; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert!(matches!(rules[0].selector, CssSelector::Attribute { .. }));
     }
@@ -1160,15 +1229,20 @@ mod tests {
                 to { transform: translateX(100px); }
             }
         "#;
-        let result = parse_css(css);
-        // @keyframes inner rules fail because they use from/to, not selectors
-        assert!(result.is_err() || result.unwrap().is_empty());
+        let (rules, keyframes) = parse_css(css).unwrap();
+        // @keyframes should be parsed as keyframes, not rules
+        assert!(rules.is_empty(), "keyframes should not produce rules");
+        assert_eq!(keyframes.len(), 1);
+        assert_eq!(keyframes[0].name, "slide");
+        assert_eq!(keyframes[0].keyframes.len(), 2);
+        assert_eq!(keyframes[0].keyframes[0].selector, "from");
+        assert_eq!(keyframes[0].keyframes[1].selector, "to");
     }
 
     #[test]
     fn test_calc_fallback_to_keyword() {
         let css = ".box { width: calc(100% - 20px); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         // calc() stored as keyword — Taffy ignores it
     }
@@ -1178,7 +1252,7 @@ mod tests {
         // A malformed gradient (single stop) still falls back to a keyword so it
         // is ignored rather than crashing the parse.
         let css = ".bg { background: linear-gradient(red); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert!(matches!(rules[0].properties[0].value, CssValue::Keyword(_)));
     }
@@ -1186,7 +1260,7 @@ mod tests {
     #[test]
     fn test_parse_linear_gradient_two_colors() {
         let css = ".bg { background: linear-gradient(red, blue); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::LinearGradient { direction, stops } => {
                 assert!(direction.is_none());
@@ -1207,7 +1281,7 @@ mod tests {
     #[test]
     fn test_parse_linear_gradient_with_direction_and_positions() {
         let css = ".bg { background: linear-gradient(to right, red 0%, blue 100%); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::LinearGradient { direction, stops } => {
                 assert_eq!(direction.as_deref(), Some("to right"));
@@ -1222,7 +1296,7 @@ mod tests {
     #[test]
     fn test_parse_linear_gradient_deg_and_rgb() {
         let css = ".bg { background: linear-gradient(45deg, #ff0000, rgb(0, 0, 255)); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::LinearGradient { direction, stops } => {
                 assert_eq!(direction.as_deref(), Some("45deg"));
@@ -1239,7 +1313,7 @@ mod tests {
     #[test]
     fn test_parse_radial_gradient() {
         let css = ".bg { background: radial-gradient(red, blue); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::RadialGradient { stops } => {
                 assert_eq!(stops.len(), 2);
@@ -1251,14 +1325,14 @@ mod tests {
     #[test]
     fn test_shorthand_all_sides() {
         let css = ".a { padding: 10px; } .b { padding: 10px 20px; } .c { padding: 10px 20px 30px; } .d { padding: 10px 20px 30px 40px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 4);
     }
 
     #[test]
     fn test_percent_values() {
         let css = ".w { width: 50%; } .h { height: 100vh; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 2);
     }
 
@@ -1266,7 +1340,7 @@ mod tests {
     fn test_parse_rem_not_swallowed_by_em() {
         // `ends_with("em")` matches "2rem" too; rem must be checked first.
         let css = "h1 { font-size: 2rem; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(
             rules[0].properties[0].value,
             CssValue::Length(2.0, LengthUnit::Rem)
@@ -1276,7 +1350,7 @@ mod tests {
     #[test]
     fn test_parse_em_still_works() {
         let css = "p { font-size: 1.5em; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(
             rules[0].properties[0].value,
             CssValue::Length(1.5, LengthUnit::Em)
@@ -1288,7 +1362,7 @@ mod tests {
     #[test]
     fn test_parse_pseudo_class_hover() {
         let css = ".btn:hover { background: blue; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::PseudoClass(inner, pseudo) => {
                 assert_eq!(**inner, CssSelector::Class("btn".to_string()));
@@ -1301,7 +1375,7 @@ mod tests {
     #[test]
     fn test_parse_pseudo_class_first_child_on_tag() {
         let css = "div:first-child { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth {
                 selector,
@@ -1319,7 +1393,7 @@ mod tests {
     #[test]
     fn test_parse_attribute_equals() {
         let css = r#"input[type="text"] { border: 1px solid; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Attribute {
                 selector,
@@ -1339,7 +1413,7 @@ mod tests {
     #[test]
     fn test_parse_attribute_exists() {
         let css = "[disabled] { opacity: 0.5; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Attribute {
                 selector,
@@ -1359,7 +1433,7 @@ mod tests {
     #[test]
     fn test_parse_attribute_contains() {
         let css = r#"[class*="active"] { font-weight: bold; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Attribute {
                 selector,
@@ -1385,7 +1459,7 @@ mod tests {
         ];
         for (sel, expected_op, expected_val) in ops {
             let css = format!("{sel} {{ color: red; }}");
-            let rules = parse_css(&css).unwrap();
+            let (rules, _) = parse_css(&css).unwrap();
             match &rules[0].selector {
                 CssSelector::Attribute { op, value, .. } => {
                     assert_eq!(*op, expected_op, "op mismatch for {sel}");
@@ -1404,7 +1478,7 @@ mod tests {
     fn test_parse_tag_with_attribute_and_pseudo() {
         // Chained: input[type="text"]:focus
         let css = r#"input[type="text"]:focus { outline: none; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::PseudoClass(inner, pseudo) => {
                 assert_eq!(pseudo, "focus");
@@ -1420,7 +1494,7 @@ mod tests {
     #[test]
     fn test_parse_not_selector() {
         let css = "div:not(.active) { opacity: 0.5; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Not { selector, inner } => {
                 assert_eq!(**selector, CssSelector::Tag("div".to_string()));
@@ -1433,7 +1507,7 @@ mod tests {
     #[test]
     fn test_parse_not_with_tag_inner() {
         let css = "div:not(p) { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Not { selector, inner } => {
                 assert_eq!(**selector, CssSelector::Tag("div".to_string()));
@@ -1446,7 +1520,7 @@ mod tests {
     #[test]
     fn test_parse_nth_child_with_arg() {
         let css = "li:nth-child(2n+1) { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::FirstChild);
@@ -1459,7 +1533,7 @@ mod tests {
     #[test]
     fn test_parse_nth_of_type() {
         let css = "p:nth-of-type(2) { margin-left: 10px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::OfType);
@@ -1472,7 +1546,7 @@ mod tests {
     #[test]
     fn test_parse_empty_pseudo() {
         let css = ":empty { display: none; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, .. } => {
                 assert_eq!(*kind, NthKind::Empty);
@@ -1488,7 +1562,7 @@ mod tests {
     #[test]
     fn css_chained_pseudo_hover_active() {
         let css = ".btn:hover:active { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].selector {
             CssSelector::PseudoClass(inner, pseudo) => {
@@ -1508,7 +1582,7 @@ mod tests {
     #[test]
     fn css_chained_pseudo_focus_hover() {
         let css = "input:focus:hover { border: 2px solid blue; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::PseudoClass(inner, pseudo) => {
                 assert_eq!(pseudo, "hover");
@@ -1527,7 +1601,7 @@ mod tests {
     #[test]
     fn css_chained_three_pseudo_classes() {
         let css = ".item:hover:focus:active { outline: 1px solid red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::PseudoClass(inner, pseudo) => {
                 assert_eq!(pseudo, "active");
@@ -1552,7 +1626,7 @@ mod tests {
     #[test]
     fn css_deeply_nested_not_with_descendant() {
         let css = "div:not(.a .b) { color: red; }";
-        let rules = parse_css(&css).unwrap();
+        let (rules, _) = parse_css(&css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].selector {
             CssSelector::Not { selector, inner } => {
@@ -1573,7 +1647,7 @@ mod tests {
     #[test]
     fn css_deeply_nested_not_with_attribute() {
         let css = "div:not([disabled]) { opacity: 1; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Not { selector, inner } => {
                 assert_eq!(**selector, CssSelector::Tag("div".to_string()));
@@ -1592,7 +1666,7 @@ mod tests {
     #[test]
     fn css_multi_level_descendant() {
         let css = "div > p > span { color: blue; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             // Parser builds: Child([Child([Tag("div"), Tag("p")]), Tag("span")])
             CssSelector::Child(parts) => {
@@ -1614,7 +1688,7 @@ mod tests {
     #[test]
     fn css_descendant_three_levels() {
         let css = "div span a { text-decoration: none; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Descendant(parts) => {
                 assert_eq!(parts.len(), 2);
@@ -1636,7 +1710,7 @@ mod tests {
     #[test]
     fn css_mixed_child_and_descendant() {
         let css = "div > p span { margin: 0; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Descendant(parts) => {
                 assert_eq!(parts.len(), 2);
@@ -1650,7 +1724,7 @@ mod tests {
     #[test]
     fn css_nth_child_2n_plus_1() {
         let css = "li:nth-child(2n+1) { font-weight: bold; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::FirstChild);
@@ -1663,7 +1737,7 @@ mod tests {
     #[test]
     fn css_nth_child_minus_n_plus_3() {
         let css = "li:nth-child(-n+3) { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::FirstChild);
@@ -1676,7 +1750,7 @@ mod tests {
     #[test]
     fn css_nth_child_3n() {
         let css = "li:nth-child(3n) { display: block; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::FirstChild);
@@ -1689,7 +1763,7 @@ mod tests {
     #[test]
     fn css_nth_child_even() {
         let css = "tr:nth-child(even) { background: #f0f0f0; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::FirstChild);
@@ -1702,7 +1776,7 @@ mod tests {
     #[test]
     fn css_nth_child_odd() {
         let css = "tr:nth-child(odd) { background: #ffffff; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::FirstChild);
@@ -1715,7 +1789,7 @@ mod tests {
     #[test]
     fn css_nth_of_type_complex() {
         let css = "p:nth-of-type(2n+1) { margin-top: 10px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::OfType);
@@ -1728,7 +1802,7 @@ mod tests {
     #[test]
     fn css_nth_of_type_first() {
         let css = "p:first-of-type { font-weight: bold; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::FirstOfType);
@@ -1741,7 +1815,7 @@ mod tests {
     #[test]
     fn css_nth_last_child_with_arg() {
         let css = "li:nth-last-child(3) { color: gray; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::LastChild);
@@ -1754,7 +1828,7 @@ mod tests {
     #[test]
     fn css_nth_last_of_type() {
         let css = "span:nth-last-of-type(2n) { font-size: 12px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { kind, argument, .. } => {
                 assert_eq!(*kind, NthKind::LastOfType);
@@ -1767,7 +1841,7 @@ mod tests {
     #[test]
     fn css_last_child_on_class() {
         let css = ".list-item:last-child { margin-bottom: 0; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth {
                 selector,
@@ -1785,7 +1859,7 @@ mod tests {
     #[test]
     fn css_first_child_on_id() {
         let css = "#sidebar:first-child { border-right: 1px solid; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { selector, kind, .. } => {
                 assert_eq!(**selector, CssSelector::Id("sidebar".to_string()));
@@ -1798,7 +1872,7 @@ mod tests {
     #[test]
     fn css_empty_on_tag() {
         let css = "div:empty { display: none; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Nth { selector, kind, .. } => {
                 assert_eq!(**selector, CssSelector::Tag("div".to_string()));
@@ -1811,7 +1885,7 @@ mod tests {
     #[test]
     fn css_attribute_data_prefix() {
         let css = r#"[data-tooltip^="Hello"] { cursor: help; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Attribute {
                 attr, op, value, ..
@@ -1827,7 +1901,7 @@ mod tests {
     #[test]
     fn css_attribute_href_suffix() {
         let css = r#"a[href$=".pdf"] { color: red; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Attribute {
                 selector,
@@ -1850,7 +1924,7 @@ mod tests {
     #[test]
     fn css_attribute_single_quotes() {
         let css = r#"input[type='email'] { background: white; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Attribute {
                 attr, value, op, ..
@@ -1866,7 +1940,7 @@ mod tests {
     #[test]
     fn css_universal_with_attribute() {
         let css = r#"*[role="button"] { display: block; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Attribute {
                 selector,
@@ -1886,7 +1960,7 @@ mod tests {
     #[test]
     fn css_pseudo_element_double_colon() {
         let css = ".btn::before { content: ''; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].selector {
             CssSelector::PseudoClass(inner, pseudo) => {
@@ -1900,7 +1974,7 @@ mod tests {
     #[test]
     fn css_not_with_universal_inner() {
         let css = "div:not(*) { opacity: 0.5; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::Not { selector, inner } => {
                 assert_eq!(**selector, CssSelector::Tag("div".to_string()));
@@ -1913,7 +1987,7 @@ mod tests {
     #[test]
     fn css_complex_chained_not_and_pseudo() {
         let css = ".card:not(.disabled):hover { opacity: 1; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::PseudoClass(inner, pseudo) => {
                 assert_eq!(pseudo, "hover");
@@ -1935,7 +2009,7 @@ mod tests {
     #[test]
     fn css_list_with_complex_selectors() {
         let css = "h1, h2, h3 { margin-top: 0; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].selector {
             CssSelector::List(parts) => {
                 assert_eq!(parts.len(), 3);
@@ -1954,7 +2028,7 @@ mod tests {
     #[test]
     fn css_shorthand_1_value() {
         let css = ".a { padding: 8px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Length(n, unit) => {
                 assert_eq!(*n, 8.0);
@@ -1967,7 +2041,7 @@ mod tests {
     #[test]
     fn css_shorthand_2_values() {
         let css = ".a { padding: 10px 20px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Shorthand(parts) => {
                 assert_eq!(parts.len(), 2);
@@ -1981,7 +2055,7 @@ mod tests {
     #[test]
     fn css_shorthand_3_values() {
         let css = ".a { margin: 5px 10px 15px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Shorthand(parts) => {
                 assert_eq!(parts.len(), 3);
@@ -1996,7 +2070,7 @@ mod tests {
     #[test]
     fn css_shorthand_4_values() {
         let css = ".a { margin: 1px 2px 3px 4px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Shorthand(parts) => {
                 assert_eq!(parts.len(), 4);
@@ -2012,7 +2086,7 @@ mod tests {
     #[test]
     fn css_margin_shorthand_4_values() {
         let css = ".a { margin: 10px 20px 30px 40px; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Shorthand(parts) => {
                 assert_eq!(parts.len(), 4);
@@ -2026,7 +2100,7 @@ mod tests {
     #[test]
     fn css_hex_3_char() {
         let css = ".a { color: #fff; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 assert_eq!(c.r, 255);
@@ -2042,7 +2116,7 @@ mod tests {
     fn css_hex_4_char_falls_to_default() {
         // 4-char hex (#RGBA) is not supported by Color::from_hex — falls through to default black.
         let css = ".a { color: #fffa; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 assert_eq!(c.r, 0);
@@ -2056,7 +2130,7 @@ mod tests {
     #[test]
     fn css_hex_8_char() {
         let css = ".a { color: #ff000080; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 assert_eq!(c.r, 255);
@@ -2072,7 +2146,7 @@ mod tests {
     #[test]
     fn css_hex_short_black() {
         let css = ".a { color: #000; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 assert_eq!(c.r, 0);
@@ -2086,7 +2160,7 @@ mod tests {
     #[test]
     fn css_rgb_basic() {
         let css = ".a { color: rgb(255, 128, 0); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 assert_eq!(c.r, 255);
@@ -2104,7 +2178,7 @@ mod tests {
         // trim_start_matches("rgb") leaves "a(..." for rgba() input.
         // rgb() with 4 args works:
         let css = ".a { color: rgb(100, 200, 50, 0.5); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 assert_eq!(c.r, 100);
@@ -2119,7 +2193,7 @@ mod tests {
     #[test]
     fn css_hsl_basic() {
         let css = ".a { color: hsl(120, 50%, 50%); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 // HSL 120, 50%, 50% → green-ish. The exact values depend on conversion.
@@ -2136,7 +2210,7 @@ mod tests {
     #[test]
     fn css_hsl_with_deg() {
         let css = ".a { color: hsl(0deg, 100%, 50%); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 // hsl(0, 100%, 50%) = pure red
@@ -2151,7 +2225,7 @@ mod tests {
     #[test]
     fn css_calc_fallback_to_keyword() {
         let css = ".a { width: calc(100% - 20px); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(k.contains("calc")),
             other => panic!("expected Keyword for calc, got {other:?}"),
@@ -2161,7 +2235,7 @@ mod tests {
     #[test]
     fn css_linear_gradient_multi_stop() {
         let css = ".bg { background: linear-gradient(red, yellow, green); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::LinearGradient { direction, stops } => {
                 assert!(direction.is_none());
@@ -2174,7 +2248,7 @@ mod tests {
     #[test]
     fn css_radial_gradient_multi_stop() {
         let css = ".bg { background: radial-gradient(red, yellow, green, blue); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::RadialGradient { stops } => {
                 assert_eq!(stops.len(), 4);
@@ -2186,7 +2260,7 @@ mod tests {
     #[test]
     fn css_url_fallback_to_keyword() {
         let css = ".bg { background-image: url('image.png'); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(k.contains("url")),
             other => panic!("expected Keyword for url(), got {other:?}"),
@@ -2196,7 +2270,7 @@ mod tests {
     #[test]
     fn css_var_fallback_to_keyword() {
         let css = ".a { color: var(--text-color); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(k.contains("var")),
             other => panic!("expected Keyword for var(), got {other:?}"),
@@ -2206,7 +2280,7 @@ mod tests {
     #[test]
     fn css_clamp_fallback_to_keyword() {
         let css = ".a { width: clamp(200px, 50%, 800px); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(k.contains("clamp")),
             other => panic!("expected Keyword for clamp(), got {other:?}"),
@@ -2217,8 +2291,8 @@ mod tests {
     fn css_min_max_fallback_to_keyword() {
         let css_min = ".a { width: min(100%, 500px); }";
         let css_max = ".b { width: max(200px, 50%); }";
-        let rules_min = parse_css(css_min).unwrap();
-        let rules_max = parse_css(css_max).unwrap();
+        let (rules_min, _) = parse_css(css_min).unwrap();
+        let (rules_max, _) = parse_css(css_max).unwrap();
         assert!(matches!(
             rules_min[0].properties[0].value,
             CssValue::Keyword(_)
@@ -2232,7 +2306,7 @@ mod tests {
     #[test]
     fn css_transition_fallback_to_keyword() {
         let css = ".a { transition: all 0.3s ease-in-out; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(!k.is_empty()),
             other => panic!("expected Keyword for transition, got {other:?}"),
@@ -2242,7 +2316,7 @@ mod tests {
     #[test]
     fn css_box_shadow_fallback() {
         let css = ".a { box-shadow: 0 4px 6px rgba(0,0,0,0.1); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(!k.is_empty()),
             other => panic!("expected Keyword for box-shadow, got {other:?}"),
@@ -2252,7 +2326,7 @@ mod tests {
     #[test]
     fn css_font_shorthand_fallback() {
         let css = ".a { font: bold 16px/1.5 Arial; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(!k.is_empty()),
             other => panic!("expected Keyword for font shorthand, got {other:?}"),
@@ -2262,14 +2336,14 @@ mod tests {
     #[test]
     fn css_multiple_backgrounds_fallback() {
         let css = ".a { background: url('a.png'), url('b.png'); }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
     }
 
     #[test]
     fn css_named_color_transparent() {
         let css = ".a { color: transparent; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Color(c) => {
                 assert_eq!(c.r, 0);
@@ -2287,19 +2361,19 @@ mod tests {
 
     #[test]
     fn css_empty_string() {
-        let rules = parse_css("").unwrap();
+        let (rules, _) = parse_css("").unwrap();
         assert!(rules.is_empty());
     }
 
     #[test]
     fn css_only_whitespace() {
-        let rules = parse_css("   \n\t  ").unwrap();
+        let (rules, _) = parse_css("   \n\t  ").unwrap();
         assert!(rules.is_empty());
     }
 
     #[test]
     fn css_only_comment() {
-        let rules = parse_css("/* just a comment */").unwrap();
+        let (rules, _) = parse_css("/* just a comment */").unwrap();
         assert!(rules.is_empty());
     }
 
@@ -2313,7 +2387,7 @@ mod tests {
     #[test]
     fn css_unknown_property_does_not_panic() {
         let css = ".a { some-unknown-prop: value; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].properties[0].name, "some-unknown-prop");
     }
@@ -2327,7 +2401,7 @@ mod tests {
     #[test]
     fn css_empty_declaration_block() {
         let css = ".a { }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert!(rules[0].properties.is_empty());
     }
@@ -2335,7 +2409,7 @@ mod tests {
     #[test]
     fn css_import_skipped() {
         let css = r#"@import url("style.css"); .a { color: red; }"#;
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].properties[0].name, "color");
     }
@@ -2345,7 +2419,7 @@ mod tests {
         // @charset consumes through the next { } block, so any rule after it
         // within the same block is consumed. Only rules outside are kept.
         let css = ".a { color: red; } @charset 'UTF-8'; .b { color: blue; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         // .a is parsed first, then @charset skips through .b's block
         assert!(rules.len() >= 1);
         assert_eq!(rules[0].properties[0].name, "color");
@@ -2354,7 +2428,7 @@ mod tests {
     #[test]
     fn css_font_size_keyword() {
         let css = "h1 { font-size: large; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(
             rules[0].properties[0].value,
             CssValue::Keyword("large".to_string())
@@ -2364,35 +2438,35 @@ mod tests {
     #[test]
     fn css_inherit_keyword() {
         let css = ".a { color: inherit; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules[0].properties[0].value, CssValue::Inherited);
     }
 
     #[test]
     fn css_initial_keyword() {
         let css = ".a { display: initial; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules[0].properties[0].value, CssValue::Inherited);
     }
 
     #[test]
     fn css_unset_keyword() {
         let css = ".a { margin: unset; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules[0].properties[0].value, CssValue::Inherited);
     }
 
     #[test]
     fn css_multiple_comments_between_rules() {
         let css = "/* first */ .a { color: red; } /* middle */ .b { color: blue; } /* end */";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 2);
     }
 
     #[test]
     fn css_important_with_spaces() {
         let css = ".a { color: red ! important; }";
-        let rules = parse_css(css).unwrap();
+        let (rules, _) = parse_css(css).unwrap();
         // With space between ! and important, it should not be recognized as important
         assert!(!rules[0].properties[0].important);
     }

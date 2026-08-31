@@ -183,3 +183,23 @@ impl Color {
         Color { r, g, b, a }
     }
 }
+
+// ── @keyframes ──────────────────────────────────────────────────────
+
+/// A parsed `@keyframes` rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyframeRule {
+    /// Animation name, e.g. "slide", "fade-in".
+    pub name: String,
+    /// Individual keyframe blocks inside the rule.
+    pub keyframes: Vec<Keyframe>,
+}
+
+/// A single keyframe block inside `@keyframes`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Keyframe {
+    /// Selector: "from", "to", "0%", "50%", "100%", etc.
+    pub selector: String,
+    /// Properties set at this keyframe.
+    pub properties: Vec<CssProperty>,
+}

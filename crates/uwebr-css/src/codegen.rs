@@ -200,6 +200,31 @@ impl TransformProps {
     }
 }
 
+/// CSS `animation` shorthand parsed properties.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AnimationProps {
+    /// Animation name — references a `@keyframes` rule.
+    pub name: String,
+    /// Duration in milliseconds.
+    pub duration_ms: u32,
+    /// Timing function: "ease" (default), "linear", "ease-in", "ease-out", "ease-in-out".
+    pub timing: String,
+    /// Delay in milliseconds.
+    pub delay_ms: u32,
+    /// Iteration count. `None` = infinite.
+    pub iteration_count: Option<u32>,
+    /// Direction: "normal", "reverse", "alternate", "alternate-reverse".
+    pub direction: String,
+    /// Fill mode: "none", "forwards", "backwards", "both".
+    pub fill_mode: String,
+}
+
+impl AnimationProps {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_empty()
+    }
+}
+
 /// A CSS rule converted for runtime use: layout + paint + "what was specified".
 #[derive(Debug, Clone)]
 pub struct StyleEntry {
@@ -211,6 +236,8 @@ pub struct StyleEntry {
     pub mask: StyleMask,
     pub paint: PaintProps,
     pub transform: TransformProps,
+    /// CSS `animation` shorthand — name, duration, timing, delay, etc.
+    pub animation: AnimationProps,
     /// Whether any declaration in this rule carried `!important`. Used by the
     /// cascade so an important rule beats a higher-specificity normal rule.
     pub important: bool,
@@ -256,6 +283,7 @@ pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Resul
             mask,
             paint: extract_paint(&rule.properties),
             transform: extract_transform(&rule.properties),
+            animation: extract_animation(&rule.properties),
             important: rule.properties.iter().any(|p| p.important),
         });
     }
@@ -445,6 +473,138 @@ pub fn extract_transform(properties: &[CssProperty]) -> TransformProps {
     }
 
     t
+}
+
+/// Extract `animation` shorthand properties from a CSS property list.
+///
+/// CSS syntax: `animation: name duration timing delay iteration-count direction fill-mode;`
+/// All fields except `name` have sensible defaults.
+pub fn extract_animation(properties: &[CssProperty]) -> AnimationProps {
+    let mut a = AnimationProps::default();
+
+    for prop in properties {
+        if prop.name == "animation" {
+            match &prop.value {
+                CssValue::Keyword(raw) => parse_animation_shorthand(raw, &mut a),
+                CssValue::Shorthand(parts) => {
+                    // Fallback: just use the keyword form
+                    if let CssValue::Keyword(s) = &parts[0] {
+                        parse_animation_shorthand(s, &mut a);
+                    }
+                }
+                _ => {}
+            }
+            // Handle individual sub-properties
+        } else if prop.name == "animation-name" {
+            if let CssValue::Keyword(s) = &prop.value {
+                a.name = s.clone();
+            }
+        } else if prop.name == "animation-duration" {
+            if let CssValue::Length(n, _) = &prop.value {
+                a.duration_ms = (*n * 1000.0) as u32;
+            }
+        } else if prop.name == "animation-timing-function" {
+            if let CssValue::Keyword(s) = &prop.value {
+                a.timing = s.clone();
+            }
+        } else if prop.name == "animation-delay" {
+            if let CssValue::Length(n, _) = &prop.value {
+                a.delay_ms = (*n * 1000.0) as u32;
+            }
+        } else if prop.name == "animation-iteration-count" {
+            match &prop.value {
+                CssValue::Keyword(s) if s == "infinite" => a.iteration_count = None,
+                CssValue::Length(n, _) => a.iteration_count = Some(*n as u32),
+                _ => {}
+            }
+        } else if prop.name == "animation-direction" {
+            if let CssValue::Keyword(s) = &prop.value {
+                a.direction = s.clone();
+            }
+        } else if prop.name == "animation-fill-mode" {
+            if let CssValue::Keyword(s) = &prop.value {
+                a.fill_mode = s.clone();
+            }
+        }
+    }
+
+    a
+}
+
+/// Parse the `animation` shorthand value string.
+///
+/// CSS shorthand order: `name duration timing delay iteration-count direction fill-mode`
+/// Not all tokens are required; defaults are applied for missing values.
+fn parse_animation_shorthand(raw: &str, out: &mut AnimationProps) {
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    for token in tokens.iter() {
+        let t = token.trim();
+        if t.is_empty() {
+            continue;
+        }
+        // "infinite" → iteration count
+        if t == "infinite" {
+            out.iteration_count = None;
+            continue;
+        }
+        // direction keywords
+        if matches!(t, "normal" | "reverse" | "alternate" | "alternate-reverse") {
+            out.direction = t.to_string();
+            continue;
+        }
+        // fill mode keywords
+        if matches!(t, "none" | "forwards" | "backwards" | "both") {
+            // "none" could also be animation-name or fill-mode; if name is set, treat as fill-mode
+            if out.name.is_empty() && t == "none" {
+                out.name = "none".to_string();
+            } else {
+                out.fill_mode = t.to_string();
+            }
+            continue;
+        }
+        // timing function keywords
+        if matches!(
+            t,
+            "ease" | "linear" | "ease-in" | "ease-out" | "ease-in-out"
+        ) {
+            out.timing = t.to_string();
+            continue;
+        }
+        // number with ms/s suffix → duration or delay
+        if let Some(ms) = parse_duration_ms(t) {
+            if out.duration_ms == 0 {
+                out.duration_ms = ms;
+            } else {
+                out.delay_ms = ms;
+            }
+            continue;
+        }
+        // numeric iteration count
+        if let Ok(n) = t.parse::<u32>() {
+            out.iteration_count = Some(n);
+            continue;
+        }
+        // Otherwise it's the animation name (first unrecognized token)
+        if out.name.is_empty() {
+            out.name = t.to_string();
+        }
+    }
+}
+
+/// Parse a CSS time value like "300ms", "0.5s", "1s" into milliseconds.
+fn parse_duration_ms(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(ms_str) = s.strip_suffix("ms") {
+        ms_str.trim().parse::<f32>().ok().map(|n| n as u32)
+    } else if let Some(s_str) = s.strip_suffix('s') {
+        s_str
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|s| (s * 1000.0) as u32)
+    } else {
+        None
+    }
 }
 
 /// Parse transform functions from a string like "translateX(10px) rotate(45deg)".
@@ -1436,12 +1596,12 @@ fn generate_length_prop(prop: &str, val: &CssValue) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{parse_css, parse_nth};
+    use crate::parser::{parse_nth, parse_rules};
 
     #[test]
     fn test_generate_flex_style() {
         let css = ".container { display: flex; padding: 16px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let code = generate_taffy_styles(&rules).unwrap();
         assert!(code.contains("Display::Flex"));
         assert!(code.contains("padding"));
@@ -1450,7 +1610,7 @@ mod tests {
     #[test]
     fn test_convert_to_taffy_styles() {
         let css = ".container { display: flex; padding: 16px; gap: 8px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles.len(), 1);
         assert_eq!(styles[0].0, ".container");
@@ -1460,7 +1620,7 @@ mod tests {
     #[test]
     fn test_flex_direction_conversion() {
         let css = ".col { flex-direction: column; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.flex_direction, FlexDirection::Column);
     }
@@ -1468,7 +1628,7 @@ mod tests {
     #[test]
     fn test_justify_content_conversion() {
         let css = ".center { justify-content: center; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.justify_content, Some(JustifyContent::CENTER));
     }
@@ -1476,7 +1636,7 @@ mod tests {
     #[test]
     fn test_align_items_conversion() {
         let css = ".stretch { align-items: stretch; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.align_items, Some(AlignItems::STRETCH));
     }
@@ -1484,7 +1644,7 @@ mod tests {
     #[test]
     fn test_gap_conversion() {
         let css = ".grid { gap: 16px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         let expected = LengthPercentage::length(16.0);
         assert_eq!(styles[0].1.gap.width, expected);
@@ -1493,7 +1653,7 @@ mod tests {
     #[test]
     fn test_padding_shorthand() {
         let css = ".box { padding: 10px 20px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.padding.top, LengthPercentage::length(10.0));
         assert_eq!(styles[0].1.padding.right, LengthPercentage::length(20.0));
@@ -1502,7 +1662,7 @@ mod tests {
     #[test]
     fn test_margin_auto() {
         let css = ".box { margin: auto; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert!(styles[0].1.margin.top.is_auto());
     }
@@ -1510,7 +1670,7 @@ mod tests {
     #[test]
     fn test_position_conversion() {
         let css = ".abs { position: absolute; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.position, Position::Absolute);
     }
@@ -1518,7 +1678,7 @@ mod tests {
     #[test]
     fn test_width_height_conversion() {
         let css = ".size { width: 100px; height: 50vh; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.size.width, Dimension::length(100.0));
     }
@@ -1526,7 +1686,7 @@ mod tests {
     #[test]
     fn test_overflow_conversion() {
         let css = ".scroll { overflow: hidden; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.overflow.x, Overflow::Hidden);
     }
@@ -1534,7 +1694,7 @@ mod tests {
     #[test]
     fn test_border_width_conversion() {
         let css = ".border { border-width: 2px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.border.top, LengthPercentage::length(2.0));
     }
@@ -1542,7 +1702,7 @@ mod tests {
     #[test]
     fn test_multiple_rules_conversion() {
         let css = ".a { display: flex; } .b { display: grid; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles.len(), 2);
         assert_eq!(styles[0].1.display, Display::Flex);
@@ -1554,7 +1714,7 @@ mod tests {
     #[test]
     fn test_mask_tracks_only_specified_properties() {
         let css = ".only-width { width: 100px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let mask = entries[0].mask;
         assert!(mask.width, "width should be marked as specified");
@@ -1566,7 +1726,7 @@ mod tests {
     #[test]
     fn test_mask_multiple_properties() {
         let css = ".card { display: flex; flex-direction: column; padding: 8px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let mask = entries[0].mask;
         assert!(mask.display);
@@ -1579,7 +1739,7 @@ mod tests {
     #[test]
     fn test_mask_empty_for_paint_only_rule() {
         let css = ".text { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(
             entries[0].mask.is_empty(),
@@ -1605,7 +1765,7 @@ mod tests {
     #[test]
     fn test_gap_shorthand_marks_both_axes() {
         let css = ".g { gap: 4px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.gap_width);
         assert!(entries[0].mask.gap_height);
@@ -1616,7 +1776,7 @@ mod tests {
     #[test]
     fn test_paint_background_color() {
         let css = ".app { background-color: #1a1a2e; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         match entries[0].paint.background.clone().unwrap() {
             BackgroundValue::Solid(bg) => assert_eq!((bg.r, bg.g, bg.b), (0x1a, 0x1a, 0x2e)),
@@ -1627,7 +1787,7 @@ mod tests {
     #[test]
     fn test_paint_text_color() {
         let css = ".app { color: #e0e0e0; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let c = entries[0].paint.color.clone().unwrap();
         assert_eq!((c.r, c.g, c.b), (0xe0, 0xe0, 0xe0));
@@ -1636,7 +1796,7 @@ mod tests {
     #[test]
     fn test_paint_font_size_px() {
         let css = "h1 { font-size: 32px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.font_size, Some(32.0));
     }
@@ -1644,7 +1804,7 @@ mod tests {
     #[test]
     fn test_paint_font_size_rem_resolves_to_px() {
         let css = "h1 { font-size: 2rem; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.font_size, Some(32.0));
     }
@@ -1652,7 +1812,7 @@ mod tests {
     #[test]
     fn test_paint_font_family() {
         let css = ".app { font-family: monospace; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.font_family.as_deref(), Some("monospace"));
     }
@@ -1660,7 +1820,7 @@ mod tests {
     #[test]
     fn test_paint_empty_for_layout_only_rule() {
         let css = ".row { display: flex; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].paint.is_empty());
     }
@@ -1688,7 +1848,7 @@ mod tests {
     #[test]
     fn test_paint_border_and_opacity() {
         let css = ".b { border-width: 2px; border-radius: 6px; border-color: blue; opacity: 0.5; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let paint = &entries[0].paint;
         assert_eq!(paint.border_width, Some(2.0));
@@ -1700,7 +1860,7 @@ mod tests {
     #[test]
     fn test_paint_text_overflow_ellipsis() {
         let css = ".t { text-overflow: ellipsis; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.text_overflow.as_deref(), Some("ellipsis"));
     }
@@ -1708,7 +1868,7 @@ mod tests {
     #[test]
     fn test_paint_text_overflow_clip() {
         let css = ".t { text-overflow: clip; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.text_overflow.as_deref(), Some("clip"));
     }
@@ -1717,7 +1877,7 @@ mod tests {
     fn test_convert_to_taffy_styles_still_compatible() {
         // The legacy (String, Style) API must keep working for existing callers.
         let css = ".container { display: flex; padding: 16px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let legacy = convert_to_taffy_styles(&rules).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(legacy.len(), entries.len());
@@ -1730,7 +1890,7 @@ mod tests {
     #[test]
     fn test_vw_resolves_to_pixels_against_viewport() {
         let css = ".w { width: 50vw; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
         // 50vw of an 800px viewport = 400px, an absolute length not a percent.
         assert_eq!(entries[0].style.size.width, Dimension::length(400.0));
@@ -1739,7 +1899,7 @@ mod tests {
     #[test]
     fn test_vh_resolves_to_pixels_against_viewport() {
         let css = ".h { height: 50vh; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
         assert_eq!(entries[0].style.size.height, Dimension::length(300.0));
     }
@@ -1747,7 +1907,7 @@ mod tests {
     #[test]
     fn test_percent_stays_parent_relative() {
         let css = ".w { width: 50%; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries_vp(&rules, 800.0, 600.0).unwrap();
         // `%` must remain a percentage, resolved against the parent by taffy.
         assert_eq!(entries[0].style.size.width, Dimension::percent(0.5));
@@ -1756,7 +1916,7 @@ mod tests {
     #[test]
     fn test_vw_in_padding_resolves_to_length() {
         let css = ".p { padding: 10vw; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries_vp(&rules, 1000.0, 500.0).unwrap();
         assert_eq!(
             entries[0].style.padding.top,
@@ -1771,7 +1931,7 @@ mod tests {
     #[test]
     fn css_display_flex() {
         let css = ".a { display: flex; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.display, Display::Flex);
     }
@@ -1779,7 +1939,7 @@ mod tests {
     #[test]
     fn css_display_grid() {
         let css = ".a { display: grid; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.display, Display::Grid);
     }
@@ -1787,7 +1947,7 @@ mod tests {
     #[test]
     fn css_display_none() {
         let css = ".a { display: none; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.display, Display::None);
     }
@@ -1797,7 +1957,7 @@ mod tests {
         // "block" and "inline" are not supported by to_display, so they
         // remain as keywords in the parsed value but don't affect Taffy.
         let css = ".a { display: block; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(!entries[0].mask.display, "block is not a taffy display");
     }
@@ -1805,7 +1965,7 @@ mod tests {
     #[test]
     fn css_position_relative() {
         let css = ".a { position: relative; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.position, Position::Relative);
     }
@@ -1813,7 +1973,7 @@ mod tests {
     #[test]
     fn css_position_absolute() {
         let css = ".a { position: absolute; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.position, Position::Absolute);
     }
@@ -1821,7 +1981,7 @@ mod tests {
     #[test]
     fn css_position_fixed_maps_to_absolute() {
         let css = ".a { position: fixed; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.position);
         let styles = convert_to_taffy_styles(&rules).unwrap();
@@ -1831,7 +1991,7 @@ mod tests {
     #[test]
     fn css_position_sticky_maps_to_relative() {
         let css = ".a { position: sticky; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.position);
         let styles = convert_to_taffy_styles(&rules).unwrap();
@@ -1841,7 +2001,7 @@ mod tests {
     #[test]
     fn css_overflow_hidden() {
         let css = ".a { overflow: hidden; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.overflow.x, Overflow::Hidden);
         assert_eq!(styles[0].1.overflow.y, Overflow::Hidden);
@@ -1850,7 +2010,7 @@ mod tests {
     #[test]
     fn css_overflow_scroll() {
         let css = ".a { overflow: scroll; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.overflow.x, Overflow::Scroll);
     }
@@ -1858,7 +2018,7 @@ mod tests {
     #[test]
     fn css_overflow_visible() {
         let css = ".a { overflow: visible; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.overflow.x, Overflow::Visible);
     }
@@ -1866,7 +2026,7 @@ mod tests {
     #[test]
     fn css_flex_grow() {
         let css = ".a { flex-grow: 2; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.flex_grow);
         assert_eq!(entries[0].style.flex_grow, 2.0);
@@ -1875,7 +2035,7 @@ mod tests {
     #[test]
     fn css_flex_shrink() {
         let css = ".a { flex-shrink: 0; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.flex_shrink);
         assert_eq!(entries[0].style.flex_shrink, 0.0);
@@ -1884,7 +2044,7 @@ mod tests {
     #[test]
     fn css_flex_direction_row() {
         let css = ".a { flex-direction: row; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.flex_direction, FlexDirection::Row);
     }
@@ -1892,7 +2052,7 @@ mod tests {
     #[test]
     fn css_flex_direction_column_reverse() {
         let css = ".a { flex-direction: column-reverse; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.flex_direction, FlexDirection::ColumnReverse);
     }
@@ -1900,7 +2060,7 @@ mod tests {
     #[test]
     fn css_flex_wrap_nowrap() {
         let css = ".a { flex-wrap: nowrap; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.flex_wrap, FlexWrap::NoWrap);
     }
@@ -1908,7 +2068,7 @@ mod tests {
     #[test]
     fn css_flex_wrap_wrap_reverse() {
         let css = ".a { flex-wrap: wrap-reverse; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.flex_wrap, FlexWrap::WrapReverse);
     }
@@ -1916,7 +2076,7 @@ mod tests {
     #[test]
     fn css_justify_content_space_between() {
         let css = ".a { justify-content: space-between; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(
             styles[0].1.justify_content,
@@ -1927,7 +2087,7 @@ mod tests {
     #[test]
     fn css_justify_content_space_evenly() {
         let css = ".a { justify-content: space-evenly; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(
             styles[0].1.justify_content,
@@ -1938,7 +2098,7 @@ mod tests {
     #[test]
     fn css_align_items_flex_start() {
         let css = ".a { align-items: flex-start; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.align_items, Some(AlignItems::FLEX_START));
     }
@@ -1946,7 +2106,7 @@ mod tests {
     #[test]
     fn css_align_items_flex_end() {
         let css = ".a { align-items: flex-end; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.align_items, Some(AlignItems::FLEX_END));
     }
@@ -1954,7 +2114,7 @@ mod tests {
     #[test]
     fn css_align_items_baseline() {
         let css = ".a { align-items: baseline; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.align_items, Some(AlignItems::BASELINE));
     }
@@ -1962,7 +2122,7 @@ mod tests {
     #[test]
     fn css_align_self_center() {
         let css = ".a { align-self: center; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.align_self, Some(AlignItems::CENTER));
         assert!(entries[0].mask.align_self);
@@ -1971,7 +2131,7 @@ mod tests {
     #[test]
     fn css_gap_px() {
         let css = ".a { gap: 12px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.gap.width, LengthPercentage::length(12.0));
         assert_eq!(styles[0].1.gap.height, LengthPercentage::length(12.0));
@@ -1980,7 +2140,7 @@ mod tests {
     #[test]
     fn css_row_gap() {
         let css = ".a { row-gap: 8px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.gap.height, LengthPercentage::length(8.0));
         assert!(entries[0].mask.gap_height);
@@ -1989,7 +2149,7 @@ mod tests {
     #[test]
     fn css_column_gap() {
         let css = ".a { column-gap: 16px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.gap.width, LengthPercentage::length(16.0));
         assert!(entries[0].mask.gap_width);
@@ -1998,7 +2158,7 @@ mod tests {
     #[test]
     fn css_min_width() {
         let css = ".a { min-width: 200px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.min_size.width,
@@ -2010,7 +2170,7 @@ mod tests {
     #[test]
     fn css_min_height() {
         let css = ".a { min-height: 100px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.min_size.height,
@@ -2021,7 +2181,7 @@ mod tests {
     #[test]
     fn css_max_width() {
         let css = ".a { max-width: 600px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.max_size.width,
@@ -2033,7 +2193,7 @@ mod tests {
     #[test]
     fn css_max_height() {
         let css = ".a { max-height: 400px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.max_size.height,
@@ -2044,7 +2204,7 @@ mod tests {
     #[test]
     fn css_padding_top() {
         let css = ".a { padding-top: 5px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.padding.top, LengthPercentage::length(5.0));
     }
@@ -2052,7 +2212,7 @@ mod tests {
     #[test]
     fn css_padding_right() {
         let css = ".a { padding-right: 10px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.padding.right,
@@ -2063,7 +2223,7 @@ mod tests {
     #[test]
     fn css_padding_bottom() {
         let css = ".a { padding-bottom: 15px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.padding.bottom,
@@ -2074,7 +2234,7 @@ mod tests {
     #[test]
     fn css_padding_left() {
         let css = ".a { padding-left: 20px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.padding.left,
@@ -2085,7 +2245,7 @@ mod tests {
     #[test]
     fn css_margin_top_auto() {
         let css = ".a { margin-top: auto; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].style.margin.top.is_auto());
     }
@@ -2093,7 +2253,7 @@ mod tests {
     #[test]
     fn css_margin_right_px() {
         let css = ".a { margin-right: 8px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.margin.right,
@@ -2104,7 +2264,7 @@ mod tests {
     #[test]
     fn css_margin_bottom_auto() {
         let css = ".a { margin-bottom: auto; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].style.margin.bottom.is_auto());
     }
@@ -2112,7 +2272,7 @@ mod tests {
     #[test]
     fn css_margin_left_px() {
         let css = ".a { margin-left: 12px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.margin.left,
@@ -2123,7 +2283,7 @@ mod tests {
     #[test]
     fn css_top_inset() {
         let css = ".a { position: absolute; top: 0; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.inset.top,
@@ -2135,7 +2295,7 @@ mod tests {
     #[test]
     fn css_right_inset() {
         let css = ".a { position: absolute; right: 10px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.inset.right,
@@ -2146,7 +2306,7 @@ mod tests {
     #[test]
     fn css_bottom_inset() {
         let css = ".a { position: absolute; bottom: 20px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.inset.bottom,
@@ -2157,7 +2317,7 @@ mod tests {
     #[test]
     fn css_left_inset() {
         let css = ".a { position: absolute; left: 30px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.inset.left,
@@ -2168,7 +2328,7 @@ mod tests {
     #[test]
     fn css_top_auto_inset() {
         let css = ".a { position: absolute; top: auto; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].style.inset.top.is_auto());
     }
@@ -2176,7 +2336,7 @@ mod tests {
     #[test]
     fn css_width_auto() {
         let css = ".a { width: auto; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].style.size.width.is_auto());
     }
@@ -2184,7 +2344,7 @@ mod tests {
     #[test]
     fn css_height_auto() {
         let css = ".a { height: auto; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].style.size.height.is_auto());
     }
@@ -2192,7 +2352,7 @@ mod tests {
     #[test]
     fn css_width_percent() {
         let css = ".a { width: 75%; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.size.width, Dimension::percent(0.75));
     }
@@ -2200,7 +2360,7 @@ mod tests {
     #[test]
     fn css_height_em() {
         let css = ".a { height: 2em; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         // 2em → 2px in taffy (em resolves as raw length)
         assert_eq!(entries[0].style.size.height, Dimension::length(2.0));
@@ -2209,7 +2369,7 @@ mod tests {
     #[test]
     fn css_border_radius_px() {
         let css = ".a { border-radius: 8px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.border.top, LengthPercentage::length(8.0));
         assert_eq!(entries[0].style.border.right, LengthPercentage::length(8.0));
@@ -2223,7 +2383,7 @@ mod tests {
     #[test]
     fn css_border_width_all_sides() {
         let css = ".a { border-width: 3px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.border.top, LengthPercentage::length(3.0));
         assert_eq!(
@@ -2239,7 +2399,7 @@ mod tests {
     #[test]
     fn css_paint_background_solid() {
         let css = ".a { background-color: #ff00ff; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         match entries[0].paint.background.clone().unwrap() {
             BackgroundValue::Solid(c) => assert_eq!((c.r, c.g, c.b), (255, 0, 255)),
@@ -2250,7 +2410,7 @@ mod tests {
     #[test]
     fn css_paint_background_linear_gradient() {
         let css = ".a { background: linear-gradient(to right, red, blue); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         match entries[0].paint.background.clone().unwrap() {
             BackgroundValue::LinearGradient { direction, stops } => {
@@ -2264,7 +2424,7 @@ mod tests {
     #[test]
     fn css_paint_background_radial_gradient() {
         let css = ".a { background: radial-gradient(red, blue); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         match entries[0].paint.background.clone().unwrap() {
             BackgroundValue::RadialGradient { stops } => {
@@ -2277,7 +2437,7 @@ mod tests {
     #[test]
     fn css_paint_color_named() {
         let css = ".a { color: orange; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let c = entries[0].paint.color.clone().unwrap();
         assert_eq!((c.r, c.g, c.b), (255, 165, 0));
@@ -2286,7 +2446,7 @@ mod tests {
     #[test]
     fn css_paint_color_hex() {
         let css = ".a { color: #808080; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let c = entries[0].paint.color.clone().unwrap();
         assert_eq!((c.r, c.g, c.b), (128, 128, 128));
@@ -2295,7 +2455,7 @@ mod tests {
     #[test]
     fn css_paint_font_size_px() {
         let css = ".a { font-size: 24px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.font_size, Some(24.0));
     }
@@ -2303,7 +2463,7 @@ mod tests {
     #[test]
     fn css_paint_font_size_rem() {
         let css = ".a { font-size: 1.5rem; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.font_size, Some(24.0));
     }
@@ -2311,7 +2471,7 @@ mod tests {
     #[test]
     fn css_paint_font_family() {
         let css = ".a { font-family: sans-serif; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.font_family.as_deref(), Some("sans-serif"));
     }
@@ -2319,7 +2479,7 @@ mod tests {
     #[test]
     fn css_paint_border_color() {
         let css = ".a { border-color: green; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let c = entries[0].paint.border_color.clone().unwrap();
         assert_eq!((c.r, c.g, c.b), (0, 128, 0));
@@ -2328,7 +2488,7 @@ mod tests {
     #[test]
     fn css_paint_border_width() {
         let css = ".a { border-width: 4px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.border_width, Some(4.0));
     }
@@ -2336,7 +2496,7 @@ mod tests {
     #[test]
     fn css_paint_border_radius() {
         let css = ".a { border-radius: 12px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.border_radius, Some(12.0));
     }
@@ -2344,7 +2504,7 @@ mod tests {
     #[test]
     fn css_paint_opacity() {
         let css = ".a { opacity: 0.7; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!((entries[0].paint.opacity.unwrap() - 0.7).abs() < 0.01);
     }
@@ -2352,7 +2512,7 @@ mod tests {
     #[test]
     fn css_paint_opacity_clamped_above_one() {
         let css = ".a { opacity: 2; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.opacity, Some(1.0));
     }
@@ -2360,7 +2520,7 @@ mod tests {
     #[test]
     fn css_paint_opacity_clamped_below_zero() {
         let css = ".a { opacity: -1; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.opacity, Some(0.0));
     }
@@ -2368,7 +2528,7 @@ mod tests {
     #[test]
     fn css_paint_text_overflow_ellipsis() {
         let css = ".a { text-overflow: ellipsis; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.text_overflow.as_deref(), Some("ellipsis"));
     }
@@ -2376,7 +2536,7 @@ mod tests {
     #[test]
     fn css_paint_background_shorthand() {
         let css = ".a { background: blue; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         match entries[0].paint.background.clone().unwrap() {
             BackgroundValue::Solid(c) => assert_eq!((c.r, c.g, c.b), (0, 0, 255)),
@@ -2391,7 +2551,7 @@ mod tests {
     #[test]
     fn css_e2e_parse_then_resolve_display() {
         let css = ".box { display: flex; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.display, Display::Flex);
         assert!(entries[0].mask.display);
@@ -2400,7 +2560,7 @@ mod tests {
     #[test]
     fn css_e2e_parse_then_resolve_padding() {
         let css = ".box { padding: 10px 20px 30px 40px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.padding.top, LengthPercentage::length(10.0));
         assert_eq!(
@@ -2420,7 +2580,7 @@ mod tests {
     #[test]
     fn css_e2e_parse_then_resolve_margin() {
         let css = ".box { margin: auto; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].style.margin.top.is_auto());
         assert!(entries[0].style.margin.right.is_auto());
@@ -2431,7 +2591,7 @@ mod tests {
     #[test]
     fn css_e2e_parse_then_resolve_position() {
         let css = ".box { position: absolute; top: 0; left: 50%; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.position, Position::Absolute);
         assert_eq!(
@@ -2447,7 +2607,7 @@ mod tests {
     #[test]
     fn css_e2e_parse_then_resolve_flex() {
         let css = ".box { display: flex; flex-direction: column; flex-wrap: wrap; flex-grow: 1; flex-shrink: 0; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.display, Display::Flex);
         assert_eq!(entries[0].style.flex_direction, FlexDirection::Column);
@@ -2459,7 +2619,7 @@ mod tests {
     #[test]
     fn css_e2e_parse_then_resolve_overflow() {
         let css = ".box { overflow: hidden; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.overflow.x, Overflow::Hidden);
         assert_eq!(entries[0].style.overflow.y, Overflow::Hidden);
@@ -2480,7 +2640,7 @@ mod tests {
                 max-width: 600px;
             }
         "#;
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.display, Display::Flex);
         assert_eq!(entries[0].style.flex_direction, FlexDirection::Row);
@@ -2517,7 +2677,7 @@ mod tests {
                 padding: 16px;
             }
         "#;
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 2);
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.display, Display::Flex);
@@ -2528,7 +2688,7 @@ mod tests {
     #[test]
     fn css_e2e_multiple_rules_same_selector() {
         let css = ".a { color: red; } .a { color: blue; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 2);
         let entries = convert_to_style_entries(&rules).unwrap();
         // Both rules exist; cascade determines which wins at runtime
@@ -2538,7 +2698,7 @@ mod tests {
     #[test]
     fn css_e2e_important_flag() {
         let css = ".a { color: red !important; } .b { color: blue; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].important);
         assert!(!entries[1].important);
@@ -2562,7 +2722,7 @@ mod tests {
                 cursor: pointer;
             }
         "#;
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.padding.top, LengthPercentage::length(8.0));
         assert_eq!(
@@ -2606,7 +2766,7 @@ mod tests {
                 font-size: 14px;
             }
         "#;
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 3);
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.display, Display::Flex);
@@ -2631,7 +2791,7 @@ mod tests {
                 font-size: 16px;
             }
         "#;
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.justify_content,
@@ -2652,7 +2812,7 @@ mod tests {
     #[test]
     fn css_e2e_min_max_width() {
         let css = ".a { min-width: 100px; max-width: 500px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(
             entries[0].style.min_size.width,
@@ -2667,7 +2827,7 @@ mod tests {
     #[test]
     fn css_e2e_convert_paint_properties() {
         let css = ".a { color: red; background-color: blue; font-size: 18px; opacity: 0.8; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let paint = &entries[0].paint;
         assert!(paint.color.is_some());
@@ -2679,7 +2839,7 @@ mod tests {
     #[test]
     fn css_e2e_vh_in_height() {
         let css = ".a { height: 100vh; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries_vp(&rules, 1920.0, 1080.0).unwrap();
         assert_eq!(entries[0].style.size.height, Dimension::length(1080.0));
     }
@@ -2691,7 +2851,7 @@ mod tests {
     #[test]
     fn css_codegen_class_selector_key() {
         let css = ".my-class { display: flex; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, ".my-class");
     }
@@ -2699,7 +2859,7 @@ mod tests {
     #[test]
     fn css_codegen_id_selector_key() {
         let css = "#app { display: flex; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, "#app");
     }
@@ -2707,7 +2867,7 @@ mod tests {
     #[test]
     fn css_codegen_tag_selector_key() {
         let css = "div { display: flex; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, "div");
     }
@@ -2715,7 +2875,7 @@ mod tests {
     #[test]
     fn css_codegen_universal_selector_key() {
         let css = "* { box-sizing: border-box; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, "*");
     }
@@ -2723,7 +2883,7 @@ mod tests {
     #[test]
     fn css_codegen_descendant_selector_key() {
         let css = ".a .b { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, ".a .b");
     }
@@ -2731,7 +2891,7 @@ mod tests {
     #[test]
     fn css_codegen_child_selector_key() {
         let css = ".a > .b { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, ".a > .b");
     }
@@ -2739,7 +2899,7 @@ mod tests {
     #[test]
     fn css_codegen_list_selector_key() {
         let css = ".a, .b { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, ".a, .b");
     }
@@ -2747,7 +2907,7 @@ mod tests {
     #[test]
     fn css_codegen_pseudo_class_selector_key() {
         let css = ".btn:hover { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, ".btn:hover");
     }
@@ -2755,7 +2915,7 @@ mod tests {
     #[test]
     fn css_codegen_not_selector_key() {
         let css = ".a:not(.b) { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, ".a:not(.b)");
     }
@@ -2763,7 +2923,7 @@ mod tests {
     #[test]
     fn css_codegen_attribute_selector_key() {
         let css = r#"input[type="text"] { color: red; }"#;
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, r#"input[type="text"]"#);
     }
@@ -2773,7 +2933,7 @@ mod tests {
         // selector_key for Nth { kind: FirstChild } always emits ":first-child"
         // regardless of the An+B argument.
         let css = "li:nth-child(2n+1) { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, "li:first-child");
     }
@@ -2781,7 +2941,7 @@ mod tests {
     #[test]
     fn css_codegen_first_child_selector_key() {
         let css = ".a:first-child { color: red; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, ".a:first-child");
     }
@@ -2789,7 +2949,7 @@ mod tests {
     #[test]
     fn css_codegen_empty_selector_key() {
         let css = ".a:empty { display: none; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].selector, ".a:empty");
     }
@@ -2797,7 +2957,7 @@ mod tests {
     #[test]
     fn css_generate_taffy_code_display_flex() {
         let css = ".a { display: flex; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let code = generate_taffy_styles(&rules).unwrap();
         assert!(code.contains("Display::Flex"));
         assert!(code.contains("fn style_a"));
@@ -2806,7 +2966,7 @@ mod tests {
     #[test]
     fn css_generate_taffy_code_display_grid() {
         let css = ".a { display: grid; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let code = generate_taffy_styles(&rules).unwrap();
         assert!(code.contains("Display::Grid"));
     }
@@ -2814,7 +2974,7 @@ mod tests {
     #[test]
     fn css_generate_taffy_code_padding() {
         let css = ".a { padding: 10px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let code = generate_taffy_styles(&rules).unwrap();
         assert!(code.contains("padding"));
     }
@@ -2822,7 +2982,7 @@ mod tests {
     #[test]
     fn css_generate_taffy_code_position() {
         let css = ".a { position: absolute; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let code = generate_taffy_styles(&rules).unwrap();
         assert!(code.contains("Position::Absolute"));
     }
@@ -2830,7 +2990,7 @@ mod tests {
     #[test]
     fn css_generate_taffy_code_overflow() {
         let css = ".a { overflow: hidden; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let code = generate_taffy_styles(&rules).unwrap();
         assert!(code.contains("Overflow::Hidden"));
     }
@@ -2842,7 +3002,7 @@ mod tests {
     #[test]
     fn css_mask_all_layout_properties() {
         let css = ".full { display: flex; flex-direction: column; flex-wrap: wrap; justify-content: center; align-items: stretch; flex-grow: 1; flex-shrink: 0; width: 100px; height: 100px; min-width: 50px; min-height: 50px; max-width: 200px; max-height: 200px; padding: 8px; margin: 4px; border-radius: 2px; position: relative; top: 0; overflow: hidden; gap: 8px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let mask = &entries[0].mask;
         assert!(mask.display);
@@ -2962,7 +3122,7 @@ mod tests {
     #[test]
     fn test_q_shorthand_1_value_expansion() {
         let css = ".a { padding: 10px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.padding.top, LengthPercentage::length(10.0));
         assert_eq!(
@@ -2982,7 +3142,7 @@ mod tests {
     #[test]
     fn test_q_shorthand_2_value_expansion() {
         let css = ".a { padding: 10px 20px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.padding.top, LengthPercentage::length(10.0));
         assert_eq!(
@@ -3002,7 +3162,7 @@ mod tests {
     #[test]
     fn test_q_shorthand_3_value_expansion() {
         let css = ".a { padding: 10px 20px 30px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].style.padding.top, LengthPercentage::length(10.0));
         assert_eq!(
@@ -3022,7 +3182,7 @@ mod tests {
     #[test]
     fn test_q_calc_expression() {
         let css = ".a { width: calc(100% - 20px); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(k.contains("calc")),
@@ -3033,7 +3193,7 @@ mod tests {
     #[test]
     fn test_q_var_custom_property() {
         let css = ".a { padding: var(--spacing); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(k.contains("var")),
@@ -3044,7 +3204,7 @@ mod tests {
     #[test]
     fn test_q_clamp_function() {
         let css = ".a { width: clamp(10px, 5vw, 100px); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(k.contains("clamp")),
@@ -3055,7 +3215,7 @@ mod tests {
     #[test]
     fn test_q_media_query_nested_returns_empty() {
         let css = "@media (min-width: 768px) { }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         assert!(
             rules.is_empty(),
             "empty @media body should produce no rules"
@@ -3065,7 +3225,7 @@ mod tests {
     #[test]
     fn test_q_specificity_later_wins_same() {
         let css = ".a { color: red; } .a { color: blue; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries.len(), 2);
         let first_color = entries[0].paint.color.clone().unwrap();
@@ -3080,7 +3240,7 @@ mod tests {
     #[test]
     fn test_q_gradient_multi_stop() {
         let css = ".bg { background: linear-gradient(to bottom, red 0%, yellow 50%, green 100%); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::LinearGradient { direction, stops } => {
                 assert_eq!(direction.as_deref(), Some("to bottom"));
@@ -3096,7 +3256,7 @@ mod tests {
     #[test]
     fn test_q_font_shorthand_parse() {
         let css = ".a { font: bold 16px/1.5 Arial; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].properties[0].value {
             CssValue::Keyword(k) => assert!(!k.is_empty()),
@@ -3107,7 +3267,7 @@ mod tests {
     #[test]
     fn css_flex_basis_px() {
         let css = ".a { flex-basis: 120px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.flex_basis);
         let styles = convert_to_taffy_styles(&rules).unwrap();
@@ -3117,7 +3277,7 @@ mod tests {
     #[test]
     fn css_flex_basis_percent() {
         let css = ".a { flex-basis: 50%; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(styles[0].1.flex_basis, taffy::Dimension::percent(0.5));
     }
@@ -3125,7 +3285,7 @@ mod tests {
     #[test]
     fn css_align_content_center() {
         let css = ".a { align-content: center; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.align_content);
         let styles = convert_to_taffy_styles(&rules).unwrap();
@@ -3135,7 +3295,7 @@ mod tests {
     #[test]
     fn css_align_content_space_between() {
         let css = ".a { align-content: space-between; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let styles = convert_to_taffy_styles(&rules).unwrap();
         assert_eq!(
             styles[0].1.align_content,
@@ -3146,7 +3306,7 @@ mod tests {
     #[test]
     fn css_z_index_in_paint() {
         let css = ".a { z-index: 10; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.z_index, Some(10));
     }
@@ -3154,7 +3314,7 @@ mod tests {
     #[test]
     fn css_z_index_negative() {
         let css = ".a { z-index: -5; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].paint.z_index, Some(-5));
     }
@@ -3162,7 +3322,7 @@ mod tests {
     #[test]
     fn css_grid_template_columns() {
         let css = ".a { grid-template-columns: 1fr 2fr 1fr; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.grid_template_columns);
         let styles = convert_to_taffy_styles(&rules).unwrap();
@@ -3172,7 +3332,7 @@ mod tests {
     #[test]
     fn css_grid_template_columns_px() {
         let css = ".a { grid-template-columns: 100px 200px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.grid_template_columns);
         let styles = convert_to_taffy_styles(&rules).unwrap();
@@ -3182,7 +3342,7 @@ mod tests {
     #[test]
     fn css_grid_column_placement() {
         let css = ".a { grid-column: 1; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.grid_column);
     }
@@ -3190,7 +3350,7 @@ mod tests {
     #[test]
     fn css_grid_column_span() {
         let css = ".a { grid-column: 1 / 3; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.grid_column);
     }
@@ -3198,7 +3358,7 @@ mod tests {
     #[test]
     fn css_grid_row_placement() {
         let css = ".a { grid-row: 2; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert!(entries[0].mask.grid_row);
     }
@@ -3206,7 +3366,7 @@ mod tests {
     #[test]
     fn css_fr_unit_parsed() {
         let css = ".a { grid-template-columns: 1fr; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         match &rules[0].properties[0].value {
             CssValue::Length(n, unit) => {
                 assert_eq!(*n, 1.0);
@@ -3221,7 +3381,7 @@ mod tests {
     #[test]
     fn css_transform_translate_x() {
         let css = ".a { transform: translateX(20px); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.translate_x, Some(20.0));
     }
@@ -3229,7 +3389,7 @@ mod tests {
     #[test]
     fn css_transform_translate_xy() {
         let css = ".a { transform: translate(10px, 25px); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.translate_x, Some(10.0));
         assert_eq!(entries[0].transform.translate_y, Some(25.0));
@@ -3238,7 +3398,7 @@ mod tests {
     #[test]
     fn css_transform_rotate() {
         let css = ".a { transform: rotate(45deg); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.rotate, Some(45.0));
     }
@@ -3246,7 +3406,7 @@ mod tests {
     #[test]
     fn css_transform_scale_uniform() {
         let css = ".a { transform: scale(1.5); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.scale_x, Some(1.5));
         assert_eq!(entries[0].transform.scale_y, Some(1.5));
@@ -3255,7 +3415,7 @@ mod tests {
     #[test]
     fn css_transform_scale_xy() {
         let css = ".a { transform: scale(2.0, 0.5); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.scale_x, Some(2.0));
         assert_eq!(entries[0].transform.scale_y, Some(0.5));
@@ -3264,7 +3424,7 @@ mod tests {
     #[test]
     fn css_transform_skew() {
         let css = ".a { transform: skew(10deg, 5deg); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         let sx = entries[0].transform.skew_x.unwrap();
         let sy = entries[0].transform.skew_y.unwrap();
@@ -3275,7 +3435,7 @@ mod tests {
     #[test]
     fn css_transform_multiple_functions() {
         let css = ".a { transform: rotate(90deg) scale(2); }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.rotate, Some(90.0));
         assert_eq!(entries[0].transform.scale_x, Some(2.0));
@@ -3285,7 +3445,7 @@ mod tests {
     #[test]
     fn css_transform_individual_translate() {
         let css = ".a { translate: 10px 20px; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.translate_x, Some(10.0));
         assert_eq!(entries[0].transform.translate_y, Some(20.0));
@@ -3294,7 +3454,7 @@ mod tests {
     #[test]
     fn css_transform_individual_rotate() {
         let css = ".a { rotate: 30deg; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.rotate, Some(30.0));
     }
@@ -3302,7 +3462,7 @@ mod tests {
     #[test]
     fn css_transform_individual_scale() {
         let css = ".a { scale: 1.2 0.8; }";
-        let rules = parse_css(css).unwrap();
+        let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
         assert_eq!(entries[0].transform.scale_x, Some(1.2));
         assert_eq!(entries[0].transform.scale_y, Some(0.8));

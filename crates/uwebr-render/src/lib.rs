@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod color;
 pub mod html_parse;
 pub mod layout;

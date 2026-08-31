@@ -1,9 +1,10 @@
 use taffy::Style;
 use uwebr_core::component::{Element, NodeType, PropValue};
+use uwebr_css::ast::KeyframeRule;
 use uwebr_css::ast::{AttributeOp, CssSelector, NthKind};
 use uwebr_css::codegen::{
-    convert_to_style_entries, convert_to_style_entries_vp, PaintProps, StyleEntry, StyleMask,
-    TransformProps,
+    convert_to_style_entries, convert_to_style_entries_vp, AnimationProps, PaintProps, StyleEntry,
+    StyleMask, TransformProps,
 };
 use uwebr_css::parser::parse_css;
 
@@ -18,6 +19,8 @@ pub struct MatchedStyle {
     pub paint: PaintProps,
     /// Transform properties (translate, rotate, scale, skew).
     pub transform: TransformProps,
+    /// CSS `animation` shorthand properties.
+    pub animation: AnimationProps,
     /// Whether any rule matched at all.
     pub matched: bool,
 }
@@ -26,22 +29,26 @@ pub struct MatchedStyle {
 #[derive(Debug, Clone, Default)]
 pub struct StyleBook {
     rules: Vec<StyleEntry>,
+    /// `@keyframes` rules indexed by animation name.
+    keyframes: Vec<KeyframeRule>,
 }
 
 impl StyleBook {
     /// Parse a CSS string into a StyleBook
     pub fn parse(css: &str) -> anyhow::Result<Self> {
-        let rules = parse_css(css)?;
+        let (rules, keyframes) = parse_css(css)?;
         Ok(Self {
             rules: convert_to_style_entries(&rules)?,
+            keyframes,
         })
     }
 
     /// Parse CSS, resolving `vw`/`vh` against the given viewport dimensions.
     pub fn parse_vp(css: &str, vw: f32, vh: f32) -> anyhow::Result<Self> {
-        let rules = parse_css(css)?;
+        let (rules, keyframes) = parse_css(css)?;
         Ok(Self {
             rules: convert_to_style_entries_vp(&rules, vw, vh)?,
+            keyframes,
         })
     }
 
@@ -50,8 +57,9 @@ impl StyleBook {
     /// Called on resize so `vw`/`vh` track the window without rebuilding the
     /// whole pipeline.
     pub fn reparse(&mut self, css: &str, vw: f32, vh: f32) -> anyhow::Result<()> {
-        let rules = parse_css(css)?;
+        let (rules, keyframes) = parse_css(css)?;
         self.rules = convert_to_style_entries_vp(&rules, vw, vh)?;
+        self.keyframes = keyframes;
         Ok(())
     }
 
@@ -64,25 +72,31 @@ impl StyleBook {
                     selector,
                     selector_ast: None,
                     style,
-                    // Legacy callers give no mask information; treat every field
-                    // as specified so behaviour matches the old merge_style().
                     mask: ALL_FIELDS_MASK,
                     paint: PaintProps::default(),
                     transform: TransformProps::default(),
+                    animation: Default::default(),
                     important: false,
                 })
                 .collect(),
+            keyframes: vec![],
         }
     }
 
     /// Create from full style entries (layout + mask + paint).
     pub fn from_entries(rules: Vec<StyleEntry>) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            keyframes: vec![],
+        }
     }
 
     /// Empty stylebook (no rules)
     pub fn empty() -> Self {
-        Self { rules: vec![] }
+        Self {
+            rules: vec![],
+            keyframes: vec![],
+        }
     }
 
     /// Match an element and return the merged layout Style plus a "matched" flag.
@@ -168,6 +182,10 @@ impl StyleBook {
         out.mask.or_assign(&entry.mask);
         out.paint.merge(&entry.paint);
         out.transform.merge(&entry.transform);
+        // Animation: last non-empty wins (like transform)
+        if !entry.animation.is_empty() {
+            out.animation = entry.animation.clone();
+        }
         out.matched = true;
     }
 
@@ -184,6 +202,11 @@ impl StyleBook {
     /// Get all selector keys (for debugging)
     pub fn selectors(&self) -> Vec<&str> {
         self.rules.iter().map(|e| e.selector.as_str()).collect()
+    }
+
+    /// Get the parsed keyframes for an animation name.
+    pub fn lookup_keyframes(&self, name: &str) -> Option<&KeyframeRule> {
+        self.keyframes.iter().find(|k| k.name == name)
     }
 }
 
@@ -1622,7 +1645,7 @@ mod tests {
 
     #[test]
     fn test_specificity_of_nth() {
-        let rules = uwebr_css::parser::parse_css("li:nth-child(2n) { color: red; }").unwrap();
+        let (rules, _) = uwebr_css::parser::parse_css("li:nth-child(2n) { color: red; }").unwrap();
         let spec = super::selector_specificity(&rules[0].selector);
         // class=1 (nth pseudo), tag=1 → 0*10000 + 1*100 + 1 = 101
         assert_eq!(spec, 101, "nth-child specificity should be (0,1,1)");
@@ -1630,7 +1653,7 @@ mod tests {
 
     #[test]
     fn test_specificity_of_not() {
-        let rules = uwebr_css::parser::parse_css("div:not(.foo) { color: red; }").unwrap();
+        let (rules, _) = uwebr_css::parser::parse_css("div:not(.foo) { color: red; }").unwrap();
         let spec = super::selector_specificity(&rules[0].selector);
         // class=1 (not) + class=1 (.foo) + tag=1 (div) = (0,2,1) → 0*10000 + 2*100 + 1 = 201
         assert_eq!(spec, 201, "not(.foo) specificity should be (0,2,1)");
@@ -2254,6 +2277,7 @@ mod tests {
             &grandparent,
             &parent_css,
             &TransformProps::default(),
+            &Default::default(),
             &make_element("div", vec![]),
         );
         let child_el = make_element("span", vec![]);
@@ -2261,6 +2285,7 @@ mod tests {
             &parent,
             &PaintProps::default(),
             &TransformProps::default(),
+            &Default::default(),
             &child_el,
         );
         assert_eq!(child.color, vello::peniko::Color::from_rgb8(0, 0, 255));
