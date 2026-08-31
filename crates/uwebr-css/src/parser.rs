@@ -550,7 +550,11 @@ fn parse_value(prop_name: &str, raw: &str) -> Result<CssValue> {
         && (prop_name == "padding"
             || prop_name == "margin"
             || prop_name == "grid-template-columns"
-            || prop_name == "grid-template-rows")
+            || prop_name == "grid-template-rows"
+            || prop_name == "translate"
+            || prop_name == "scale"
+            || prop_name == "skew"
+            || prop_name == "rotate")
     {
         let parts: Vec<CssValue> = raw
             .split_whitespace()
@@ -676,6 +680,10 @@ fn parse_length(raw: &str) -> Option<CssValue> {
     if raw.ends_with("fr") {
         let num: f32 = raw.trim_end_matches("fr").parse().ok()?;
         return Some(CssValue::Length(num, LengthUnit::Fr));
+    }
+    if raw.ends_with("deg") {
+        let num: f32 = raw.trim_end_matches("deg").parse().ok()?;
+        return Some(CssValue::Length(num, LengthUnit::Px));
     }
 
     // Plain number → treat as px

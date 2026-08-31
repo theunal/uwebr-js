@@ -154,6 +154,52 @@ impl PaintProps {
     }
 }
 
+/// Parsed CSS `transform` shorthand — translate, rotate, scale, skew.
+///
+/// All values are optional; unspecified components default to identity
+/// (translate 0, rotate 0, scale 1, skew 0).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TransformProps {
+    pub translate_x: Option<f32>,
+    pub translate_y: Option<f32>,
+    pub rotate: Option<f32>,
+    pub scale_x: Option<f32>,
+    pub scale_y: Option<f32>,
+    pub skew_x: Option<f32>,
+    pub skew_y: Option<f32>,
+}
+
+impl TransformProps {
+    pub fn is_empty(&self) -> bool {
+        *self == TransformProps::default()
+    }
+
+    /// Merge another TransformProps into this one, overwriting only specified fields.
+    pub fn merge(&mut self, other: &TransformProps) {
+        if other.translate_x.is_some() {
+            self.translate_x = other.translate_x;
+        }
+        if other.translate_y.is_some() {
+            self.translate_y = other.translate_y;
+        }
+        if other.rotate.is_some() {
+            self.rotate = other.rotate;
+        }
+        if other.scale_x.is_some() {
+            self.scale_x = other.scale_x;
+        }
+        if other.scale_y.is_some() {
+            self.scale_y = other.scale_y;
+        }
+        if other.skew_x.is_some() {
+            self.skew_x = other.skew_x;
+        }
+        if other.skew_y.is_some() {
+            self.skew_y = other.skew_y;
+        }
+    }
+}
+
 /// A CSS rule converted for runtime use: layout + paint + "what was specified".
 #[derive(Debug, Clone)]
 pub struct StyleEntry {
@@ -164,6 +210,7 @@ pub struct StyleEntry {
     pub style: Style,
     pub mask: StyleMask,
     pub paint: PaintProps,
+    pub transform: TransformProps,
     /// Whether any declaration in this rule carried `!important`. Used by the
     /// cascade so an important rule beats a higher-specificity normal rule.
     pub important: bool,
@@ -208,6 +255,7 @@ pub fn convert_to_style_entries_vp(rules: &[CssRule], vw: f32, vh: f32) -> Resul
             style,
             mask,
             paint: extract_paint(&rule.properties),
+            transform: extract_transform(&rule.properties),
             important: rule.properties.iter().any(|p| p.important),
         });
     }
@@ -288,6 +336,222 @@ pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
     }
 
     paint
+}
+
+/// Extract CSS `transform` shorthand and individual transform properties.
+///
+/// Handles:
+/// - `transform: translateX(10px) rotate(45deg) scale(1.5)`
+/// - `transform: translate(10px, 20px)`
+/// - `rotate: 90`
+/// - `scale: 1.5`
+/// - `translate: 10px 20px`
+pub fn extract_transform(properties: &[CssProperty]) -> TransformProps {
+    let mut t = TransformProps::default();
+
+    for prop in properties {
+        match prop.name.as_str() {
+            "transform" => {
+                if let CssValue::Keyword(raw) = &prop.value {
+                    parse_transform_functions(raw, &mut t);
+                } else if let CssValue::Shorthand(parts) = &prop.value {
+                    // Single function as shorthand: translate(10px, 20px)
+                    for part in parts {
+                        if let CssValue::Keyword(raw) = part {
+                            parse_transform_functions(raw, &mut t);
+                        }
+                    }
+                }
+            }
+            "translate" => {
+                if let CssValue::Shorthand(parts) = &prop.value {
+                    if let Some(CssValue::Length(x, _)) = parts.first() {
+                        t.translate_x = Some(*x);
+                    }
+                    if parts.len() > 1 {
+                        if let CssValue::Length(y, _) = &parts[1] {
+                            t.translate_y = Some(*y);
+                        }
+                    }
+                } else if let CssValue::Length(x, _) = &prop.value {
+                    t.translate_x = Some(*x);
+                }
+            }
+            "translate-x" => {
+                if let CssValue::Length(x, _) = &prop.value {
+                    t.translate_x = Some(*x);
+                }
+            }
+            "translate-y" => {
+                if let CssValue::Length(y, _) = &prop.value {
+                    t.translate_y = Some(*y);
+                }
+            }
+            "rotate" => {
+                // Accept "90" (px treated as deg) or plain number
+                if let CssValue::Length(n, _) = &prop.value {
+                    t.rotate = Some(*n);
+                }
+            }
+            "scale" => {
+                if let CssValue::Shorthand(parts) = &prop.value {
+                    if let Some(CssValue::Length(sx, _)) = parts.first() {
+                        t.scale_x = Some(*sx);
+                    }
+                    if parts.len() > 1 {
+                        if let CssValue::Length(sy, _) = &parts[1] {
+                            t.scale_y = Some(*sy);
+                        }
+                    }
+                } else if let CssValue::Length(s, _) = &prop.value {
+                    t.scale_x = Some(*s);
+                    t.scale_y = Some(*s);
+                }
+            }
+            "scale-x" => {
+                if let CssValue::Length(s, _) = &prop.value {
+                    t.scale_x = Some(*s);
+                }
+            }
+            "scale-y" => {
+                if let CssValue::Length(s, _) = &prop.value {
+                    t.scale_y = Some(*s);
+                }
+            }
+            "skew" => {
+                if let CssValue::Shorthand(parts) = &prop.value {
+                    if let Some(CssValue::Length(sx, _)) = parts.first() {
+                        t.skew_x = Some(*sx);
+                    }
+                    if parts.len() > 1 {
+                        if let CssValue::Length(sy, _) = &parts[1] {
+                            t.skew_y = Some(*sy);
+                        }
+                    }
+                }
+            }
+            "skew-x" => {
+                if let CssValue::Length(s, _) = &prop.value {
+                    t.skew_x = Some(*s);
+                }
+            }
+            "skew-y" => {
+                if let CssValue::Length(s, _) = &prop.value {
+                    t.skew_y = Some(*s);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    t
+}
+
+/// Parse transform functions from a string like "translateX(10px) rotate(45deg)".
+fn parse_transform_functions(raw: &str, out: &mut TransformProps) {
+    // Find function calls: name(args)
+    let mut remaining = raw;
+    while let Some(paren_start) = remaining.find('(') {
+        let name = remaining[..paren_start].trim().to_ascii_lowercase();
+        if let Some(paren_end) = remaining[paren_start..].find(')') {
+            let args_str = &remaining[paren_start + 1..paren_start + paren_end];
+            let args: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
+
+            match name.as_str() {
+                "translatex" | "translate" => {
+                    if let Some(x) = args.first().and_then(|a| parse_css_number(a)) {
+                        out.translate_x = Some(x);
+                    }
+                    if let Some(y) = args.get(1).and_then(|a| parse_css_number(a)) {
+                        out.translate_y = Some(y);
+                    }
+                }
+                "translatey" => {
+                    if let Some(y) = args.first().and_then(|a| parse_css_number(a)) {
+                        out.translate_y = Some(y);
+                    }
+                }
+                "rotate" => {
+                    if let Some(deg) = args.first().and_then(|a| parse_css_angle(a)) {
+                        out.rotate = Some(deg);
+                    }
+                }
+                "scale" => {
+                    if let Some(sx) = args.first().and_then(|a| parse_css_number(a)) {
+                        out.scale_x = Some(sx);
+                        // CSS spec: single-arg scale() is uniform
+                        if args.get(1).is_none() {
+                            out.scale_y = Some(sx);
+                        }
+                    }
+                    if let Some(sy) = args.get(1).and_then(|a| parse_css_number(a)) {
+                        out.scale_y = Some(sy);
+                    }
+                }
+                "scalex" => {
+                    if let Some(s) = args.first().and_then(|a| parse_css_number(a)) {
+                        out.scale_x = Some(s);
+                    }
+                }
+                "scaley" => {
+                    if let Some(s) = args.first().and_then(|a| parse_css_number(a)) {
+                        out.scale_y = Some(s);
+                    }
+                }
+                "skew" => {
+                    if let Some(x) = args.first().and_then(|a| parse_css_number(a)) {
+                        out.skew_x = Some(x);
+                    }
+                    if let Some(y) = args.get(1).and_then(|a| parse_css_number(a)) {
+                        out.skew_y = Some(y);
+                    }
+                }
+                "skewx" => {
+                    if let Some(s) = args.first().and_then(|a| parse_css_number(a)) {
+                        out.skew_x = Some(s);
+                    }
+                }
+                "skewy" => {
+                    if let Some(s) = args.first().and_then(|a| parse_css_number(a)) {
+                        out.skew_y = Some(s);
+                    }
+                }
+                _ => {}
+            }
+            remaining = &remaining[paren_start + paren_end + 1..];
+        } else {
+            break;
+        }
+    }
+}
+
+/// Parse a CSS number from a string like "10px", "1.5", "-20".
+fn parse_css_number(s: &str) -> Option<f32> {
+    let s = s.trim();
+    // Strip unit suffixes
+    let num_str = s
+        .trim_end_matches("px")
+        .trim_end_matches("em")
+        .trim_end_matches("rem")
+        .trim_end_matches("deg")
+        .trim();
+    num_str.parse::<f32>().ok()
+}
+
+/// Parse a CSS angle from a string like "45deg", "90", "0.5turn".
+/// Returns degrees.
+fn parse_css_angle(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(deg_str) = s.strip_suffix("deg") {
+        deg_str.trim().parse::<f32>().ok()
+    } else if let Some(rad_str) = s.strip_suffix("rad") {
+        rad_str.trim().parse::<f32>().ok().map(|r| r.to_degrees())
+    } else if let Some(turn_str) = s.strip_suffix("turn") {
+        turn_str.trim().parse::<f32>().ok().map(|t| t * 360.0)
+    } else {
+        // Plain number treated as degrees
+        s.parse::<f32>().ok()
+    }
 }
 
 /// Resolve a CSS length to absolute pixels. `em`/`rem` assume a 16px root.
@@ -2950,5 +3214,115 @@ mod tests {
             }
             other => panic!("expected Length(1, Fr), got {other:?}"),
         }
+    }
+
+    // ── Transform tests ──────────────────────────────────────
+
+    #[test]
+    fn css_transform_translate_x() {
+        let css = ".a { transform: translateX(20px); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.translate_x, Some(20.0));
+    }
+
+    #[test]
+    fn css_transform_translate_xy() {
+        let css = ".a { transform: translate(10px, 25px); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.translate_x, Some(10.0));
+        assert_eq!(entries[0].transform.translate_y, Some(25.0));
+    }
+
+    #[test]
+    fn css_transform_rotate() {
+        let css = ".a { transform: rotate(45deg); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.rotate, Some(45.0));
+    }
+
+    #[test]
+    fn css_transform_scale_uniform() {
+        let css = ".a { transform: scale(1.5); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.scale_x, Some(1.5));
+        assert_eq!(entries[0].transform.scale_y, Some(1.5));
+    }
+
+    #[test]
+    fn css_transform_scale_xy() {
+        let css = ".a { transform: scale(2.0, 0.5); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.scale_x, Some(2.0));
+        assert_eq!(entries[0].transform.scale_y, Some(0.5));
+    }
+
+    #[test]
+    fn css_transform_skew() {
+        let css = ".a { transform: skew(10deg, 5deg); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        let sx = entries[0].transform.skew_x.unwrap();
+        let sy = entries[0].transform.skew_y.unwrap();
+        assert!((sx - 10.0).abs() < 0.01);
+        assert!((sy - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn css_transform_multiple_functions() {
+        let css = ".a { transform: rotate(90deg) scale(2); }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.rotate, Some(90.0));
+        assert_eq!(entries[0].transform.scale_x, Some(2.0));
+        assert_eq!(entries[0].transform.scale_y, Some(2.0));
+    }
+
+    #[test]
+    fn css_transform_individual_translate() {
+        let css = ".a { translate: 10px 20px; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.translate_x, Some(10.0));
+        assert_eq!(entries[0].transform.translate_y, Some(20.0));
+    }
+
+    #[test]
+    fn css_transform_individual_rotate() {
+        let css = ".a { rotate: 30deg; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.rotate, Some(30.0));
+    }
+
+    #[test]
+    fn css_transform_individual_scale() {
+        let css = ".a { scale: 1.2 0.8; }";
+        let rules = parse_css(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].transform.scale_x, Some(1.2));
+        assert_eq!(entries[0].transform.scale_y, Some(0.8));
+    }
+
+    #[test]
+    fn css_transform_empty_is_empty() {
+        let t = TransformProps::default();
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn css_transform_merge_overrides() {
+        let mut a = TransformProps::default();
+        a.translate_x = Some(10.0);
+        let mut b = TransformProps::default();
+        b.translate_x = Some(20.0);
+        b.rotate = Some(45.0);
+        a.merge(&b);
+        assert_eq!(a.translate_x, Some(20.0));
+        assert_eq!(a.rotate, Some(45.0));
     }
 }

@@ -211,14 +211,17 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
             if content.trim().is_empty() {
                 return None;
             }
-            Some(RenderNode::text_with_family(
-                id,
-                layout,
-                content,
-                pos.paint.font_size,
-                pos.paint.color,
-                pos.paint.font_family.clone(),
-            ))
+            Some(
+                RenderNode::text_with_family(
+                    id,
+                    layout,
+                    content,
+                    pos.paint.font_size,
+                    pos.paint.color,
+                    pos.paint.font_family.clone(),
+                )
+                .with_transform(pos.transform.clone()),
+            )
         }
         NodeType::Element(tag) => {
             if tag == "img" {
@@ -232,6 +235,7 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 kind: RenderNodeKind::Container,
                 layout,
                 style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
+                transform: pos.transform.clone(),
             })
         }
         NodeType::Component(_) => {
@@ -243,6 +247,7 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 kind: RenderNodeKind::Container,
                 layout,
                 style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
+                transform: pos.transform.clone(),
             })
         }
         NodeType::Raw(html) => {
@@ -253,14 +258,17 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
             if html.trim().is_empty() {
                 return None;
             }
-            Some(RenderNode::text_with_family(
-                id,
-                layout,
-                html,
-                pos.paint.font_size,
-                pos.paint.color,
-                pos.paint.font_family.clone(),
-            ))
+            Some(
+                RenderNode::text_with_family(
+                    id,
+                    layout,
+                    html,
+                    pos.paint.font_size,
+                    pos.paint.color,
+                    pos.paint.font_family.clone(),
+                )
+                .with_transform(pos.transform.clone()),
+            )
         }
     }
 }
@@ -307,6 +315,7 @@ fn img_to_render_node(pos: &PositionedNode, id: u64) -> Option<RenderNode> {
         },
         layout: pos.layout,
         style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
+        transform: pos.transform.clone(),
     })
 }
 
@@ -342,6 +351,7 @@ fn raw_element_to_render_node(
         kind: RenderNodeKind::Container,
         layout,
         style: paint_to_render_style(paint, false),
+        transform: Default::default(),
     })
 }
 
@@ -374,6 +384,7 @@ fn paint_to_render_style(paint: &ResolvedPaint, overflow_hidden: bool) -> Render
         opacity: paint.opacity,
         overflow_hidden,
         text_overflow: paint.text_overflow.clone(),
+        z_index: paint.z_index,
     }
 }
 
@@ -513,6 +524,8 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            z_index: 0,
+            transform: Default::default(),
         };
         let node = positioned_to_render_node(&pos).unwrap();
         assert!(matches!(node.kind, RenderNodeKind::Text { .. }));
@@ -528,6 +541,8 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            z_index: 0,
+            transform: Default::default(),
         };
         let node = positioned_to_render_node(&pos).unwrap();
         assert!(matches!(node.kind, RenderNodeKind::Container));
@@ -543,6 +558,8 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            z_index: 0,
+            transform: Default::default(),
         };
         assert!(positioned_to_render_node(&pos).is_none());
     }
@@ -559,6 +576,8 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            z_index: 0,
+            transform: Default::default(),
         };
         assert!(positioned_to_render_node(&pos).is_some());
     }
@@ -573,6 +592,8 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            z_index: 0,
+            transform: Default::default(),
         };
         assert!(positioned_to_render_node(&pos).is_none());
     }

@@ -1,5 +1,5 @@
 use uwebr_core::component::{Element, NodeType, PropValue};
-use uwebr_css::codegen::{BackgroundValue, PaintProps};
+use uwebr_css::codegen::{BackgroundValue, PaintProps, TransformProps};
 use vello::peniko;
 
 use crate::color::{css_color_to_peniko, parse_color_to_peniko};
@@ -31,6 +31,12 @@ pub struct ResolvedPaint {
     pub opacity: f32,
     /// How overflowing text is treated (`clip`, `ellipsis`).
     pub text_overflow: TextOverflow,
+    /// CSS `z-index` — controls paint order (higher = painted on top).
+    /// Not inherited; defaults to 0 (auto).
+    pub z_index: i32,
+    /// CSS `transform` — translate, rotate, scale, skew.
+    /// Not inherited; defaults to identity.
+    pub transform: TransformProps,
 }
 
 impl Default for ResolvedPaint {
@@ -45,6 +51,8 @@ impl Default for ResolvedPaint {
             border_radius: 0.0,
             opacity: 1.0,
             text_overflow: TextOverflow::default(),
+            z_index: 0,
+            transform: TransformProps::default(),
         }
     }
 }
@@ -63,6 +71,8 @@ impl ResolvedPaint {
             border_radius: 0.0,
             opacity: 1.0,
             text_overflow: self.text_overflow.clone(),
+            z_index: 0,
+            transform: TransformProps::default(),
         }
     }
 
@@ -98,6 +108,9 @@ impl ResolvedPaint {
                 "visible" => TextOverflow::Visible,
                 _ => TextOverflow::Clip,
             };
+        }
+        if let Some(zi) = paint.z_index {
+            self.z_index = zi;
         }
     }
 
@@ -154,9 +167,15 @@ impl ResolvedPaint {
     }
 
     /// Resolve the paint for one element given its inherited context.
-    pub fn resolve(inherited: &ResolvedPaint, css: &PaintProps, element: &Element) -> Self {
+    pub fn resolve(
+        inherited: &ResolvedPaint,
+        css: &PaintProps,
+        transform: &TransformProps,
+        element: &Element,
+    ) -> Self {
         let mut paint = inherited.inherited();
         paint.apply_css(css);
+        paint.transform = transform.clone();
         // Text nodes never carry their own attributes; they only inherit.
         if !matches!(element.node_type, NodeType::Text(_)) {
             paint.apply_props(&element.props);
@@ -381,7 +400,12 @@ mod tests {
     fn test_resolve_element_uses_props() {
         let parent = ResolvedPaint::default();
         let e = el("div", vec![("bg".into(), PropValue::String("red".into()))]);
-        let p = ResolvedPaint::resolve(&parent, &PaintProps::default(), &e);
+        let p = ResolvedPaint::resolve(
+            &parent,
+            &PaintProps::default(),
+            &TransformProps::default(),
+            &e,
+        );
         assert_eq!(
             p.background,
             Some(Background::Solid(peniko::Color::from_rgb8(255, 0, 0)))
@@ -397,7 +421,12 @@ mod tests {
             ..Default::default()
         };
 
-        let p = ResolvedPaint::resolve(&parent, &PaintProps::default(), &text_el("hi"));
+        let p = ResolvedPaint::resolve(
+            &parent,
+            &PaintProps::default(),
+            &TransformProps::default(),
+            &text_el("hi"),
+        );
         assert_eq!(p.color, peniko::color::palette::css::GREEN);
         assert_eq!(p.font_size, 40.0);
         assert!(p.background.is_none(), "text draws glyphs, not a box");
@@ -507,7 +536,12 @@ mod tests {
                 PropValue::String("#ff0000".into()),
             )],
         );
-        let p = ResolvedPaint::resolve(&parent, &PaintProps::default(), &e);
+        let p = ResolvedPaint::resolve(
+            &parent,
+            &PaintProps::default(),
+            &TransformProps::default(),
+            &e,
+        );
         assert!(
             p.background.is_some(),
             "background-color prop should set background"
@@ -525,7 +559,12 @@ mod tests {
             props: vec![("font-size".into(), PropValue::Number(48.0))],
             children: vec![],
         };
-        let p = ResolvedPaint::resolve(&parent, &PaintProps::default(), &text);
+        let p = ResolvedPaint::resolve(
+            &parent,
+            &PaintProps::default(),
+            &TransformProps::default(),
+            &text,
+        );
         assert_eq!(
             p.font_size, 32.0,
             "text node should inherit font-size, not apply props"

@@ -3,6 +3,7 @@ use uwebr_core::component::{Element, NodeType, PropValue};
 use uwebr_css::ast::{AttributeOp, CssSelector, NthKind};
 use uwebr_css::codegen::{
     convert_to_style_entries, convert_to_style_entries_vp, PaintProps, StyleEntry, StyleMask,
+    TransformProps,
 };
 use uwebr_css::parser::parse_css;
 
@@ -15,6 +16,8 @@ pub struct MatchedStyle {
     pub mask: StyleMask,
     /// Paint properties Taffy cannot represent (colours, fonts, …).
     pub paint: PaintProps,
+    /// Transform properties (translate, rotate, scale, skew).
+    pub transform: TransformProps,
     /// Whether any rule matched at all.
     pub matched: bool,
 }
@@ -65,6 +68,7 @@ impl StyleBook {
                     // as specified so behaviour matches the old merge_style().
                     mask: ALL_FIELDS_MASK,
                     paint: PaintProps::default(),
+                    transform: TransformProps::default(),
                     important: false,
                 })
                 .collect(),
@@ -163,6 +167,7 @@ impl StyleBook {
         merge_style(&mut out.style, &entry.style, &entry.mask);
         out.mask.or_assign(&entry.mask);
         out.paint.merge(&entry.paint);
+        out.transform.merge(&entry.transform);
         out.matched = true;
     }
 
@@ -2235,7 +2240,7 @@ mod tests {
     fn test_q_paint_inherits_three_levels() {
         use crate::paint::ResolvedPaint;
         // grandparent sets color + font_size, parent overrides font_size, child inherits both
-        use uwebr_css::codegen::PaintProps;
+        use uwebr_css::codegen::{PaintProps, TransformProps};
         let grandparent = ResolvedPaint {
             color: vello::peniko::Color::from_rgb8(0, 0, 255),
             font_size: 32.0,
@@ -2245,10 +2250,19 @@ mod tests {
             font_size: Some(24.0),
             ..Default::default()
         };
-        let parent =
-            ResolvedPaint::resolve(&grandparent, &parent_css, &make_element("div", vec![]));
+        let parent = ResolvedPaint::resolve(
+            &grandparent,
+            &parent_css,
+            &TransformProps::default(),
+            &make_element("div", vec![]),
+        );
         let child_el = make_element("span", vec![]);
-        let child = ResolvedPaint::resolve(&parent, &PaintProps::default(), &child_el);
+        let child = ResolvedPaint::resolve(
+            &parent,
+            &PaintProps::default(),
+            &TransformProps::default(),
+            &child_el,
+        );
         assert_eq!(child.color, vello::peniko::Color::from_rgb8(0, 0, 255));
         assert_eq!(child.font_size, 24.0);
     }

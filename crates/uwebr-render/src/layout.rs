@@ -1,6 +1,7 @@
 use taffy::prelude::*;
 use taffy::style::Overflow;
 use uwebr_core::component::{Element, NodeType, PropValue};
+use uwebr_css::codegen::TransformProps;
 
 use crate::paint::ResolvedPaint;
 use crate::scene::LayoutInfo;
@@ -73,6 +74,10 @@ pub struct PositionedNode {
     pub paint: ResolvedPaint,
     /// `overflow: hidden` (or `clip`) on either axis — the scene clips children.
     pub overflow_hidden: bool,
+    /// CSS `z-index` for paint ordering.
+    pub z_index: i32,
+    /// CSS `transform` for visual transformation.
+    pub transform: TransformProps,
 }
 
 impl LayoutEngine {
@@ -123,7 +128,7 @@ impl LayoutEngine {
         *node_counter += 1;
 
         let matched = stylebook.match_full(element, parent_chain, node_id);
-        let paint = ResolvedPaint::resolve(inherited, &matched.paint, element);
+        let paint = ResolvedPaint::resolve(inherited, &matched.paint, &matched.transform, element);
         let style = self.element_to_style(element, &matched);
 
         match &element.node_type {
@@ -370,7 +375,7 @@ impl LayoutEngine {
         };
 
         let matched = stylebook.match_full(element, parent_chain, node_id);
-        let paint = ResolvedPaint::resolve(inherited, &matched.paint, element);
+        let paint = ResolvedPaint::resolve(inherited, &matched.paint, &matched.transform, element);
 
         // Clip children when the element sets `overflow: hidden`/`clip` on either
         // axis. Read from the resolved taffy style so it follows the cascade.
@@ -391,6 +396,8 @@ impl LayoutEngine {
             node_id,
             paint: paint.clone(),
             overflow_hidden,
+            z_index: paint.z_index,
+            transform: paint.transform.clone(),
         });
 
         if let Ok(children) = self.taffy.children(taffy_node) {

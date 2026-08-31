@@ -1,5 +1,7 @@
 use vello::peniko;
 
+use uwebr_css::codegen::TransformProps;
+
 // ── Layout Info ────────────────────────────────────────────────────────
 
 /// Position + size computed by taffy
@@ -80,6 +82,8 @@ pub struct RenderStyle {
     pub opacity: f32,
     pub overflow_hidden: bool,
     pub text_overflow: TextOverflow,
+    /// CSS `z-index` — higher values paint on top.
+    pub z_index: i32,
 }
 
 impl Default for RenderStyle {
@@ -91,6 +95,7 @@ impl Default for RenderStyle {
             opacity: 1.0,
             overflow_hidden: false,
             text_overflow: TextOverflow::default(),
+            z_index: 0,
         }
     }
 }
@@ -126,6 +131,8 @@ pub struct RenderNode {
     pub kind: RenderNodeKind,
     pub layout: LayoutInfo,
     pub style: RenderStyle,
+    /// CSS `transform` for visual transformation.
+    pub transform: TransformProps,
 }
 
 impl RenderNode {
@@ -138,6 +145,7 @@ impl RenderNode {
                 background: Some(Background::Solid(background)),
                 ..Default::default()
             },
+            transform: TransformProps::default(),
         }
     }
 
@@ -151,6 +159,7 @@ impl RenderNode {
                 border_radius: radius,
                 ..Default::default()
             },
+            transform: TransformProps::default(),
         }
     }
 
@@ -182,6 +191,7 @@ impl RenderNode {
             },
             layout,
             style: RenderStyle::default(),
+            transform: TransformProps::default(),
         }
     }
 
@@ -191,6 +201,7 @@ impl RenderNode {
             kind: RenderNodeKind::Container,
             layout,
             style: RenderStyle::default(),
+            transform: TransformProps::default(),
         }
     }
 
@@ -204,7 +215,14 @@ impl RenderNode {
             },
             layout,
             style: RenderStyle::default(),
+            transform: TransformProps::default(),
         }
+    }
+
+    /// Builder: override the transform on any RenderNode.
+    pub fn with_transform(mut self, transform: TransformProps) -> Self {
+        self.transform = transform;
+        self
     }
 }
 

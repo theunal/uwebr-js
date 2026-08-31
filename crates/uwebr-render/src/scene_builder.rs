@@ -1,3 +1,4 @@
+use uwebr_css::codegen::TransformProps;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::{self, color::palette, Fill};
 
@@ -35,7 +36,12 @@ impl SceneBuilder {
             &Rect::new(0.0, 0.0, width as f64, height as f64),
         );
 
-        for node in scene.nodes() {
+        // Sort nodes by z-index (stable sort preserves tree order for equal z).
+        // Negative z falls behind, positive z paints on top.
+        let mut sorted_nodes: Vec<&RenderNode> = scene.nodes().iter().collect();
+        sorted_nodes.sort_by_key(|n| n.style.z_index);
+
+        for node in sorted_nodes {
             self.draw_node(&mut vello_scene, node);
         }
 
@@ -58,6 +64,19 @@ impl SceneBuilder {
 
         if w <= 0.0 || h <= 0.0 {
             return;
+        }
+
+        let tx = Self::transform_to_affine(&node.transform, x, y);
+
+        // Push transform layer if needed
+        if tx != Affine::IDENTITY {
+            scene.push_layer(
+                Fill::NonZero,
+                peniko::Compose::SrcOver,
+                1.0,
+                tx,
+                &Rect::new(x, y, x + w, y + h),
+            );
         }
 
         // Push opacity layer if needed
@@ -145,6 +164,54 @@ impl SceneBuilder {
         if node.style.opacity < 1.0 {
             scene.pop_layer();
         }
+
+        // Pop transform layer
+        if tx != Affine::IDENTITY {
+            scene.pop_layer();
+        }
+    }
+
+    /// Convert `TransformProps` into a vello `Affine` around the element's origin.
+    fn transform_to_affine(props: &TransformProps, x: f64, y: f64) -> Affine {
+        if props.is_empty() {
+            return Affine::IDENTITY;
+        }
+        // Build the transform around the element's own top-left corner.
+        let cx = x + 0.0; // center-x for rotation = left edge
+        let cy = y + 0.0; // center-y for rotation = top edge
+
+        // Sequence: translate → rotate → scale → skew
+        // translate
+        let tx_val = props.translate_x.unwrap_or(0.0) as f64;
+        let ty_val = props.translate_y.unwrap_or(0.0) as f64;
+        let mut aff = Affine::translate((tx_val, ty_val));
+
+        // rotate (convert degrees → radians)
+        if let Some(deg) = props.rotate {
+            let rad = (deg as f64).to_radians();
+            aff *= Affine::rotate_about(rad, (cx, cy));
+        }
+
+        // scale
+        let sx = props.scale_x.unwrap_or(1.0) as f64;
+        let sy = props.scale_y.unwrap_or(1.0) as f64;
+        if sx != 1.0 || sy != 1.0 {
+            let scale = Affine::translate((cx, cy))
+                * Affine::new([sx, 0.0, 0.0, sy, 0.0, 0.0])
+                * Affine::translate((-cx, -cy));
+            aff *= scale;
+        }
+
+        // skew
+        let skew_x_deg = props.skew_x.unwrap_or(0.0) as f64;
+        let skew_y_deg = props.skew_y.unwrap_or(0.0) as f64;
+        if skew_x_deg != 0.0 || skew_y_deg != 0.0 {
+            let kx = skew_x_deg.to_radians().tan();
+            let ky = skew_y_deg.to_radians().tan();
+            aff *= Affine::new([1.0, ky, kx, 1.0, 0.0, 0.0]);
+        }
+
+        aff
     }
 
     /// Lay out the string with parley and encode its glyph runs into the scene.
@@ -1118,6 +1185,127 @@ mod tests {
         assert!(
             path_count(&vello_scene) >= 501,
             "500 rects + surface bg, got {}",
+            path_count(&vello_scene)
+        );
+    }
+
+    // ── z-index sort tests ───────────────────────────────────
+
+    #[test]
+    fn test_z_index_sorted_paint_order() {
+        let mut scene = RenderScene::new();
+        // Add nodes in reverse z-index order — the builder must sort them.
+        for i in (0..5u64).rev() {
+            let mut node = RenderNode::rect(
+                i,
+                LayoutInfo::new(0.0, 0.0, 100.0, 100.0),
+                palette::css::RED,
+            );
+            node.style.z_index = i as i32;
+            scene.add_node(node);
+        }
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        // All 5 rects + surface bg should render.
+        assert!(
+            path_count(&vello_scene) >= 6,
+            "5 z-indexed rects + bg must encode, got {}",
+            path_count(&vello_scene)
+        );
+    }
+
+    #[test]
+    fn test_z_index_mixed_values() {
+        let mut scene = RenderScene::new();
+        let mut a = RenderNode::rect(0, LayoutInfo::new(0.0, 0.0, 50.0, 50.0), palette::css::RED);
+        a.style.z_index = -1;
+        let mut b = RenderNode::rect(
+            1,
+            LayoutInfo::new(10.0, 0.0, 50.0, 50.0),
+            palette::css::GREEN,
+        );
+        b.style.z_index = 10;
+        let mut c = RenderNode::rect(
+            2,
+            LayoutInfo::new(20.0, 0.0, 50.0, 50.0),
+            palette::css::BLUE,
+        );
+        c.style.z_index = 0;
+        scene.add_node(a);
+        scene.add_node(b);
+        scene.add_node(c);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 4,
+            "3 z-indexed rects + bg must encode, got {}",
+            path_count(&vello_scene)
+        );
+    }
+
+    // ── Transform tests ──────────────────────────────────────
+
+    #[test]
+    fn test_transform_to_affine_identity() {
+        use uwebr_css::codegen::TransformProps;
+        let props = TransformProps::default();
+        let aff = SceneBuilder::transform_to_affine(&props, 0.0, 0.0);
+        assert_eq!(aff, Affine::IDENTITY);
+    }
+
+    #[test]
+    fn test_transform_to_affine_translate() {
+        use uwebr_css::codegen::TransformProps;
+        let props = TransformProps {
+            translate_x: Some(10.0),
+            translate_y: Some(20.0),
+            ..Default::default()
+        };
+        let aff = SceneBuilder::transform_to_affine(&props, 0.0, 0.0);
+        assert_eq!(aff, Affine::translate((10.0, 20.0)));
+    }
+
+    #[test]
+    fn test_transform_to_affine_rotate_90() {
+        use uwebr_css::codegen::TransformProps;
+        let props = TransformProps {
+            rotate: Some(90.0),
+            ..Default::default()
+        };
+        let aff = SceneBuilder::transform_to_affine(&props, 100.0, 50.0);
+        // Rotation should not be identity.
+        assert_ne!(aff, Affine::IDENTITY);
+    }
+
+    #[test]
+    fn test_transform_to_affine_scale() {
+        use uwebr_css::codegen::TransformProps;
+        let props = TransformProps {
+            scale_x: Some(2.0),
+            scale_y: Some(3.0),
+            ..Default::default()
+        };
+        let aff = SceneBuilder::transform_to_affine(&props, 0.0, 0.0);
+        assert_ne!(aff, Affine::IDENTITY);
+    }
+
+    #[test]
+    fn test_node_with_transform_renders() {
+        use uwebr_css::codegen::TransformProps;
+        let mut node = RenderNode::rect(
+            0,
+            LayoutInfo::new(50.0, 50.0, 200.0, 100.0),
+            palette::css::BLUE,
+        );
+        node.transform = TransformProps {
+            translate_x: Some(10.0),
+            rotate: Some(45.0),
+            ..Default::default()
+        };
+        let mut scene = RenderScene::new();
+        scene.add_node(node);
+        let vello_scene = SceneBuilder::build_scene(&scene, 800, 600);
+        assert!(
+            path_count(&vello_scene) >= 2,
+            "transformed rect + bg must encode, got {}",
             path_count(&vello_scene)
         );
     }
