@@ -1345,9 +1345,33 @@ fn apply_property(
 ) {
     match name {
         "display" => {
-            if let Some(v) = to_display(value) {
-                style.display = v;
-                mask.display = true;
+            if let CssValue::Keyword(k) = value {
+                match k.as_str() {
+                    "block" => {
+                        style.display = Display::Flex;
+                        style.flex_direction = FlexDirection::Column;
+                        mask.display = true;
+                        mask.flex_direction = true;
+                    }
+                    "inline" => {
+                        style.display = Display::Flex;
+                        style.flex_direction = FlexDirection::Row;
+                        style.flex_wrap = FlexWrap::Wrap;
+                        mask.display = true;
+                        mask.flex_direction = true;
+                        mask.flex_wrap = true;
+                    }
+                    "inline-block" => {
+                        style.display = Display::Flex;
+                        mask.display = true;
+                    }
+                    _ => {
+                        if let Some(v) = to_display(value) {
+                            style.display = v;
+                            mask.display = true;
+                        }
+                    }
+                }
             }
         }
         "flex-direction" => {
@@ -2522,12 +2546,16 @@ mod tests {
 
     #[test]
     fn css_display_block_keyword_ignored() {
-        // "block" and "inline" are not supported by to_display, so they
-        // remain as keywords in the parsed value but don't affect Taffy.
+        // "block" now maps to Flex + Column (simulated block layout).
         let css = ".a { display: block; }";
         let rules = parse_rules(css).unwrap();
         let entries = convert_to_style_entries(&rules).unwrap();
-        assert!(!entries[0].mask.display, "block is not a taffy display");
+        assert!(entries[0].mask.display, "block sets display mask");
+        assert_eq!(entries[0].style.display, taffy::Display::Flex);
+        assert_eq!(
+            entries[0].style.flex_direction,
+            taffy::FlexDirection::Column
+        );
     }
 
     #[test]
@@ -4394,5 +4422,59 @@ mod tests {
         base.merge(&over);
         assert_eq!(base.font_weight.as_deref(), Some("bold"));
         assert_eq!(base.font_style.as_deref(), Some("italic"));
+    }
+
+    #[test]
+    fn test_display_block_sets_flex_column() {
+        let css = ".a { display: block; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, taffy::Display::Flex);
+        assert_eq!(
+            entries[0].style.flex_direction,
+            taffy::FlexDirection::Column
+        );
+    }
+
+    #[test]
+    fn test_display_inline_sets_flex_row_wrap() {
+        let css = ".a { display: inline; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, taffy::Display::Flex);
+        assert_eq!(entries[0].style.flex_direction, taffy::FlexDirection::Row);
+        assert_eq!(entries[0].style.flex_wrap, taffy::FlexWrap::Wrap);
+    }
+
+    #[test]
+    fn test_display_inline_block_sets_flex() {
+        let css = ".a { display: inline-block; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, taffy::Display::Flex);
+    }
+
+    #[test]
+    fn test_display_none_still_works() {
+        let css = ".a { display: none; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, taffy::Display::None);
+    }
+
+    #[test]
+    fn test_display_flex_still_works() {
+        let css = ".a { display: flex; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, taffy::Display::Flex);
+    }
+
+    #[test]
+    fn test_display_grid_still_works() {
+        let css = ".a { display: grid; }";
+        let rules = parse_rules(css).unwrap();
+        let entries = convert_to_style_entries(&rules).unwrap();
+        assert_eq!(entries[0].style.display, taffy::Display::Grid);
     }
 }
