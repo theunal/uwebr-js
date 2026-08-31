@@ -116,10 +116,7 @@ impl WindowState {
                     || n.kind == crate::pipeline::InputKind::Radio
             })
             .unwrap_or(false);
-        let is_button = self
-            .pipeline
-            .tag_of(focused_id)
-            == Some("button");
+        let is_button = self.pipeline.tag_of(focused_id) == Some("button");
 
         if is_text_input {
             return self.handle_text_input_key(focused_id, key, mods);
@@ -134,10 +131,8 @@ impl WindowState {
 
         if is_button {
             // Enter or Space activates the button
-            if matches!(
-                key,
-                winit::keyboard::Key::Named(NamedKey::Enter)
-            ) || matches!(key, winit::keyboard::Key::Named(NamedKey::Space))
+            if matches!(key, winit::keyboard::Key::Named(NamedKey::Enter))
+                || matches!(key, winit::keyboard::Key::Named(NamedKey::Space))
             {
                 if let Some(action) = self.pipeline.click_action_for(focused_id) {
                     let action = action.to_string();
@@ -208,7 +203,11 @@ impl WindowState {
                     let s = sel_start.min(sel_end);
                     let e = sel_start.max(sel_end);
                     let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
-                    let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                    let byte_e = value
+                        .char_indices()
+                        .nth(e)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
                     value.drain(byte_s..byte_e);
                     caret = s;
                     changed = true;
@@ -220,11 +219,16 @@ impl WindowState {
                         .map(|(i, _)| i)
                         .unwrap_or(value.len());
                     let prefix = &value[..byte_pos];
-                    let new_caret = prefix.rsplit(|c: char| c.is_whitespace())
+                    let new_caret = prefix
+                        .rsplit(|c: char| c.is_whitespace())
                         .next()
                         .map(|w| caret - w.chars().count())
                         .unwrap_or(0);
-                    let del_start = value.char_indices().nth(new_caret).map(|(i, _)| i).unwrap_or(0);
+                    let del_start = value
+                        .char_indices()
+                        .nth(new_caret)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
                     value.drain(del_start..byte_pos);
                     caret = new_caret;
                     changed = true;
@@ -250,7 +254,11 @@ impl WindowState {
                     let s = sel_start.min(sel_end);
                     let e = sel_start.max(sel_end);
                     let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
-                    let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                    let byte_e = value
+                        .char_indices()
+                        .nth(e)
+                        .map(|(i, _)| i)
+                        .unwrap_or(value.len());
                     value.drain(byte_s..byte_e);
                     caret = s;
                     changed = true;
@@ -283,8 +291,13 @@ impl WindowState {
                             if let Some((start, end)) = uwebr_core::state::selection() {
                                 let s = start.min(end);
                                 let e = start.max(end);
-                                let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
-                                let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                                let byte_s =
+                                    value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                                let byte_e = value
+                                    .char_indices()
+                                    .nth(e)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(value.len());
                                 let selected = &value[byte_s..byte_e];
                                 if !selected.is_empty() {
                                     if let Ok(mut ctx) = arboard::Clipboard::new() {
@@ -299,8 +312,13 @@ impl WindowState {
                             if let Some((start, end)) = uwebr_core::state::selection() {
                                 let s = start.min(end);
                                 let e = start.max(end);
-                                let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
-                                let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                                let byte_s =
+                                    value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                                let byte_e = value
+                                    .char_indices()
+                                    .nth(e)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(value.len());
                                 let selected = value[byte_s..byte_e].to_string();
                                 if !selected.is_empty() {
                                     if let Ok(mut ctx) = arboard::Clipboard::new() {
@@ -323,8 +341,13 @@ impl WindowState {
                                 if let Some((sel_start, sel_end)) = uwebr_core::state::selection() {
                                     let s = sel_start.min(sel_end);
                                     let e = sel_start.max(sel_end);
-                                    let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
-                                    let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                                    let byte_s =
+                                        value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
+                                    let byte_e = value
+                                        .char_indices()
+                                        .nth(e)
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(value.len());
                                     value.drain(byte_s..byte_e);
                                     caret = s;
                                 }
@@ -347,7 +370,11 @@ impl WindowState {
                         let s = sel_start.min(sel_end);
                         let e = sel_start.max(sel_end);
                         let byte_s = value.char_indices().nth(s).map(|(i, _)| i).unwrap_or(0);
-                        let byte_e = value.char_indices().nth(e).map(|(i, _)| i).unwrap_or(value.len());
+                        let byte_e = value
+                            .char_indices()
+                            .nth(e)
+                            .map(|(i, _)| i)
+                            .unwrap_or(value.len());
                         value.drain(byte_s..byte_e);
                         caret = s;
                     }
@@ -399,15 +426,12 @@ impl WindowState {
         if text_x <= 0.0 {
             uwebr_core::state::set_caret(0);
         } else {
-            let idx = self
-                .pipeline
-                .text_renderer()
-                .char_index_at_x(
-                    &value,
-                    input.font_size,
-                    input.font_family.as_deref(),
-                    text_x,
-                );
+            let idx = self.pipeline.text_renderer().char_index_at_x(
+                &value,
+                input.font_size,
+                input.font_family.as_deref(),
+                text_x,
+            );
             uwebr_core::state::set_caret(idx);
         }
         true
@@ -416,8 +440,10 @@ impl WindowState {
     /// Toggle a checkbox or radio input on click/space.
     fn handle_toggle_click(&mut self, node_id: usize) -> bool {
         let input = match self.pipeline.input_node(node_id) {
-            Some(i) if i.kind == crate::pipeline::InputKind::Checkbox
-                || i.kind == crate::pipeline::InputKind::Radio => {
+            Some(i)
+                if i.kind == crate::pipeline::InputKind::Checkbox
+                    || i.kind == crate::pipeline::InputKind::Radio =>
+            {
                 i.clone()
             }
             _ => return false,
@@ -797,7 +823,10 @@ impl ApplicationHandler for App {
                 ..
             } if input_state.is_pressed() => {
                 // Set active state for :active pseudo-class
-                if let Some(hover_id) = state.pipeline.hit_test_hover(state.cursor.0, state.cursor.1) {
+                if let Some(hover_id) = state
+                    .pipeline
+                    .hit_test_hover(state.cursor.0, state.cursor.1)
+                {
                     uwebr_core::state::set_active(hover_id, true);
                 }
                 // Update focus on click
@@ -1071,6 +1100,9 @@ mod tests {
 
     #[test]
     fn test_css_cursor_to_icon_vertical_text() {
-        assert_eq!(css_cursor_to_icon("vertical-text"), CursorIcon::VerticalText);
+        assert_eq!(
+            css_cursor_to_icon("vertical-text"),
+            CursorIcon::VerticalText
+        );
     }
 }
