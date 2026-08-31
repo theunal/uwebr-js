@@ -376,7 +376,6 @@ impl AnimationTracker {
 mod tests {
     use super::*;
     use uwebr_css::ast::{CssProperty, CssValue, Keyframe};
-    use uwebr_css::codegen::TransformProps;
 
     fn make_keyframe(name: &str, opacity: Option<f32>) -> Keyframe {
         let mut props = vec![];

@@ -3959,7 +3959,7 @@ mod tests {
             other => panic!("expected Calc in raw rule, got {other:?}"),
         }
         // After resolution, calc should be evaluated to Length(80, Px).
-        let mut custom_props = std::collections::HashMap::new();
+        let custom_props = std::collections::HashMap::new();
         let resolved = super::resolve_rule(&rules[0], &custom_props, 800.0, 600.0);
         assert_eq!(
             resolved.properties[0].value,
