@@ -71,6 +71,15 @@ pub enum CssSelector {
         op: AttributeOp,
         value: Option<String>,
     },
+    /// h1::before, div::after — synthetic content injection.
+    PseudoElement {
+        selector: Box<CssSelector>,
+        name: String, // "before", "after"
+    },
+    /// h1 + p — adjacent sibling combinator.
+    AdjacentSibling(Vec<CssSelector>),
+    /// h1 ~ p — general sibling combinator.
+    GeneralSibling(Vec<CssSelector>),
 }
 
 /// Attribute selector operator: `[attr]`, `[attr="v"]`, `[attr^="v"]`, …

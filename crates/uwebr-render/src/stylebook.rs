@@ -139,7 +139,7 @@ impl StyleBook {
         let mut matches: Vec<(u8, u32, usize, &StyleEntry)> = Vec::new();
         for (idx, entry) in self.rules.iter().enumerate() {
             let matched = match &entry.selector_ast {
-                Some(ast) => selector_matches(ast, element, tag, parent_chain, node_id),
+                Some(ast) => selector_matches(ast, element, tag, parent_chain, node_id, &[], 0),
                 None => self.string_selector_matches(&entry.selector, element, tag),
             };
             if matched {
@@ -240,6 +240,8 @@ fn selector_matches(
     tag: &str,
     parent_chain: &[&Element],
     node_id: usize,
+    siblings: &[&Element],
+    sibling_index: usize,
 ) -> bool {
     match sel {
         CssSelector::Tag(t) => t == tag,
@@ -247,23 +249,52 @@ fn selector_matches(
         CssSelector::Id(id) => element_has_id(element, id),
         CssSelector::Universal => true,
         CssSelector::PseudoClass(inner, pseudo) => {
-            selector_matches(inner, element, tag, parent_chain, node_id)
-                && pseudo_class_matches(pseudo, element, parent_chain, node_id)
+            selector_matches(
+                inner,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            ) && pseudo_class_matches(pseudo, element, parent_chain, node_id)
         }
         CssSelector::Nth {
             selector: inner,
             kind,
             argument,
         } => {
-            selector_matches(inner, element, tag, parent_chain, node_id)
-                && nth_matches(kind, argument, element, parent_chain)
+            selector_matches(
+                inner,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            ) && nth_matches(kind, argument, element, parent_chain)
         }
         CssSelector::Not {
             selector: outer,
             inner,
         } => {
-            selector_matches(outer, element, tag, parent_chain, node_id)
-                && !selector_matches(inner, element, tag, parent_chain, node_id)
+            selector_matches(
+                outer,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            ) && !selector_matches(
+                inner,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            )
         }
         CssSelector::Attribute {
             selector: inner,
@@ -271,8 +302,15 @@ fn selector_matches(
             op,
             value,
         } => {
-            selector_matches(inner, element, tag, parent_chain, node_id)
-                && attribute_matches(element, attr, op, value.as_deref())
+            selector_matches(
+                inner,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            ) && attribute_matches(element, attr, op, value.as_deref())
         }
         // `.a .b`: the subject (rightmost) must match this element, and each
         // ancestor selector must match *some* ancestor further up the chain,
@@ -281,11 +319,19 @@ fn selector_matches(
             let Some(subject) = selectors.last() else {
                 return false;
             };
-            if !selector_matches(subject, element, tag, parent_chain, node_id) {
+            if !selector_matches(
+                subject,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            ) {
                 return false;
             }
             let ancestors = &selectors[..selectors.len() - 1];
-            ancestors_match(ancestors, parent_chain, false)
+            ancestors_match(ancestors, parent_chain, false, siblings)
         }
         // `.a > .b`: the subject must match this element and each ancestor
         // selector must match the *immediately* preceding parent.
@@ -293,15 +339,128 @@ fn selector_matches(
             let Some(subject) = selectors.last() else {
                 return false;
             };
-            if !selector_matches(subject, element, tag, parent_chain, node_id) {
+            if !selector_matches(
+                subject,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            ) {
                 return false;
             }
             let ancestors = &selectors[..selectors.len() - 1];
-            ancestors_match(ancestors, parent_chain, true)
+            ancestors_match(ancestors, parent_chain, true, siblings)
         }
-        CssSelector::List(sels) => sels
-            .iter()
-            .any(|s| selector_matches(s, element, tag, parent_chain, node_id)),
+        CssSelector::List(sels) => sels.iter().any(|s| {
+            selector_matches(
+                s,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            )
+        }),
+        CssSelector::PseudoElement {
+            selector: inner,
+            name: _,
+        } => {
+            // Pseudo-elements match when the inner selector matches the parent element.
+            // The actual synthetic node injection happens in the layout engine.
+            selector_matches(
+                inner,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            )
+        }
+        CssSelector::AdjacentSibling(parts) => {
+            // A + B: subject (last) matches this element, and the immediately
+            // preceding sibling matches the A part.
+            let Some(subject) = parts.last() else {
+                return false;
+            };
+            if !selector_matches(
+                subject,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            ) {
+                return false;
+            }
+            // The sibling before us must match the A part.
+            if sibling_index == 0 {
+                return false;
+            }
+            let prev = siblings[sibling_index - 1];
+            let prev_tag = match &prev.node_type {
+                NodeType::Element(t) => t.as_str(),
+                _ => return false,
+            };
+            let prev_selectors = &parts[..parts.len() - 1];
+            if prev_selectors.is_empty() {
+                return false;
+            }
+            // Check that the preceding sibling matches the A selector chain.
+            // For simple A + B where A is a single selector, match directly.
+            if prev_selectors.len() == 1 {
+                return selector_matches(
+                    &prev_selectors[0],
+                    prev,
+                    prev_tag,
+                    &[],
+                    usize::MAX,
+                    siblings,
+                    sibling_index,
+                );
+            }
+            // For compound A (e.g. `.foo.bar + .baz`), all parts must match.
+            prev_selectors.iter().all(|s| {
+                selector_matches(s, prev, prev_tag, &[], usize::MAX, siblings, sibling_index)
+            })
+        }
+        CssSelector::GeneralSibling(parts) => {
+            // A ~ B: subject (last) matches this element, and any preceding
+            // sibling matches the A part.
+            let Some(subject) = parts.last() else {
+                return false;
+            };
+            if !selector_matches(
+                subject,
+                element,
+                tag,
+                parent_chain,
+                node_id,
+                siblings,
+                sibling_index,
+            ) {
+                return false;
+            }
+            let prev_selectors = &parts[..parts.len() - 1];
+            if prev_selectors.is_empty() {
+                return false;
+            }
+            // Check if any preceding sibling matches.
+            (0..sibling_index).any(|i| {
+                let sib = siblings[i];
+                let sib_tag = match &sib.node_type {
+                    NodeType::Element(t) => t.as_str(),
+                    _ => return false,
+                };
+                prev_selectors
+                    .iter()
+                    .all(|s| selector_matches(s, sib, sib_tag, &[], usize::MAX, siblings, i))
+            })
+        }
     }
 }
 
@@ -311,7 +470,12 @@ fn selector_matches(
 /// walked from the innermost outward. When `direct` is true (child combinator)
 /// each step must match the very next parent; otherwise (descendant combinator)
 /// a matching ancestor may be found anywhere further up.
-fn ancestors_match(ancestors: &[CssSelector], parent_chain: &[&Element], direct: bool) -> bool {
+fn ancestors_match(
+    ancestors: &[CssSelector],
+    parent_chain: &[&Element],
+    direct: bool,
+    siblings: &[&Element],
+) -> bool {
     let mut depth = 0usize;
     // Walk ancestor selectors from innermost (last) to outermost (first).
     for ancestor_sel in ancestors.iter().rev() {
@@ -331,7 +495,7 @@ fn ancestors_match(ancestors: &[CssSelector], parent_chain: &[&Element], direct:
             // Ancestors carry no node_id of interest here (stateful pseudo on an
             // ancestor selector is uncommon); pass 0 and its own remaining chain.
             let rest = &parent_chain[depth + 1..];
-            if selector_matches(ancestor_sel, ancestor, a_tag, rest, usize::MAX) {
+            if selector_matches(ancestor_sel, ancestor, a_tag, rest, usize::MAX, siblings, 0) {
                 depth += 1;
                 matched = true;
                 break;
@@ -390,6 +554,15 @@ fn selector_specificity(sel: &CssSelector) -> u32 {
                 *ids += best / 10000;
                 *classes += (best / 100) % 100;
                 *tags += best % 100;
+            }
+            CssSelector::PseudoElement { selector, .. } => {
+                *classes += 1;
+                count(selector, ids, classes, tags);
+            }
+            CssSelector::AdjacentSibling(sels) | CssSelector::GeneralSibling(sels) => {
+                for s in sels {
+                    count(s, ids, classes, tags);
+                }
             }
         }
     }

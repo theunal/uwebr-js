@@ -365,6 +365,22 @@ fn parse_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Cs
                 result = Some(CssSelector::Child(vec![prev, child]));
                 continue;
             }
+            if chars.peek() == Some(&'+') {
+                chars.next(); // consume '+'
+                skip_whitespace(chars);
+                let sibling = parse_simple_selector(chars)?;
+                let prev = result.take().unwrap();
+                result = Some(CssSelector::AdjacentSibling(vec![prev, sibling]));
+                continue;
+            }
+            if chars.peek() == Some(&'~') {
+                chars.next(); // consume '~'
+                skip_whitespace(chars);
+                let sibling = parse_simple_selector(chars)?;
+                let prev = result.take().unwrap();
+                result = Some(CssSelector::GeneralSibling(vec![prev, sibling]));
+                continue;
+            }
         }
 
         let sel = parse_simple_selector(chars)?;
@@ -422,9 +438,10 @@ fn parse_simple_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Re
         match chars.peek() {
             Some(&':') => {
                 chars.next(); // consume ':'
-                              // A leading `::` is a pseudo-element; skip the extra colon.
-                if chars.peek() == Some(&':') {
-                    chars.next();
+                              // Detect pseudo-element `::` vs pseudo-class `:`.
+                let is_pseudo_element = chars.peek() == Some(&':');
+                if is_pseudo_element {
+                    chars.next(); // consume second ':'
                 }
                 let pseudo_name = read_ident(chars);
                 // Consume a functional argument like `nth-child(2n+1)`.
@@ -437,65 +454,73 @@ fn parse_simple_selector(chars: &mut std::iter::Peekable<std::str::Chars>) -> Re
                     }
                 }
 
-                // Route structural pseudo-classes to the Nth variant.
-                sel = match pseudo_name.as_str() {
-                    "first-child" => CssSelector::Nth {
+                // Pseudo-elements: ::before, ::after
+                if is_pseudo_element {
+                    sel = CssSelector::PseudoElement {
                         selector: Box::new(sel),
-                        kind: NthKind::FirstChild,
-                        argument: None,
-                    },
-                    "last-child" => CssSelector::Nth {
-                        selector: Box::new(sel),
-                        kind: NthKind::LastChild,
-                        argument: None,
-                    },
-                    "nth-child" => CssSelector::Nth {
-                        selector: Box::new(sel),
-                        kind: NthKind::FirstChild,
-                        argument,
-                    },
-                    "nth-last-child" => CssSelector::Nth {
-                        selector: Box::new(sel),
-                        kind: NthKind::LastChild,
-                        argument,
-                    },
-                    "first-of-type" => CssSelector::Nth {
-                        selector: Box::new(sel),
-                        kind: NthKind::FirstOfType,
-                        argument: None,
-                    },
-                    "last-of-type" => CssSelector::Nth {
-                        selector: Box::new(sel),
-                        kind: NthKind::LastOfType,
-                        argument: None,
-                    },
-                    "nth-of-type" => CssSelector::Nth {
-                        selector: Box::new(sel),
-                        kind: NthKind::OfType,
-                        argument,
-                    },
-                    "nth-last-of-type" => CssSelector::Nth {
-                        selector: Box::new(sel),
-                        kind: NthKind::LastOfType,
-                        argument,
-                    },
-                    "empty" => CssSelector::Nth {
-                        selector: Box::new(sel),
-                        kind: NthKind::Empty,
-                        argument: None,
-                    },
-                    "not" => {
-                        // The inner selector is in `argument`, already consumed
-                        // by read_until. Parse it as a fresh selector.
-                        let arg = argument.as_deref().unwrap_or("");
-                        let inner = parse_selector(&mut arg.chars().peekable())?;
-                        CssSelector::Not {
+                        name: pseudo_name,
+                    };
+                } else {
+                    // Route structural pseudo-classes to the Nth variant.
+                    sel = match pseudo_name.as_str() {
+                        "first-child" => CssSelector::Nth {
                             selector: Box::new(sel),
-                            inner: Box::new(inner),
+                            kind: NthKind::FirstChild,
+                            argument: None,
+                        },
+                        "last-child" => CssSelector::Nth {
+                            selector: Box::new(sel),
+                            kind: NthKind::LastChild,
+                            argument: None,
+                        },
+                        "nth-child" => CssSelector::Nth {
+                            selector: Box::new(sel),
+                            kind: NthKind::FirstChild,
+                            argument,
+                        },
+                        "nth-last-child" => CssSelector::Nth {
+                            selector: Box::new(sel),
+                            kind: NthKind::LastChild,
+                            argument,
+                        },
+                        "first-of-type" => CssSelector::Nth {
+                            selector: Box::new(sel),
+                            kind: NthKind::FirstOfType,
+                            argument: None,
+                        },
+                        "last-of-type" => CssSelector::Nth {
+                            selector: Box::new(sel),
+                            kind: NthKind::LastOfType,
+                            argument: None,
+                        },
+                        "nth-of-type" => CssSelector::Nth {
+                            selector: Box::new(sel),
+                            kind: NthKind::OfType,
+                            argument,
+                        },
+                        "nth-last-of-type" => CssSelector::Nth {
+                            selector: Box::new(sel),
+                            kind: NthKind::LastOfType,
+                            argument,
+                        },
+                        "empty" => CssSelector::Nth {
+                            selector: Box::new(sel),
+                            kind: NthKind::Empty,
+                            argument: None,
+                        },
+                        "not" => {
+                            // The inner selector is in `argument`, already consumed
+                            // by read_until. Parse it as a fresh selector.
+                            let arg = argument.as_deref().unwrap_or("");
+                            let inner = parse_selector(&mut arg.chars().peekable())?;
+                            CssSelector::Not {
+                                selector: Box::new(sel),
+                                inner: Box::new(inner),
+                            }
                         }
-                    }
-                    _ => CssSelector::PseudoClass(Box::new(sel), pseudo_name),
-                };
+                        _ => CssSelector::PseudoClass(Box::new(sel), pseudo_name),
+                    };
+                }
             }
             Some(&'[') => {
                 chars.next(); // consume '['
@@ -2261,11 +2286,11 @@ mod tests {
         let (rules, _) = parse_css(css).unwrap();
         assert_eq!(rules.len(), 1);
         match &rules[0].selector {
-            CssSelector::PseudoClass(inner, pseudo) => {
-                assert_eq!(**inner, CssSelector::Class("btn".to_string()));
-                assert_eq!(pseudo, "before");
+            CssSelector::PseudoElement { selector, name } => {
+                assert_eq!(**selector, CssSelector::Class("btn".to_string()));
+                assert_eq!(name, "before");
             }
-            other => panic!("expected PseudoClass for ::before, got {other:?}"),
+            other => panic!("expected PseudoElement for ::before, got {other:?}"),
         }
     }
 

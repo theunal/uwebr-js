@@ -163,6 +163,8 @@ pub struct PaintProps {
     pub visibility: Option<String>,
     /// CSS `cursor`: "pointer", "default", etc.
     pub cursor: Option<String>,
+    /// CSS `content` for pseudo-elements: "»", "Open in new tab", etc.
+    pub content: Option<String>,
 }
 
 impl PaintProps {
@@ -229,6 +231,9 @@ impl PaintProps {
         }
         if other.cursor.is_some() {
             self.cursor = other.cursor.clone();
+        }
+        if other.content.is_some() {
+            self.content = other.content.clone();
         }
     }
 }
@@ -767,6 +772,11 @@ pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
             "cursor" => {
                 if let CssValue::Keyword(k) = &prop.value {
                     paint.cursor = Some(k.clone());
+                }
+            }
+            "content" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.content = Some(k.clone());
                 }
             }
             _ => {}
@@ -1310,6 +1320,17 @@ fn selector_key(sel: &CssSelector) -> String {
                 (AttributeOp::Contains, Some(v)) => format!("{base}[{attr}*=\"{v}\"]"),
                 (_, None) => format!("{base}[{attr}]"),
             }
+        }
+        CssSelector::PseudoElement { selector, name } => {
+            format!("{}::{}", selector_key(selector), name)
+        }
+        CssSelector::AdjacentSibling(parts) => {
+            let keys: Vec<String> = parts.iter().map(selector_key).collect();
+            keys.join(" + ")
+        }
+        CssSelector::GeneralSibling(parts) => {
+            let keys: Vec<String> = parts.iter().map(selector_key).collect();
+            keys.join(" ~ ")
         }
     }
 }
@@ -2003,6 +2024,17 @@ fn selector_to_fn_name(selector: &CssSelector) -> String {
             selector_to_fn_name(selector),
             attr.replace('-', "_")
         ),
+        CssSelector::PseudoElement { selector, name } => {
+            format!("{}_pseudo_{}", selector_to_fn_name(selector), name)
+        }
+        CssSelector::AdjacentSibling(parts) => {
+            let names: Vec<String> = parts.iter().map(selector_to_fn_name).collect();
+            names.join("_adj_sibling_")
+        }
+        CssSelector::GeneralSibling(parts) => {
+            let names: Vec<String> = parts.iter().map(selector_to_fn_name).collect();
+            names.join("_gen_sibling_")
+        }
     }
 }
 
