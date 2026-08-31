@@ -24,8 +24,8 @@ use uwebr_core::signal::{
     take_render_dirty, Memo, Signal,
 };
 use uwebr_core::state::{
-    any_focused, clear, clear_element_state, clear_hover, contains, get, is_focused, is_hovered,
-    set, set_focused, set_hovered, use_state,
+    any_focused, clear, clear_element_state, contains, get, is_focused, is_hovered, set,
+    set_focused, set_hovered, use_state,
 };
 use uwebr_core::timer::{TimerHandle, TimerRegistry};
 
