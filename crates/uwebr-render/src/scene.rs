@@ -84,6 +84,12 @@ pub struct RenderStyle {
     pub text_overflow: TextOverflow,
     /// CSS `z-index` — higher values paint on top.
     pub z_index: i32,
+    /// CSS `text-align`: "left", "center", "right", "justify".
+    pub text_align: Option<String>,
+    /// CSS `line-height` as a multiplier (e.g. 1.5).
+    pub line_height: Option<f32>,
+    /// CSS `letter-spacing` in px.
+    pub letter_spacing: Option<f32>,
 }
 
 impl Default for RenderStyle {
@@ -96,6 +102,9 @@ impl Default for RenderStyle {
             overflow_hidden: false,
             text_overflow: TextOverflow::default(),
             z_index: 0,
+            text_align: None,
+            line_height: None,
+            letter_spacing: None,
         }
     }
 }
@@ -133,6 +142,8 @@ pub struct RenderNode {
     pub style: RenderStyle,
     /// CSS `transform` for visual transformation.
     pub transform: TransformProps,
+    /// CSS `box-shadow` declarations.
+    pub box_shadow: Vec<uwebr_css::codegen::BoxShadow>,
 }
 
 impl RenderNode {
@@ -146,6 +157,7 @@ impl RenderNode {
                 ..Default::default()
             },
             transform: TransformProps::default(),
+            box_shadow: vec![],
         }
     }
 
@@ -160,6 +172,7 @@ impl RenderNode {
                 ..Default::default()
             },
             transform: TransformProps::default(),
+            box_shadow: vec![],
         }
     }
 
@@ -192,6 +205,7 @@ impl RenderNode {
             layout,
             style: RenderStyle::default(),
             transform: TransformProps::default(),
+            box_shadow: vec![],
         }
     }
 
@@ -202,6 +216,7 @@ impl RenderNode {
             layout,
             style: RenderStyle::default(),
             transform: TransformProps::default(),
+            box_shadow: vec![],
         }
     }
 
@@ -216,12 +231,19 @@ impl RenderNode {
             layout,
             style: RenderStyle::default(),
             transform: TransformProps::default(),
+            box_shadow: vec![],
         }
     }
 
     /// Builder: override the transform on any RenderNode.
     pub fn with_transform(mut self, transform: TransformProps) -> Self {
         self.transform = transform;
+        self
+    }
+
+    /// Builder: set box-shadows on any RenderNode.
+    pub fn with_box_shadow(mut self, shadows: Vec<uwebr_css::codegen::BoxShadow>) -> Self {
+        self.box_shadow = shadows;
         self
     }
 }

@@ -95,6 +95,41 @@ pub enum BackgroundValue {
     },
 }
 
+/// A parsed CSS `box-shadow` value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxShadow {
+    /// Horizontal offset in px.
+    pub offset_x: f32,
+    /// Vertical offset in px.
+    pub offset_y: f32,
+    /// Blur radius in px.
+    pub blur: f32,
+    /// Spread radius in px.
+    pub spread: f32,
+    /// Shadow color.
+    pub color: Color,
+    /// Whether the shadow is `inset`.
+    pub inset: bool,
+}
+
+impl Default for BoxShadow {
+    fn default() -> Self {
+        Self {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur: 0.0,
+            spread: 0.0,
+            color: Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 1.0,
+            },
+            inset: false,
+        }
+    }
+}
+
 /// CSS paint properties that Taffy has no place for.
 ///
 /// Taffy only models layout; `background-color`, `color`, `font-size` etc. would
@@ -111,6 +146,13 @@ pub struct PaintProps {
     pub opacity: Option<f32>,
     pub text_overflow: Option<String>,
     pub z_index: Option<i32>,
+    pub box_shadow: Option<Vec<BoxShadow>>,
+    /// CSS `text-align`: "left", "center", "right", "justify".
+    pub text_align: Option<String>,
+    /// CSS `line-height` as a multiplier (e.g. 1.5).
+    pub line_height: Option<f32>,
+    /// CSS `letter-spacing` in px.
+    pub letter_spacing: Option<f32>,
 }
 
 impl PaintProps {
@@ -150,6 +192,18 @@ impl PaintProps {
         }
         if other.z_index.is_some() {
             self.z_index = other.z_index;
+        }
+        if other.box_shadow.is_some() {
+            self.box_shadow = other.box_shadow.clone();
+        }
+        if other.text_align.is_some() {
+            self.text_align = other.text_align.clone();
+        }
+        if other.line_height.is_some() {
+            self.line_height = other.line_height;
+        }
+        if other.letter_spacing.is_some() {
+            self.letter_spacing = other.letter_spacing;
         }
     }
 }
@@ -359,6 +413,24 @@ pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
                     paint.z_index = Some(*n as i32);
                 }
             }
+            "box-shadow" => {
+                paint.box_shadow = parse_box_shadow_value(&prop.value);
+            }
+            "text-align" => {
+                if let CssValue::Keyword(k) = &prop.value {
+                    paint.text_align = Some(k.clone());
+                }
+            }
+            "line-height" => {
+                if let CssValue::Length(n, _) = &prop.value {
+                    paint.line_height = Some(*n);
+                }
+            }
+            "letter-spacing" => {
+                if let CssValue::Length(n, _) = &prop.value {
+                    paint.letter_spacing = Some(*n);
+                }
+            }
             _ => {}
         }
     }
@@ -368,8 +440,122 @@ pub fn extract_paint(properties: &[CssProperty]) -> PaintProps {
 
 /// Extract CSS `transform` shorthand and individual transform properties.
 ///
-/// Handles:
-/// - `transform: translateX(10px) rotate(45deg) scale(1.5)`
+/// Parse a CSS `box-shadow` value string.
+///
+/// Syntax: `offset-x offset-y [blur [spread]] color [inset]`
+/// or: `inset offset-x offset-y [blur [spread]] color`
+fn parse_box_shadow_value(value: &CssValue) -> Option<Vec<BoxShadow>> {
+    match value {
+        CssValue::Keyword(raw) => {
+            let shadows = parse_box_shadow_list(raw);
+            if shadows.is_empty() {
+                None
+            } else {
+                Some(shadows)
+            }
+        }
+        CssValue::Shorthand(parts) => {
+            // Reconstruct from parts
+            let raw: String = parts
+                .iter()
+                .map(|p| match p {
+                    CssValue::Keyword(s) => s.clone(),
+                    CssValue::Length(n, _) => format!("{n}px"),
+                    CssValue::Color(c) => format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b),
+                    _ => String::new(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let shadows = parse_box_shadow_list(&raw);
+            if shadows.is_empty() {
+                None
+            } else {
+                Some(shadows)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Parse a comma-separated list of box-shadow declarations.
+fn parse_box_shadow_list(raw: &str) -> Vec<BoxShadow> {
+    raw.split(',')
+        .filter_map(|s| parse_single_box_shadow(s.trim()))
+        .collect()
+}
+
+/// Parse a single box-shadow declaration.
+///
+/// Tokens: `inset? offset-x offset-y blur? spread? color?`
+fn parse_single_box_shadow(raw: &str) -> Option<BoxShadow> {
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut inset = false;
+    let mut nums: Vec<f32> = Vec::new();
+    let mut color_str = String::new();
+
+    for tok in &tokens {
+        let t = tok.trim();
+        if t.eq_ignore_ascii_case("inset") {
+            inset = true;
+        } else if let Some(px) = parse_shadow_number(t) {
+            nums.push(px);
+        } else {
+            // Treat as color
+            color_str = t.to_string();
+        }
+    }
+
+    if nums.len() < 2 {
+        return None;
+    }
+
+    let offset_x = nums[0];
+    let offset_y = nums[1];
+    let blur = nums.get(2).copied().unwrap_or(0.0);
+    let spread = nums.get(3).copied().unwrap_or(0.0);
+
+    let color = if color_str.is_empty() {
+        Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 1.0,
+        }
+    } else {
+        crate::parser::parse_color_token(&color_str).unwrap_or(Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 1.0,
+        })
+    };
+
+    Some(BoxShadow {
+        offset_x,
+        offset_y,
+        blur,
+        spread,
+        color,
+        inset,
+    })
+}
+
+/// Parse a number token that might end with "px" or "em".
+fn parse_shadow_number(tok: &str) -> Option<f32> {
+    let t = tok.trim();
+    if t.ends_with("px") {
+        t.trim_end_matches("px").trim().parse::<f32>().ok()
+    } else if t.ends_with("em") {
+        t.trim_end_matches("em").trim().parse::<f32>().ok()
+    } else {
+        t.parse::<f32>().ok()
+    }
+}
+
 /// - `transform: translate(10px, 20px)`
 /// - `rotate: 90`
 /// - `scale: 1.5`

@@ -1,5 +1,5 @@
 use uwebr_core::component::{Element, NodeType, PropValue};
-use uwebr_css::codegen::{AnimationProps, BackgroundValue, PaintProps, TransformProps};
+use uwebr_css::codegen::{AnimationProps, BackgroundValue, BoxShadow, PaintProps, TransformProps};
 use vello::peniko;
 
 use crate::color::{css_color_to_peniko, parse_color_to_peniko};
@@ -40,6 +40,14 @@ pub struct ResolvedPaint {
     /// CSS `animation` — name, duration, timing, etc.
     /// Not inherited; defaults to empty (no animation).
     pub animation: AnimationProps,
+    /// CSS `box-shadow`.
+    pub box_shadow: Vec<BoxShadow>,
+    /// CSS `text-align`: "left", "center", "right", "justify".
+    pub text_align: Option<String>,
+    /// CSS `line-height` as a multiplier (e.g. 1.5).
+    pub line_height: Option<f32>,
+    /// CSS `letter-spacing` in px.
+    pub letter_spacing: Option<f32>,
 }
 
 impl Default for ResolvedPaint {
@@ -57,6 +65,10 @@ impl Default for ResolvedPaint {
             z_index: 0,
             transform: TransformProps::default(),
             animation: AnimationProps::default(),
+            box_shadow: vec![],
+            text_align: None,
+            line_height: None,
+            letter_spacing: None,
         }
     }
 }
@@ -78,6 +90,10 @@ impl ResolvedPaint {
             z_index: 0,
             transform: TransformProps::default(),
             animation: AnimationProps::default(),
+            box_shadow: vec![],
+            text_align: None,
+            line_height: None,
+            letter_spacing: None,
         }
     }
 
@@ -116,6 +132,18 @@ impl ResolvedPaint {
         }
         if let Some(zi) = paint.z_index {
             self.z_index = zi;
+        }
+        if let Some(ref shadows) = paint.box_shadow {
+            self.box_shadow = shadows.clone();
+        }
+        if let Some(ref align) = paint.text_align {
+            self.text_align = Some(align.clone());
+        }
+        if let Some(lh) = paint.line_height {
+            self.line_height = Some(lh);
+        }
+        if let Some(ls) = paint.letter_spacing {
+            self.letter_spacing = Some(ls);
         }
     }
 

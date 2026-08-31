@@ -2,6 +2,7 @@ use uwebr_css::codegen::TransformProps;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::{self, color::palette, Fill};
 
+use crate::color::css_color_to_peniko;
 use crate::scene::{
     Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle, TextOverflow,
 };
@@ -99,6 +100,11 @@ impl SceneBuilder {
             );
         }
 
+        // Draw box-shadow BEFORE the node (shadows appear behind)
+        if !node.box_shadow.is_empty() {
+            Self::draw_box_shadow(scene, &node.box_shadow, x, y, w, h);
+        }
+
         // Draw based on node kind
         match &node.kind {
             RenderNodeKind::Rect => {
@@ -123,6 +129,9 @@ impl SceneBuilder {
                     y,
                     w,
                     &node.style.text_overflow,
+                    node.style.text_align.as_deref(),
+                    node.style.line_height,
+                    node.style.letter_spacing,
                 );
             }
             RenderNodeKind::Image {
@@ -227,6 +236,9 @@ impl SceneBuilder {
         y: f64,
         width: f64,
         text_overflow: &TextOverflow,
+        text_align: Option<&str>,
+        line_height: Option<f32>,
+        letter_spacing: Option<f32>,
     ) {
         if content.trim().is_empty() {
             return;
@@ -249,11 +261,25 @@ impl SceneBuilder {
         } else {
             None
         };
-        let layout = self
-            .text
-            .layout_text(&display_content, font_size, font_family, max_advance);
+        let layout = self.text.layout_text(
+            &display_content,
+            font_size,
+            font_family,
+            max_advance,
+            text_align,
+            line_height,
+            letter_spacing,
+        );
 
+        let mut cursor_y: f32 = 0.0;
         for line in layout.lines() {
+            let metrics = line.metrics();
+
+            // Apply line-height override: if specified, override the line advance.
+            let effective_line_height = line_height
+                .map(|lh| font_size * lh)
+                .unwrap_or(metrics.line_height);
+
             for item in line.items() {
                 let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
@@ -261,7 +287,7 @@ impl SceneBuilder {
 
                 let run = glyph_run.run();
                 let run_x = x;
-                let run_y = y;
+                let run_y = y + cursor_y as f64;
 
                 scene
                     .draw_glyphs(run.font())
@@ -278,12 +304,16 @@ impl SceneBuilder {
                         }),
                     );
             }
+
+            cursor_y += effective_line_height;
         }
     }
 
     /// Total advance width of a laid-out string on its first line.
     fn measure_advance(&mut self, content: &str, font_size: f32, font_family: Option<&str>) -> f32 {
-        let layout = self.text.layout_text(content, font_size, font_family, None);
+        let layout = self
+            .text
+            .layout_text(content, font_size, font_family, None, None, None, None);
         layout
             .lines()
             .flat_map(|l| l.items())
@@ -373,6 +403,48 @@ impl SceneBuilder {
         let transform =
             Affine::translate((x, y)) * Affine::scale_non_uniform(w / iw as f64, h / ih as f64);
         scene.draw_image(&image_data, transform);
+    }
+
+    /// Draw box-shadows behind a node's box.
+    fn draw_box_shadow(
+        scene: &mut vello::Scene,
+        shadows: &[uwebr_css::codegen::BoxShadow],
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    ) {
+        for shadow in shadows {
+            let ox = shadow.offset_x as f64;
+            let oy = shadow.offset_y as f64;
+            let r = shadow.blur as f64 * 0.5;
+            let sp = shadow.spread as f64;
+
+            let sx = x + ox - sp;
+            let sy = y + oy - sp;
+            let sw = w + sp * 2.0;
+            let sh = h + sp * 2.0;
+
+            if sw <= 0.0 || sh <= 0.0 {
+                continue;
+            }
+
+            let color = css_color_to_peniko(shadow.color.clone());
+            let brush = peniko::Brush::Solid(color);
+
+            if r > 0.0 {
+                let rr = RoundedRect::new(sx, sy, sw, sh, r);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &brush, None, &rr);
+            } else {
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    &brush,
+                    None,
+                    &Rect::new(sx, sy, sx + sw, sy + sh),
+                );
+            }
+        }
     }
 
     /// Draw a filled rectangle

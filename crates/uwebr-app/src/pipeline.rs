@@ -220,7 +220,8 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                     pos.paint.color,
                     pos.paint.font_family.clone(),
                 )
-                .with_transform(pos.transform.clone()),
+                .with_transform(pos.transform.clone())
+                .with_box_shadow(pos.paint.box_shadow.clone()),
             )
         }
         NodeType::Element(tag) => {
@@ -236,6 +237,7 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 layout,
                 style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
                 transform: pos.transform.clone(),
+                box_shadow: pos.paint.box_shadow.clone(),
             })
         }
         NodeType::Component(_) => {
@@ -248,6 +250,7 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                 layout,
                 style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
                 transform: pos.transform.clone(),
+                box_shadow: pos.paint.box_shadow.clone(),
             })
         }
         NodeType::Raw(html) => {
@@ -267,7 +270,8 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                     pos.paint.color,
                     pos.paint.font_family.clone(),
                 )
-                .with_transform(pos.transform.clone()),
+                .with_transform(pos.transform.clone())
+                .with_box_shadow(pos.paint.box_shadow.clone()),
             )
         }
     }
@@ -316,6 +320,7 @@ fn img_to_render_node(pos: &PositionedNode, id: u64) -> Option<RenderNode> {
         layout: pos.layout,
         style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
         transform: pos.transform.clone(),
+        box_shadow: pos.paint.box_shadow.clone(),
     })
 }
 
@@ -352,6 +357,7 @@ fn raw_element_to_render_node(
         layout,
         style: paint_to_render_style(paint, false),
         transform: Default::default(),
+        box_shadow: paint.box_shadow.clone(),
     })
 }
 
@@ -385,6 +391,9 @@ fn paint_to_render_style(paint: &ResolvedPaint, overflow_hidden: bool) -> Render
         overflow_hidden,
         text_overflow: paint.text_overflow.clone(),
         z_index: paint.z_index,
+        text_align: paint.text_align.clone(),
+        line_height: paint.line_height,
+        letter_spacing: paint.letter_spacing,
     }
 }
 

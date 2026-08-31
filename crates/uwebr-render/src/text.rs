@@ -1,4 +1,4 @@
-use parley::style::{FontFamily, StyleProperty};
+use parley::style::{FontFamily, LineHeight, StyleProperty};
 use parley::{Alignment, AlignmentOptions, FontContext, Layout, LayoutContext};
 
 /// Ratio used to estimate glyph advance when no system font is available.
@@ -31,12 +31,16 @@ impl TextRenderer {
     /// Build a line-broken, aligned parley `Layout` ready for measuring or drawing.
     ///
     /// `max_advance` is the wrapping width; `None` means "do not wrap".
+    #[allow(clippy::too_many_arguments)]
     pub fn layout_text(
         &mut self,
         content: &str,
         font_size: f32,
         font_family: Option<&str>,
         max_advance: Option<f32>,
+        text_align: Option<&str>,
+        line_height: Option<f32>,
+        letter_spacing: Option<f32>,
     ) -> Layout<()> {
         let mut builder =
             self.layout_context
@@ -49,11 +53,24 @@ impl TextRenderer {
                 std::borrow::Cow::Borrowed(family),
             )));
         }
+        if let Some(spacing) = letter_spacing {
+            builder.push_default(StyleProperty::LetterSpacing(spacing));
+        }
+        if let Some(lh) = line_height {
+            builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(lh)));
+        }
 
         let mut layout = builder.build(content);
         // Line breaking is required before lines()/align() return anything.
         layout.break_all_lines(max_advance);
-        layout.align(Alignment::Start, AlignmentOptions::default());
+
+        let alignment = match text_align {
+            Some("center") => Alignment::Center,
+            Some("right") | Some("end") => Alignment::End,
+            Some("justify") => Alignment::Justify,
+            _ => Alignment::Start,
+        };
+        layout.align(alignment, AlignmentOptions::default());
         layout
     }
 
@@ -69,7 +86,15 @@ impl TextRenderer {
             return (0.0, 0.0);
         }
 
-        let layout = self.layout_text(content, font_size, font_family, max_advance);
+        let layout = self.layout_text(
+            content,
+            font_size,
+            font_family,
+            max_advance,
+            None,
+            None,
+            None,
+        );
         let (w, h) = (layout.width(), layout.height());
 
         if w > 0.0 && h > 0.0 {
@@ -134,7 +159,7 @@ mod tests {
     #[test]
     fn test_layout_text() {
         let mut tr = TextRenderer::new();
-        let layout = tr.layout_text("Hello World", 16.0, None, None);
+        let layout = tr.layout_text("Hello World", 16.0, None, None, None, None, None);
         // parley may return 0 lines if no system fonts are available
         let _line_count = layout.lines().count();
     }
@@ -142,7 +167,7 @@ mod tests {
     #[test]
     fn test_measure_text() {
         let mut tr = TextRenderer::new();
-        let layout = tr.layout_text("Hello", 16.0, None, None);
+        let layout = tr.layout_text("Hello", 16.0, None, None, None, None, None);
         let (w, h) = tr.measure_text(&layout);
         // Values depend on font availability
         assert!(w >= 0.0);

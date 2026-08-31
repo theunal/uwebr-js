@@ -821,7 +821,7 @@ fn parse_gradient_stop(token: &str) -> Option<GradientStop> {
 }
 
 /// Parse a colour token used inside a gradient (hex, named, rgb(), hsl()).
-fn parse_color_token(token: &str) -> Option<Color> {
+pub fn parse_color_token(token: &str) -> Option<Color> {
     let token = token.trim();
     if token.starts_with('#') {
         return Some(Color::from_hex(token));
