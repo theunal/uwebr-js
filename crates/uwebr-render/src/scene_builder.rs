@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use uwebr_css::codegen::TransformProps;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::{self, color::palette, Fill};
@@ -7,6 +8,13 @@ use crate::scene::{
     Background, RenderNode, RenderNodeKind, RenderScene, RenderStyle, TextOverflow,
 };
 use crate::text::TextRenderer;
+
+/// Scroll state passed from the pipeline.
+#[derive(Debug, Clone, Default)]
+pub struct ScrollState {
+    pub offset_x: f32,
+    pub offset_y: f32,
+}
 
 /// Builds a vello Scene from a RenderScene.
 ///
@@ -26,6 +34,18 @@ impl SceneBuilder {
 
     /// Build a vello::Scene from positioned render nodes.
     pub fn build(&mut self, scene: &RenderScene, width: u32, height: u32) -> vello::Scene {
+        let empty: HashMap<usize, ScrollState> = HashMap::new();
+        self.build_with_scroll(scene, width, height, &empty)
+    }
+
+    /// Build a vello::Scene with scroll states applied.
+    pub fn build_with_scroll(
+        &mut self,
+        scene: &RenderScene,
+        width: u32,
+        height: u32,
+        scroll_states: &HashMap<usize, ScrollState>,
+    ) -> vello::Scene {
         let mut vello_scene = vello::Scene::new();
 
         // Background fill for the entire surface
@@ -43,7 +63,11 @@ impl SceneBuilder {
         sorted_nodes.sort_by_key(|n| n.style.z_index);
 
         for node in sorted_nodes {
-            self.draw_node(&mut vello_scene, node);
+            let scroll = scroll_states
+                .get(&node.node_id)
+                .cloned()
+                .unwrap_or_default();
+            self.draw_node(&mut vello_scene, node, &scroll);
         }
 
         vello_scene
@@ -57,7 +81,7 @@ impl SceneBuilder {
     }
 
     /// Draw a single node into the vello scene
-    fn draw_node(&mut self, scene: &mut vello::Scene, node: &RenderNode) {
+    fn draw_node(&mut self, scene: &mut vello::Scene, node: &RenderNode, scroll: &ScrollState) {
         let x = node.layout.x as f64;
         let y = node.layout.y as f64;
         let w = node.layout.width as f64;
@@ -92,11 +116,25 @@ impl SceneBuilder {
         }
 
         // `overflow: hidden` clips descendants to this node's box.
-        if node.style.overflow_hidden {
+        // `overflow: scroll` clips + offsets children by scroll position.
+        let scroll_active = node.style.overflow_scroll_x || node.style.overflow_scroll_y;
+        if node.style.overflow_hidden || scroll_active {
             scene.push_clip_layer(
                 Fill::NonZero,
                 Affine::IDENTITY,
                 &Rect::new(x, y, x + w, y + h),
+            );
+        }
+
+        // For scroll containers, push a translation layer with the scroll offset.
+        let has_scroll_offset = scroll_active && (scroll.offset_x != 0.0 || scroll.offset_y != 0.0);
+        if has_scroll_offset {
+            scene.push_layer(
+                Fill::NonZero,
+                peniko::Compose::SrcOver,
+                1.0,
+                Affine::translate((-scroll.offset_x as f64, -scroll.offset_y as f64)),
+                &Rect::new(0.0, 0.0, w + 5000.0, h + 5000.0),
             );
         }
 
@@ -165,7 +203,13 @@ impl SceneBuilder {
             Self::draw_border(scene, x, y, w, h, border.width as f64, border.color);
         }
 
-        if node.style.overflow_hidden {
+        // Pop scroll offset layer
+        if has_scroll_offset {
+            scene.pop_layer();
+        }
+
+        // Pop clip layer (hidden or scroll)
+        if node.style.overflow_hidden || scroll_active {
             scene.pop_layer();
         }
 

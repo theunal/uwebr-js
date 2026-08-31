@@ -1193,6 +1193,18 @@ fn apply_property(
                 mask.overflow = true;
             }
         }
+        "overflow-x" => {
+            if let Some(v) = to_overflow(value) {
+                style.overflow.x = v;
+                mask.overflow = true;
+            }
+        }
+        "overflow-y" => {
+            if let Some(v) = to_overflow(value) {
+                style.overflow.y = v;
+                mask.overflow = true;
+            }
+        }
         "border-radius" => {
             if let Some(lp) = to_length_percentage(value, vw, vh) {
                 style.border.top = lp;

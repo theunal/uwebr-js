@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use uwebr_core::component::{Element, NodeType, PropValue};
 use uwebr_render::layout::{LayoutEngine, PositionedNode};
 use uwebr_render::paint::ResolvedPaint;
 use uwebr_render::scene::{LayoutInfo, RenderNode, RenderNodeKind, RenderScene, RenderStyle};
-use uwebr_render::scene_builder::SceneBuilder;
+use uwebr_render::scene_builder::{SceneBuilder, ScrollState};
 use uwebr_render::stylebook::StyleBook;
 
 /// A clickable region discovered during layout.
@@ -37,6 +38,8 @@ pub struct RenderPipeline {
     element_boxes: Vec<ElementBox>,
     /// Raw CSS kept so `vw`/`vh` can be re-resolved when the viewport changes.
     css_string: Option<String>,
+    /// Per-node scroll offsets for scroll containers.
+    scroll_states: HashMap<usize, ScrollState>,
 }
 
 impl RenderPipeline {
@@ -50,6 +53,7 @@ impl RenderPipeline {
             hit_targets: Vec::new(),
             element_boxes: Vec::new(),
             css_string: None,
+            scroll_states: HashMap::new(),
         }
     }
 
@@ -78,7 +82,8 @@ impl RenderPipeline {
     pub fn render(&mut self, element: &Element, width: u32, height: u32) -> vello::Scene {
         self.build_render_scene(element, width, height);
         let (w, h) = (width, height);
-        self.scene_builder.build(&self.render_scene, w, h)
+        self.scene_builder
+            .build_with_scroll(&self.render_scene, w, h, &self.scroll_states)
     }
 
     /// Run layout and populate the intermediate `RenderScene` (without encoding).
@@ -124,6 +129,10 @@ impl RenderPipeline {
                     bounds: pos_node.layout,
                     depth: pos_node.depth,
                 });
+            }
+            // Ensure scroll containers have a scroll_states entry.
+            if pos_node.overflow_scroll_x || pos_node.overflow_scroll_y {
+                self.scroll_states.entry(pos_node.node_id).or_default();
             }
             if let Some(render_node) = positioned_to_render_node(pos_node) {
                 self.render_scene.add_node(render_node);
@@ -171,6 +180,55 @@ impl RenderPipeline {
     pub fn reload_css(&mut self, css: &str, width: u32, height: u32) {
         let _ = self.stylebook.reparse(css, width as f32, height as f32);
         self.css_string = Some(css.to_string());
+    }
+
+    /// Get the scroll offset for a given node.
+    pub fn scroll_offset(&self, node_id: usize) -> ScrollState {
+        self.scroll_states
+            .get(&node_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Apply a scroll delta to all scrollable containers.
+    ///
+    /// Positive delta = scroll down (content moves up, offset increases).
+    pub fn scroll_by(&mut self, dx: f32, dy: f32) {
+        for state in self.scroll_states.values_mut() {
+            state.offset_x = (state.offset_x + dx).max(0.0);
+            state.offset_y = (state.offset_y + dy).max(0.0);
+        }
+    }
+
+    /// Collect scroll container node_ids from the last render pass, so
+    /// the render loop can populate initial scroll_states.
+    pub fn collect_scroll_containers(&mut self) {
+        // Nodes with scroll are already detected during build_render_scene.
+        // We ensure scroll_states has entries for them.
+        // (actual population happens in positioned_to_render_node)
+    }
+
+    /// Render and return the vello Scene, passing scroll states to scene_builder.
+    pub fn render_with_scroll(
+        &mut self,
+        element: &Element,
+        width: u32,
+        height: u32,
+    ) -> vello::Scene {
+        self.build_render_scene(element, width, height);
+        let (w, h) = (width, height);
+        self.scene_builder
+            .build_with_scroll(&self.render_scene, w, h, &self.scroll_states)
+    }
+
+    /// Access the scroll states map (for tests).
+    pub fn scroll_states(&self) -> &HashMap<usize, ScrollState> {
+        &self.scroll_states
+    }
+
+    /// Mutable access to scroll states (for tests).
+    pub fn scroll_states_mut(&mut self) -> &mut HashMap<usize, ScrollState> {
+        &mut self.scroll_states
     }
 }
 
@@ -221,7 +279,8 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                     pos.paint.font_family.clone(),
                 )
                 .with_transform(pos.transform.clone())
-                .with_box_shadow(pos.paint.box_shadow.clone()),
+                .with_box_shadow(pos.paint.box_shadow.clone())
+                .with_node_id(pos.node_id),
             )
         }
         NodeType::Element(tag) => {
@@ -233,9 +292,15 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
             }
             Some(RenderNode {
                 id,
+                node_id: pos.node_id,
                 kind: RenderNodeKind::Container,
                 layout,
-                style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
+                style: paint_to_render_style(
+                    &pos.paint,
+                    pos.overflow_hidden,
+                    pos.overflow_scroll_x,
+                    pos.overflow_scroll_y,
+                ),
                 transform: pos.transform.clone(),
                 box_shadow: pos.paint.box_shadow.clone(),
             })
@@ -246,9 +311,15 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
             }
             Some(RenderNode {
                 id,
+                node_id: pos.node_id,
                 kind: RenderNodeKind::Container,
                 layout,
-                style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
+                style: paint_to_render_style(
+                    &pos.paint,
+                    pos.overflow_hidden,
+                    pos.overflow_scroll_x,
+                    pos.overflow_scroll_y,
+                ),
                 transform: pos.transform.clone(),
                 box_shadow: pos.paint.box_shadow.clone(),
             })
@@ -271,7 +342,8 @@ fn positioned_to_render_node(pos: &PositionedNode) -> Option<RenderNode> {
                     pos.paint.font_family.clone(),
                 )
                 .with_transform(pos.transform.clone())
-                .with_box_shadow(pos.paint.box_shadow.clone()),
+                .with_box_shadow(pos.paint.box_shadow.clone())
+                .with_node_id(pos.node_id),
             )
         }
     }
@@ -312,13 +384,19 @@ fn img_to_render_node(pos: &PositionedNode, id: u64) -> Option<RenderNode> {
 
     Some(RenderNode {
         id,
+        node_id: pos.node_id,
         kind: RenderNodeKind::Image {
             data,
             width: dim("width"),
             height: dim("height"),
         },
         layout: pos.layout,
-        style: paint_to_render_style(&pos.paint, pos.overflow_hidden),
+        style: paint_to_render_style(
+            &pos.paint,
+            pos.overflow_hidden,
+            pos.overflow_scroll_x,
+            pos.overflow_scroll_y,
+        ),
         transform: pos.transform.clone(),
         box_shadow: pos.paint.box_shadow.clone(),
     })
@@ -353,9 +431,10 @@ fn raw_element_to_render_node(
     }
     Some(RenderNode {
         id,
+        node_id: 0,
         kind: RenderNodeKind::Container,
         layout,
-        style: paint_to_render_style(paint, false),
+        style: paint_to_render_style(paint, false, false, false),
         transform: Default::default(),
         box_shadow: paint.box_shadow.clone(),
     })
@@ -375,7 +454,12 @@ fn first_text(element: &uwebr_core::component::Element) -> Option<String> {
 }
 
 /// Translate resolved paint into the scene's style representation.
-fn paint_to_render_style(paint: &ResolvedPaint, overflow_hidden: bool) -> RenderStyle {
+fn paint_to_render_style(
+    paint: &ResolvedPaint,
+    overflow_hidden: bool,
+    overflow_scroll_x: bool,
+    overflow_scroll_y: bool,
+) -> RenderStyle {
     RenderStyle {
         background: paint.background.clone(),
         border: if paint.border_width > 0.0 {
@@ -389,6 +473,8 @@ fn paint_to_render_style(paint: &ResolvedPaint, overflow_hidden: bool) -> Render
         border_radius: paint.border_radius,
         opacity: paint.opacity,
         overflow_hidden,
+        overflow_scroll_x,
+        overflow_scroll_y,
         text_overflow: paint.text_overflow.clone(),
         z_index: paint.z_index,
         text_align: paint.text_align.clone(),
@@ -533,6 +619,10 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            overflow_scroll_x: false,
+            overflow_scroll_y: false,
+            scroll_content_width: 0.0,
+            scroll_content_height: 0.0,
             z_index: 0,
             transform: Default::default(),
         };
@@ -550,6 +640,10 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            overflow_scroll_x: false,
+            overflow_scroll_y: false,
+            scroll_content_width: 0.0,
+            scroll_content_height: 0.0,
             z_index: 0,
             transform: Default::default(),
         };
@@ -567,6 +661,10 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            overflow_scroll_x: false,
+            overflow_scroll_y: false,
+            scroll_content_width: 0.0,
+            scroll_content_height: 0.0,
             z_index: 0,
             transform: Default::default(),
         };
@@ -585,6 +683,10 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            overflow_scroll_x: false,
+            overflow_scroll_y: false,
+            scroll_content_width: 0.0,
+            scroll_content_height: 0.0,
             z_index: 0,
             transform: Default::default(),
         };
@@ -601,6 +703,10 @@ mod tests {
             node_id: 0,
             paint: ResolvedPaint::default(),
             overflow_hidden: false,
+            overflow_scroll_x: false,
+            overflow_scroll_y: false,
+            scroll_content_width: 0.0,
+            scroll_content_height: 0.0,
             z_index: 0,
             transform: Default::default(),
         };
@@ -1287,5 +1393,76 @@ mod tests {
             ":hover background must reach the scene once hovered"
         );
         uwebr_core::state::clear_element_state();
+    }
+
+    #[test]
+    fn test_overflow_scroll_sets_scroll_flags() {
+        let css = ".scroll { overflow: scroll; width: 200px; height: 100px; }";
+        let el = make_el(
+            "div",
+            vec![
+                ("class".into(), PropValue::String("scroll".into())),
+                ("width".into(), PropValue::Number(200.0)),
+                ("height".into(), PropValue::Number(100.0)),
+            ],
+            vec![make_text("Long content that overflows")],
+        );
+        let mut pipeline = RenderPipeline::new().with_css(css);
+        pipeline.build_render_scene(&el, 800, 600);
+        let scene = pipeline.render_scene();
+        let nodes = scene.nodes();
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.style.overflow_scroll_x || n.style.overflow_scroll_y),
+            "overflow: scroll must set scroll flags on at least one node"
+        );
+    }
+
+    #[test]
+    fn test_scroll_by_updates_offsets() {
+        let mut pipeline = RenderPipeline::new();
+        pipeline.scroll_states.insert(0, ScrollState::default());
+        pipeline.scroll_by(0.0, 50.0);
+        assert_eq!(pipeline.scroll_states[&0].offset_y, 50.0);
+        pipeline.scroll_by(0.0, -10.0);
+        assert_eq!(pipeline.scroll_states[&0].offset_y, 40.0);
+    }
+
+    #[test]
+    fn test_scroll_offset_clamps_to_zero() {
+        let mut pipeline = RenderPipeline::new();
+        pipeline.scroll_states.insert(
+            0,
+            ScrollState {
+                offset_x: 10.0,
+                offset_y: 10.0,
+            },
+        );
+        pipeline.scroll_by(0.0, -100.0);
+        assert_eq!(
+            pipeline.scroll_states[&0].offset_y, 0.0,
+            "scroll should clamp to 0"
+        );
+    }
+
+    #[test]
+    fn test_scroll_states_populated_for_scroll_containers() {
+        let css = ".scroll { overflow: scroll; width: 200px; height: 100px; }";
+        let el = make_el(
+            "div",
+            vec![
+                ("class".into(), PropValue::String("scroll".into())),
+                ("width".into(), PropValue::Number(200.0)),
+                ("height".into(), PropValue::Number(100.0)),
+            ],
+            vec![make_text("Long content")],
+        );
+        let mut pipeline = RenderPipeline::new().with_css(css);
+        pipeline.build_render_scene(&el, 800, 600);
+        assert!(
+            !pipeline.scroll_states.is_empty(),
+            "scroll containers should get entries in scroll_states"
+        );
     }
 }

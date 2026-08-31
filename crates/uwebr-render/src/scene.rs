@@ -81,6 +81,8 @@ pub struct RenderStyle {
     pub border_radius: f32,
     pub opacity: f32,
     pub overflow_hidden: bool,
+    pub overflow_scroll_x: bool,
+    pub overflow_scroll_y: bool,
     pub text_overflow: TextOverflow,
     /// CSS `z-index` — higher values paint on top.
     pub z_index: i32,
@@ -100,6 +102,8 @@ impl Default for RenderStyle {
             border_radius: 0.0,
             opacity: 1.0,
             overflow_hidden: false,
+            overflow_scroll_x: false,
+            overflow_scroll_y: false,
             text_overflow: TextOverflow::default(),
             z_index: 0,
             text_align: None,
@@ -137,6 +141,7 @@ pub enum RenderNodeKind {
 #[derive(Debug, Clone)]
 pub struct RenderNode {
     pub id: u64,
+    pub node_id: usize,
     pub kind: RenderNodeKind,
     pub layout: LayoutInfo,
     pub style: RenderStyle,
@@ -150,6 +155,7 @@ impl RenderNode {
     pub fn rect(id: u64, layout: LayoutInfo, background: peniko::Color) -> Self {
         Self {
             id,
+            node_id: 0,
             kind: RenderNodeKind::Rect,
             layout,
             style: RenderStyle {
@@ -164,6 +170,7 @@ impl RenderNode {
     pub fn round_rect(id: u64, layout: LayoutInfo, background: peniko::Color, radius: f32) -> Self {
         Self {
             id,
+            node_id: 0,
             kind: RenderNodeKind::RoundRect { radius },
             layout,
             style: RenderStyle {
@@ -196,6 +203,7 @@ impl RenderNode {
     ) -> Self {
         Self {
             id,
+            node_id: 0,
             kind: RenderNodeKind::Text {
                 content: content.to_string(),
                 font_size,
@@ -212,6 +220,7 @@ impl RenderNode {
     pub fn container(id: u64, layout: LayoutInfo) -> Self {
         Self {
             id,
+            node_id: 0,
             kind: RenderNodeKind::Container,
             layout,
             style: RenderStyle::default(),
@@ -223,6 +232,7 @@ impl RenderNode {
     pub fn image(id: u64, layout: LayoutInfo, data: Vec<u8>, width: u32, height: u32) -> Self {
         Self {
             id,
+            node_id: 0,
             kind: RenderNodeKind::Image {
                 data,
                 width,
@@ -233,6 +243,12 @@ impl RenderNode {
             transform: TransformProps::default(),
             box_shadow: vec![],
         }
+    }
+
+    /// Builder: set the layout node id on any RenderNode.
+    pub fn with_node_id(mut self, node_id: usize) -> Self {
+        self.node_id = node_id;
+        self
     }
 
     /// Builder: override the transform on any RenderNode.

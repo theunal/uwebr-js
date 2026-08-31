@@ -332,6 +332,18 @@ impl ApplicationHandler for App {
                 }
                 self.dispatch_event(&AppEvent::MouseClick(button));
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // winit: positive LineDelta(y) = scroll up → negate so positive = scroll content down
+                let (dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (-x * 20.0, -y * 20.0),
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        (-(pos.x as f32), -(pos.y as f32))
+                    }
+                };
+                state.pipeline.scroll_by(dx, dy);
+                state.ctx.window().request_redraw();
+                self.dispatch_event(&AppEvent::MouseScroll(dx, dy));
+            }
             _ => {}
         }
     }

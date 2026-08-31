@@ -74,6 +74,14 @@ pub struct PositionedNode {
     pub paint: ResolvedPaint,
     /// `overflow: hidden` (or `clip`) on either axis — the scene clips children.
     pub overflow_hidden: bool,
+    /// `overflow: scroll` on the X axis — the scene clips + offsets horizontally.
+    pub overflow_scroll_x: bool,
+    /// `overflow: scroll` on the Y axis — the scene clips + offsets vertically.
+    pub overflow_scroll_y: bool,
+    /// Content width when scrollable (larger than container if scrollable).
+    pub scroll_content_width: f32,
+    /// Content height when scrollable (larger than container if scrollable).
+    pub scroll_content_height: f32,
     /// CSS `z-index` for paint ordering.
     pub z_index: i32,
     /// CSS `transform` for visual transformation.
@@ -390,15 +398,36 @@ impl LayoutEngine {
         );
 
         // Clip children when the element sets `overflow: hidden`/`clip` on either
-        // axis. Read from the resolved taffy style so it follows the cascade.
-        let overflow_hidden = self
+        // axis. Scroll containers clip but also allow offset-based scrolling.
+        let (overflow_hidden, overflow_scroll_x, overflow_scroll_y) = self
             .taffy
             .style(taffy_node)
             .map(|s| {
-                matches!(s.overflow.x, Overflow::Hidden | Overflow::Clip)
-                    || matches!(s.overflow.y, Overflow::Hidden | Overflow::Clip)
+                let hidden_x = matches!(s.overflow.x, Overflow::Hidden | Overflow::Clip);
+                let hidden_y = matches!(s.overflow.y, Overflow::Hidden | Overflow::Clip);
+                let scroll_x = matches!(s.overflow.x, Overflow::Scroll);
+                let scroll_y = matches!(s.overflow.y, Overflow::Scroll);
+                // Scroll supersedes hidden when both are set.
+                (
+                    (hidden_x || hidden_y) && !scroll_x && !scroll_y,
+                    scroll_x,
+                    scroll_y,
+                )
             })
-            .unwrap_or(false);
+            .unwrap_or((false, false, false));
+
+        // For scroll containers, estimate the content size by summing children
+        // extents. This is a conservative upper bound used to compute max scroll.
+        let scroll_content_width = if overflow_scroll_x {
+            self.estimate_content_width(taffy_node)
+        } else {
+            0.0
+        };
+        let scroll_content_height = if overflow_scroll_y {
+            self.estimate_content_height(taffy_node)
+        } else {
+            0.0
+        };
 
         out.push(PositionedNode {
             taffy_node,
@@ -408,6 +437,10 @@ impl LayoutEngine {
             node_id,
             paint: paint.clone(),
             overflow_hidden,
+            overflow_scroll_x,
+            overflow_scroll_y,
+            scroll_content_width,
+            scroll_content_height,
             z_index: paint.z_index,
             transform: paint.transform.clone(),
         });
@@ -437,6 +470,42 @@ impl LayoutEngine {
     /// Reset the taffy tree (font contexts are reused — they are expensive to build).
     pub fn reset(&mut self) {
         self.taffy = TaffyTree::new();
+    }
+
+    /// Estimate the total content width of a node's subtree for scroll containers.
+    fn estimate_content_width(&self, node: taffy::NodeId) -> f32 {
+        let children = self.taffy.children(node).unwrap_or_default();
+        if children.is_empty() {
+            return self.taffy.layout(node).map(|l| l.size.width).unwrap_or(0.0);
+        }
+        let mut max_child_right = 0.0f32;
+        for child in &children {
+            if let Ok(layout) = self.taffy.layout(*child) {
+                let child_right = layout.location.x + layout.size.width;
+                max_child_right = max_child_right.max(child_right);
+            }
+        }
+        max_child_right
+    }
+
+    /// Estimate the total content height of a node's subtree for scroll containers.
+    fn estimate_content_height(&self, node: taffy::NodeId) -> f32 {
+        let children = self.taffy.children(node).unwrap_or_default();
+        if children.is_empty() {
+            return self
+                .taffy
+                .layout(node)
+                .map(|l| l.size.height)
+                .unwrap_or(0.0);
+        }
+        let mut max_child_bottom = 0.0f32;
+        for child in &children {
+            if let Ok(layout) = self.taffy.layout(*child) {
+                let child_bottom = layout.location.y + layout.size.height;
+                max_child_bottom = max_child_bottom.max(child_bottom);
+            }
+        }
+        max_child_bottom
     }
 
     /// Measure a string with the engine's text renderer (test/debug helper).
